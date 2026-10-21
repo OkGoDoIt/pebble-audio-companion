@@ -98,12 +98,18 @@ struct ArchiveSyncServiceTests {
         var service: ArchiveSyncService
     }
 
-    fileprivate func world(answer: @escaping @Sendable (Data) -> (Int, Data) = acceptAll) async throws -> World {
+    /// `before` runs on the database and the service's directory before the service starts:
+    /// the library and saved state an earlier release left behind.
+    fileprivate func world(
+        answer: @escaping @Sendable (Data) -> (Int, Data) = acceptAll,
+        before: (AppDatabase, URL) async throws -> Void = { _, _ in }
+    ) async throws -> World {
         let db = try AppDatabase.inMemory()
         let outbox = ArchiveOutbox(db: db)
         let clock = TestClock()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("archive-sync-\(UUID().uuidString)", isDirectory: true)
+        try await before(db, directory)
         let builder = ArchivePayloadBuilder(
             sources: .init(
                 database: db, readMeta: { _ in nil }, listSegments: { [] },
@@ -178,6 +184,47 @@ struct ArchiveSyncServiceTests {
         #expect(try await w.outbox.counts().pending == 1)
         await w.service.pass(.userAsked)
         #expect(w.uploads.bodies.count == 1)
+    }
+
+    /// A new export version sends every transcript again once, a batch's worth per pass rather
+    /// than the whole library in one: here 450 conversations a phone linked under an earlier
+    /// release had already sent, and that release's saved state, which names no version.
+    @Test func aNewExportResendsEveryTranscriptOnceAtTheUsualPace() async throws {
+        let count = 450
+        let w = try await world(before: { db, directory in
+            try await ArchiveOutbox(db: db).setActive(true)
+            let conversations = (0..<count).map { index in
+                GroupedConversation(
+                    id: String(format: "conv-seg-%04d", index), startMs: 1_788_000_000_000 + Int64(index) * 60_000,
+                    endMs: 1_788_000_030_000 + Int64(index) * 60_000, timeZoneID: "UTC", isLive: false,
+                    members: [ConversationMember(segmentId: String(format: "seg-%04d", index))])
+            }
+            try await db.writer.write { d in
+                _ = try ConversationGrouper.apply(conversations, in: d)
+                // All of it already sent and answered.
+                try d.execute(sql: "UPDATE sync_outbox SET pending = 0, sentVersion = version, sentHash = 'old'")
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(ArchiveSyncService.PersistedState())
+                .write(to: directory.appendingPathComponent("state.json"))
+        })
+        func transcriptsSent() -> Int {
+            w.uploads.bodies.reduce(0) { total, body in
+                let items = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["items"]
+                    as? [[String: Any]] ?? []
+                return total + items.filter { $0["kind"] as? String == "transcript" }.count
+            }
+        }
+        var perPass: [Int] = []
+        for _ in 0..<4 {
+            let before = transcriptsSent()
+            await w.service.pass(.userAsked)
+            await w.service.idle()
+            perPass.append(transcriptsSent() - before)
+        }
+        let page = ArchiveSyncProtocol.maxItemsPerBatch
+        #expect(perPass == [page, page, count - 2 * page, 0])
+        #expect(try await w.outbox.counts().pending == 0)
     }
 
     @Test func anOversizedBatchIsHalvedAndSentAgain() async throws {

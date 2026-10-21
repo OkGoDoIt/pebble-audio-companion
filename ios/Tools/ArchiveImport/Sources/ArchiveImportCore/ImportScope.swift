@@ -44,14 +44,17 @@ public enum ImportScope: Equatable, Sendable {
         }
     }
 
-    /// Nothing dated before this is sent; nil for `all`.
-    public func cutoffMs(nowMs: Int64) -> Int64? {
+    /// The same scope as the phone holds it, whose rules the import follows.
+    public var sharing: ArchiveSharingScope {
         switch self {
-        case .all: return nil
-        case .since(let ms): return ms
-        case .lastDays(let days): return nowMs - Int64(days) * 86_400_000
+        case .all: return .all
+        case .since(let ms): return .since(ms: ms)
+        case .lastDays(let days): return .lastDays(days)
         }
     }
+
+    /// Nothing dated before this is sent; nil for `all`. The phone's own rule.
+    public func cutoffMs(nowMs: Int64) -> Int64? { sharing.cutoffMs(nowMs: nowMs) }
 
     public var summary: String {
         switch self {
@@ -77,131 +80,43 @@ public enum ImportBoundary: Equatable, Sendable {
     }
 }
 
-/// What each item is dated by, as §5 defines it: a conversation (and its transcript) by when it
-/// started, a note by its conversation, a follow-up by when it was said (else when it was
-/// written), a recap and a day's coverage by their day, a brief by its last day. People are not
-/// dated and always go.
+/// What each item is dated by, and so whether it is inside a scope: the phone's own rule
+/// (`ArchiveScopeGate`, §5), asked of the backup's database, so the import can never send what
+/// the phone would hold back or hold back what it would send. It used to restate the rule here
+/// and disagreed at the edge (a note whose conversation is gone).
 ///
-/// A day-keyed item is in scope when its day is the one the cutoff falls in or later (the logical
-/// day, 5 AM to 5 AM, in the backup's zone): a recap of the day the window opens on describes
-/// conversations inside it.
+/// Days are counted in the backup's zone (`BackupLibrary.zoneID`, the newest conversation's),
+/// which is how the gate counts them on the phone (`ArchiveScopeGate.accountZone`).
 public struct ScopeDates: Sendable {
-    public var conversationStartMs: [String: Int64]
-    public var noteConversation: [String: String]
-    /// When each note was written, for one without a conversation.
-    public var noteCreatedMs: [String: Int64]
-    public var followUpMs: [String: Int64]
-    public var zoneID: String
+    public let database: AppDatabase
+    public let zoneID: String
 
-    public init(
-        conversationStartMs: [String: Int64], noteConversation: [String: String],
-        noteCreatedMs: [String: Int64] = [:], followUpMs: [String: Int64], zoneID: String
-    ) {
-        self.conversationStartMs = conversationStartMs
-        self.noteConversation = noteConversation
-        self.noteCreatedMs = noteCreatedMs
-        self.followUpMs = followUpMs
+    public init(database: AppDatabase, zoneID: String) {
+        self.database = database
         self.zoneID = zoneID
     }
 
     public static func load(_ database: AppDatabase, zoneID: String) async throws -> ScopeDates {
-        try await database.reader.read { d in
-            var starts: [String: Int64] = [:]
-            for row in try Row.fetchAll(d, sql: "SELECT id, startMs FROM conversations") {
-                starts[row["id"]] = row["startMs"]
-            }
-            var notes: [String: String] = [:]
-            var notesCreated: [String: Int64] = [:]
-            for row in try Row.fetchAll(d, sql: "SELECT id, conversationId, createdAtMs FROM notes") {
-                notes[row["id"]] = row["conversationId"]
-                notesCreated[row["id"]] = row["createdAtMs"]
-            }
-            var followUps: [String: Int64] = [:]
-            for row in try Row.fetchAll(
-                d, sql: "SELECT id, COALESCE(sourceWallStartMs, createdAtMs) AS at FROM follow_ups")
-            {
-                followUps[row["id"]] = row["at"]
-            }
-            return ScopeDates(
-                conversationStartMs: starts, noteConversation: notes, noteCreatedMs: notesCreated,
-                followUpMs: followUps, zoneID: zoneID)
-        }
+        ScopeDates(database: database, zoneID: zoneID)
+    }
+
+    func gate(_ cutoffMs: Int64?) -> ArchiveScopeGate {
+        ArchiveScopeGate(
+            cutoffMs: cutoffMs,
+            cutoffDay: cutoffMs.map { LogicalDay.dateKey(forMs: $0, timeZoneID: zoneID) })
     }
 
     /// Whether `(kind, id)` falls inside a scope whose cutoff is `cutoffMs`. Something whose date
-    /// cannot be found here (a transcript of a conversation that is gone) is left to the builder.
-    public func contains(_ kind: ArchiveEntityKind, id: String, cutoffMs: Int64?) -> Bool {
-        guard let cutoffMs else { return true }
-        switch dating(kind, id: id) {
-        case .instant(let ms): return ms >= cutoffMs
-        case .day(let day): return day >= LogicalDay.dateKey(forMs: cutoffMs, timeZoneID: zoneID)
-        case .undated: return true
-        }
+    /// cannot be found (a transcript of a conversation that is gone) is left to the builder.
+    public func contains(_ kind: ArchiveEntityKind, id: String, cutoffMs: Int64?) async throws -> Bool {
+        try await gate(cutoffMs).contains(kind, id: id, in: database)
     }
 
-    /// Whether `(kind, id)` is dated before `boundaryMs`, where the phone's own archive begins: what
-    /// the phone no longer holds. A day-keyed item is before it when its day is before the day the
-    /// boundary falls in. Something undated here (a person) counts as before.
-    public func isBefore(_ kind: ArchiveEntityKind, id: String, boundaryMs: Int64) -> Bool {
-        switch dating(kind, id: id) {
-        case .instant(let ms): return ms < boundaryMs
-        case .day(let day): return day < LogicalDay.dateKey(forMs: boundaryMs, timeZoneID: zoneID)
-        case .undated: return true
-        }
-    }
-
-    enum Dating: Equatable {
-        case instant(Int64)
-        case day(String)
-        /// A person, or something whose date cannot be found here (left to the builder).
-        case undated
-    }
-
-    func dating(_ kind: ArchiveEntityKind, id: String) -> Dating {
-        func at(_ ms: Int64?) -> Dating { ms.map { .instant($0) } ?? .undated }
-        switch kind {
-        case .conversation, .transcript:
-            return at(conversationStartMs[id])
-        case .note:
-            if let conversation = noteConversation[id] { return at(conversationStartMs[conversation]) }
-            return at(noteCreatedMs[id])
-        case .followUp:
-            return at(followUpMs[id])
-        case .recap, .coverage:
-            return .day(id)
-        case .brief:
-            return Self.lastDay(ofPeriod: id).map { .day($0) } ?? .undated
-        case .person:
-            return .undated
-        }
-    }
-
-    /// `week:2026-10-11` ends six days after it starts; `month:2026-10` on its last day.
-    static func lastDay(ofPeriod key: String) -> String? {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        func string(_ date: Date) -> String {
-            let parts = calendar.dateComponents([.year, .month, .day], from: date)
-            return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
-        }
-        if key.hasPrefix("week:") {
-            let parts = key.dropFirst("week:".count).split(separator: "-").compactMap { Int($0) }
-            guard parts.count == 3,
-                let start = calendar.date(
-                    from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
-                let end = calendar.date(byAdding: .day, value: 6, to: start)
-            else { return nil }
-            return string(end)
-        }
-        if key.hasPrefix("month:") {
-            let parts = key.dropFirst("month:".count).split(separator: "-").compactMap { Int($0) }
-            guard parts.count == 2,
-                let start = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: 1)),
-                let next = calendar.date(byAdding: .month, value: 1, to: start),
-                let end = calendar.date(byAdding: .day, value: -1, to: next)
-            else { return nil }
-            return string(end)
-        }
-        return nil
+    /// Whether `(kind, id)` is dated before `boundaryMs`, where the phone's own archive begins:
+    /// what the phone no longer holds. A day-keyed item is before it when its day is before the
+    /// day the boundary falls in. Something undated (a person) counts as before.
+    public func isBefore(_ kind: ArchiveEntityKind, id: String, boundaryMs: Int64) async throws -> Bool {
+        let date = try await ArchiveScopeGate.date(of: kind, id: id, in: database)
+        return date == .undated || !gate(boundaryMs).holds(date)
     }
 }

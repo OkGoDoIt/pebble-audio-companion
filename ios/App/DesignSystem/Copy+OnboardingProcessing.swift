@@ -168,7 +168,7 @@ extension Copy {
         /// The per-row "what this provider is for" line. `Copy.Onboarding.sonioxRole` /
         /// `openAiRole` cover the both-jobs case; these two are the narrowed versions.
         static let openAiRoleTranscriptionOnly = "transcription"
-        static let openAiRoleAiOnly = "summaries, notes and answers"
+        static let openAiRoleAiOnly = "summaries, notes, and answers"
     }
 }
 
@@ -205,7 +205,10 @@ extension AppSettings {
                 cloudTranscriptionDestination: modes.cloudTranscriptionEnabled
                     ? cloudTranscriptionProvider.displayName : nil,
                 remoteAiDestination: modes.remoteAiEnabled
-                    ? Copy.Privacy.remoteAiName(for: remote) : nil
+                    ? Copy.Privacy.remoteAiName(for: remote) : nil,
+                // Not chosen in onboarding, but on for someone redoing it with older audio in
+                // iCloud Drive: without it step 3 said "Everything stays on this phone".
+                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
             )
         )
     }

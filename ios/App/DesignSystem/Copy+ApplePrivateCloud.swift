@@ -121,7 +121,7 @@ extension Copy.Settings.TranscriptionAI {
         let meanwhile: String
         switch mode {
         case .remoteOnly:
-            meanwhile = "Summaries, notes and answers wait until it is."
+            meanwhile = "Summaries, notes, and answers wait until it is."
         case .remoteFirst, .localFirst:
             meanwhile = "Apple Intelligence on this iPhone writes them meanwhile."
         case .localOnly:

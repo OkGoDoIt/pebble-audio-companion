@@ -98,9 +98,9 @@ extension Copy.Settings.TranscriptionAI {
             // right now that is every job. A model that is still downloading gets the temporary
             // wording — "unavailable" would be true today and wrong tomorrow.
             return readiness == .preparing
-                ? "Until Apple Intelligence is ready, every summary, note and answer is written "
+                ? "Until Apple Intelligence is ready, every summary, note, and answer is written "
                     + "by \(remoteName)."
-                : "With Apple Intelligence unavailable, every summary, note and answer is "
+                : "With Apple Intelligence unavailable, every summary, note, and answer is "
                     + "written by \(remoteName)."
         case .remoteFirst, .remoteOnly:
             return nil
@@ -120,7 +120,7 @@ extension Copy.Settings.TranscriptionAI {
             return nil
         case .notSupported:
             return "Apple Intelligence doesn’t run on this iPhone. In Local only, summaries, "
-                + "notes and answers stay empty."
+                + "notes, and answers stay empty."
         case .switchedOff:
             return "Apple Intelligence is off in iOS Settings. Until it’s on, Local only writes "
                 + "nothing."
@@ -185,8 +185,8 @@ extension Copy.Settings.TranscriptionAI {
     /// What the existing footer ("Set both Modes to “Local only” …") becomes once both modes
     /// already ARE Local only: instructions for something the reader has done.
     ///
-    /// Deliberately the exact sentence Storage & Privacy leads with — `Copy.Privacy.stance`
-    /// produces "Everything stays on this phone" as its headline for this configuration — so the
-    /// two screens state one promise in one form of words.
-    static let everythingLocalFooter = "Everything stays on this phone."
+    /// What this screen controls and nothing more. It used to be the Privacy stance's
+    /// "Everything stays on this phone", which is false whenever older audio moves to iCloud
+    /// Drive — a setting this screen does not hold; the Privacy screen says that part.
+    static let everythingLocalFooter = "Transcription and AI both run on this phone."
 }

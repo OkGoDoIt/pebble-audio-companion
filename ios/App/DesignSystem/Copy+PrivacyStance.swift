@@ -64,7 +64,8 @@ extension Copy.Privacy {
     struct Stance: Equatable {
         /// Short, factual, and specific enough to be worth reading on its own.
         var headline: String
-        /// Nothing reaches any service in this configuration.
+        /// Nothing leaves this phone: no provider receives audio or text, and no audio moves to
+        /// iCloud Drive.
         var isFullyLocal: Bool
         /// The stance itself: what happens to the audio, then what happens to the text.
         var summary: String
@@ -90,6 +91,16 @@ extension Copy.Privacy {
         let summary: String
 
         switch (stt, ai) {
+        case (nil, nil) where inputs.coldStorageAgeDays != nil:
+            // Not "everything stays on this phone": older audio moves to the person's iCloud
+            // Drive, which the Privacy screen counts as a place (`PrivacyModel`, D3). Their own
+            // account, not a service this app sends to, so the summary says what does not go,
+            // and the iCloud line below says what does.
+            headline = "Older audio goes to your iCloud Drive"
+            summary =
+                "Transcription and AI both run on this iPhone, so no recording, transcript, or "
+                + "note is sent to a transcription or AI service."
+
         case (nil, nil):
             headline = "Everything stays on this phone"
             summary =
@@ -140,12 +151,18 @@ extension Copy.Privacy {
                     + "iCloud Drive and fetched when you play it. Transcripts stay on this iPhone.")
         }
 
+        // Nothing leaves the phone at all: no provider, and no audio moving to iCloud Drive. The
+        // same count of places the Privacy screen makes, so the two never disagree about a
+        // green dot; its commitments follow the same split (`PrivacyModel.commitments`).
+        let isFullyLocal = stt == nil && ai == nil && inputs.coldStorageAgeDays == nil
         return Stance(
             headline: headline,
-            isFullyLocal: stt == nil && ai == nil,
+            isFullyLocal: isFullyLocal,
             summary: summary,
             qualifiers: qualifiers,
-            commitments: stt == nil && ai == nil ? commitments : sharedCommitments,
+            commitments: isFullyLocal ? commitments : sharedCommitments,
+            // About what a provider keeps; iCloud Drive is the person's own, and Keep audio
+            // deletes from it too.
             deletionNote: (stt == nil && ai == nil) ? nil : deletionNote
         )
     }
@@ -349,7 +366,8 @@ extension Copy.Settings.Storage {
     /// Under the three choices.
     static let systemSearchChoiceFooter =
         "Off keeps everything out of the system index. Titles and summaries shares each "
-        + "conversation's title, AI summary, tags and dates, note titles, and each day's recap. "
+        + "conversation's title, AI summary, tags, and dates, plus note titles and each day's "
+        + "recap. "
         + "Everything also shares transcripts and note bodies, so Spotlight and Siri can match "
         + "the words that were said. Changing this rewrites the index."
 }

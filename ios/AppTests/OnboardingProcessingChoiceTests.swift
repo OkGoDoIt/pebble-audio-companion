@@ -71,6 +71,22 @@ struct OnboardingProcessingChoiceTests {
         #expect(settings.remoteAiDestination == nil)
     }
 
+    /// Someone redoing onboarding with older audio in iCloud Drive: step 3's "On this phone"
+    /// card is not "Everything stays on this phone", and its dot is not the green one, exactly
+    /// as the Privacy screen counts iCloud Drive as a place (`PrivacyModel`).
+    @Test func onPhoneWithOlderAudioInICloudSaysWhereTheAudioGoes() {
+        let settings = makeSettings()
+        settings.coldStorageEnabled = true
+        let pending = settings.privacyStance(transcriptionMode: .localOnly, aiMode: .localOnly)
+        #expect(!pending.isFullyLocal)
+        #expect(pending.headline == "Older audio goes to your iCloud Drive")
+        #expect(!pending.summary.contains("any service"))
+        #expect(pending.qualifiers.contains { $0.contains("iCloud Drive") })
+        // The committed stance agrees with the pending one.
+        answer(.onPhone, settings: settings)
+        #expect(settings.privacyStance == pending)
+    }
+
     @Test func cloudSendsBothAndSaysSo() {
         let settings = makeSettings()
         answer(.cloud, settings: settings)

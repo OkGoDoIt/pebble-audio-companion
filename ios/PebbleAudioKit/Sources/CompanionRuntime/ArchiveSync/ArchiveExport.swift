@@ -14,8 +14,10 @@ import Transcription
 // `ArchiveTranscriptExportTests` without a database or a store.
 
 public enum ArchiveExport {
-    /// Bumped when the export's meaning changes, so every transcript is sent again.
-    public static let transcriptExportVersion = "transcript-export-1"
+    /// Bumped when the export's meaning changes, so every transcript is sent again (paced by
+    /// `ArchiveSyncService`). 2: words Soniox spaced apart no longer run together, and a name
+    /// reaches only the recording it was given in.
+    public static let transcriptExportVersion = "transcript-export-2"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
@@ -219,7 +221,13 @@ public enum ArchiveExport {
                 guard !text.isEmpty else { continue }
                 let wall = clock.wallRange(ofMediaStartMs: turn.startMs, endMs: turn.endMs)
                 let label = turn.speaker?.trimmingCharacters(in: .whitespaces)
-                let name = label.flatMap { speakerNames[$0] ?? speakerNames[speakerLabel($0)] }
+                // A provider labels each segment on its own, so a name is the one given to this
+                // label IN THIS SEGMENT (`SpeakerKey`); one given before names were scoped, in
+                // either form it was stored in, still covers the label wherever no segment name
+                // does.
+                let name = label.flatMap {
+                    SpeakerKey(segmentId: piece.member.segmentId, label: $0).name(in: speakerNames)
+                }
                 items.append(
                     .turn(
                         atMs: wall.startMs, endMs: wall.endMs,

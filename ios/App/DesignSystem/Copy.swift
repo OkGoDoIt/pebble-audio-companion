@@ -34,13 +34,12 @@ enum Copy {
         /// The remote AI provider (`OpenAiChatAiProvider`) — the only one the AI modes use.
         static let remoteAi = "OpenAI"
 
-        /// e.g. "Soniox and OpenAI". Duplicates collapse: one provider is one name.
+        /// e.g. "Soniox and OpenAI". Duplicates collapse: one provider is one name. A third
+        /// name gets the Oxford comma, through the one list helper (`Copy.list`).
         static func destinations(_ names: [String?]) -> String? {
-            let unique = names.compactMap { $0 }.reduce(into: [String]()) { list, name in
-                if !list.contains(name) { list.append(name) }
-            }
+            let unique = Copy.uniqueNames(names.compactMap { $0 })
             guard !unique.isEmpty else { return nil }
-            return unique.count == 1 ? unique[0] : unique.joined(separator: " and ")
+            return Copy.list(unique)
         }
 
         /// The Settings-root footer sentence. `transcription` is the cloud provider audio is
@@ -651,7 +650,7 @@ enum Copy {
         /// is behind and why.
         static let summaryComingLine = "AI is working through a backlog."
         static let noSummary = "No summary for this one"
-        static let noSummaryLine = "AI is turned off, so titles, tags and summaries stay blank."
+        static let noSummaryLine = "AI is turned off, so titles, tags, and summaries stay blank."
         static let summaryGaveUp = "Summary didn’t generate"
         static let summaryGaveUpLine = "AI tried a few times and stopped. The transcript is safe."
         /// Library row meta, appended after the duration: a row without a title says why.
@@ -975,7 +974,7 @@ enum Copy {
             static func cloudError(_ message: String) -> String { "iCloud reported a problem: \(message)" }
             static let cloudFooter =
                 "Fully transcribed audio older than this moves to your iCloud Drive and is fetched "
-                + "when you play it. Transcripts, summaries and notes stay on this phone. Moving "
+                + "when you play it. Transcripts, summaries, and notes stay on this phone. Moving "
                 + "deletes nothing. Keep audio still deletes, from iCloud too, so audio has to move "
                 + "before that age."
             /// The age picker's footer. `limited` when Keep audio hides some of the ages.

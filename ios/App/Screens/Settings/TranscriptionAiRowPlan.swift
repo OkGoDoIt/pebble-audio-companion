@@ -160,8 +160,8 @@ struct TranscriptionAiRowPlan: Equatable {
     /// where that key is verified.
     var showsTestConnection: Bool { transcriptionMode.usesCloudProvider }
 
-    /// Nothing at all reaches a service. The same condition `Copy.Privacy.Stance.isFullyLocal`
-    /// reports on Storage & Privacy — read the stance for the wording, this is only the switch.
+    /// No transcription or AI service receives anything. `Copy.Privacy.Stance.isFullyLocal` is
+    /// this plus iCloud Drive being off, which is not this screen's setting.
     /// Apple Private Cloud Compute holds no key, so it is not in `providersInUse`, but text does
     /// leave the phone for it: never "fully local".
     var isFullyLocal: Bool { providersInUse.isEmpty && !usesApplePrivateCloud }

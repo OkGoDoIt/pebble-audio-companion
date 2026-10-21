@@ -110,6 +110,54 @@ struct ArchiveTranscriptExportTests {
         #expect(export.provider == "soniox" && export.model == "stt-async-v5")
     }
 
+    /// Labels are per recording: "1" in the second recording is not "1" in the first. A name
+    /// given in the second names only its own "1"; one given before names were scoped (the bare
+    /// label) still covers the label in both.
+    @Test func aSpeakersNameReachesOnlyTheRecordingItWasGivenIn() throws {
+        let pieces = try Self.pieces()
+        let gaps = ArchiveExport.gaps(pieces, window: Self.window)
+        let secondStarts: Int64 = 1_791_884_515_121
+        func named(_ names: [String: String]) -> [(inSecond: Bool, speaker: String?, name: String?)] {
+            ArchiveExport.transcript(
+                conversationId: Self.conversationId, pieces: pieces, gaps: gaps,
+                speakerNames: names, sourceHash: "h"
+            ).items.compactMap { item in
+                guard case .turn(let at, _, let speaker, let name, _, _) = item else { return nil }
+                return (at >= secondStarts, speaker, name)
+            }
+        }
+        let scoped = named([SpeakerKey(segmentId: Self.second, label: "1").stored: "Sam"])
+        let ones = scoped.filter { $0.speaker == "1" }
+        #expect(ones.contains { $0.inSecond } && ones.contains { !$0.inSecond })
+        #expect(ones.allSatisfy { $0.name == ($0.inSecond ? "Sam" : nil) })
+
+        for legacy in ["1", "Speaker 1"] {
+            #expect(named([legacy: "Sam"]).filter { $0.speaker == "1" }.allSatisfy { $0.name == "Sam" })
+        }
+    }
+
+    /// The conversation's `people` stay the contract's shape: a plain label, never the stored
+    /// `seg-…#1` key, and one entry per person however many recordings they were named in.
+    @Test func peopleAreOnePerPersonUnderAPlainLabel() {
+        typealias Speaker = ArchiveConversationPayload.Speaker
+        let first = SpeakerKey(segmentId: Self.first, label: "1").stored
+        let secondOne = SpeakerKey(segmentId: Self.second, label: "1").stored
+        let secondThree = SpeakerKey(segmentId: Self.second, label: "3").stored
+        // As `conversationRecord` reads them: ordered by stored label, an unscoped row first.
+        let stored = [
+            Speaker(label: "Speaker 2", personId: "p-dana", name: "Dana"),
+            Speaker(label: first, personId: "p-sam", name: "Sam"),
+            Speaker(label: secondOne, personId: "p-alex", name: "Alex"),
+            Speaker(label: secondThree, personId: "p-sam", name: "Sam"),
+        ]
+        #expect(
+            ArchivePayloadBuilder.people(stored) == [
+                Speaker(label: "Speaker 2", personId: "p-dana", name: "Dana"),
+                Speaker(label: "1", personId: "p-sam", name: "Sam"),
+                Speaker(label: "1", personId: "p-alex", name: "Alex"),
+            ])
+    }
+
     @Test func theJSONIsTheContractsShape() throws {
         let pieces = try Self.pieces()
         let export = ArchiveExport.transcript(

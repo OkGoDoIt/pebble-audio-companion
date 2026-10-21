@@ -191,41 +191,61 @@ public struct ArchiveScopeGate: Sendable {
     public func contains(
         _ kind: ArchiveEntityKind, id: String, in database: AppDatabase
     ) async throws -> Bool {
+        guard !holdsEverything else { return true }
+        return holds(try await Self.date(of: kind, id: id, in: database))
+    }
+
+    /// Whether an item dated `date` is inside: an instant at or after the cutoff, a day on or
+    /// after the cutoff's day. Something undated always is.
+    public func holds(_ date: ArchiveItemDate) -> Bool {
         guard let cutoffMs, let cutoffDay else { return true }
-        switch kind {
-        case .person:
-            return true
-        case .recap, .coverage:
-            return id >= cutoffDay
-        case .brief:
-            return ArchiveOutbox.lastDay(ofPeriod: id).map { $0 >= cutoffDay } ?? true
-        case .conversation, .transcript:
-            let start = try await database.reader.read { d in
-                try Int64.fetchOne(
-                    d, sql: "SELECT startMs FROM conversations WHERE id = ?", arguments: [id])
-            }
-            return start.map { $0 >= cutoffMs } ?? true
-        case .note:
-            let at = try await database.reader.read { d in
-                try Int64.fetchOne(
-                    d,
-                    sql: """
-                        SELECT COALESCE(c.startMs, n.createdAtMs) FROM notes n
-                        LEFT JOIN conversations c ON c.id = n.conversationId WHERE n.id = ?
-                        """,
-                    arguments: [id])
-            }
-            return at.map { $0 >= cutoffMs } ?? true
-        case .followUp:
-            let at = try await database.reader.read { d in
-                try Int64.fetchOne(
-                    d,
-                    sql: "SELECT COALESCE(sourceWallStartMs, createdAtMs) FROM follow_ups WHERE id = ?",
-                    arguments: [id])
-            }
-            return at.map { $0 >= cutoffMs } ?? true
+        switch date {
+        case .instant(let ms): return ms >= cutoffMs
+        case .day(let day): return day >= cutoffDay
+        case .undated: return true
         }
     }
+
+    /// What `(kind, id)` is dated by (the rule in this type's comment). The one statement of it:
+    /// the phone's sync and the backup importer (`ios/Tools/ArchiveImport`) both ask here.
+    public static func date(
+        of kind: ArchiveEntityKind, id: String, in database: AppDatabase
+    ) async throws -> ArchiveItemDate {
+        func at(_ sql: String) async throws -> ArchiveItemDate {
+            let ms = try await database.reader.read { d in
+                try Int64.fetchOne(d, sql: sql, arguments: [id])
+            }
+            return ms.map { .instant($0) } ?? .undated
+        }
+        switch kind {
+        case .person:
+            return .undated
+        case .recap, .coverage:
+            return .day(id)
+        case .brief:
+            return ArchiveOutbox.lastDay(ofPeriod: id).map { .day($0) } ?? .undated
+        case .conversation, .transcript:
+            return try await at("SELECT startMs FROM conversations WHERE id = ?")
+        case .note:
+            return try await at(
+                """
+                SELECT COALESCE(c.startMs, n.createdAtMs) FROM notes n
+                LEFT JOIN conversations c ON c.id = n.conversationId WHERE n.id = ?
+                """)
+        case .followUp:
+            return try await at(
+                "SELECT COALESCE(sourceWallStartMs, createdAtMs) FROM follow_ups WHERE id = ?")
+        }
+    }
+}
+
+/// What an outbox item is dated by, for the sharing scope (`ArchiveScopeGate.date(of:id:in:)`).
+public enum ArchiveItemDate: Equatable, Sendable {
+    case instant(Int64)
+    /// A logical day key (`recap`, `coverage`, a brief's last day).
+    case day(String)
+    /// Never dated (a person), or its entity is gone (left to the builder).
+    case undated
 }
 
 // MARK: - What the phone can say about a scope before choosing it

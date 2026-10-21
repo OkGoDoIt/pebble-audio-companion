@@ -108,6 +108,8 @@ targets:
       # widget can never drift into its own colors or its own vocabulary (U9).
       - path: App/DesignSystem/Tokens.swift
       - path: App/DesignSystem/Copy.swift
+      # The one list helper `Copy.swift` joins its lists through (Oxford comma).
+      - path: App/DesignSystem/Copy+Lists.swift
       - path: App/Router.swift
       # The same intent types Siri and the app use — Control Center must not have its own.
       - path: App/Intents/CaptureIntents.swift

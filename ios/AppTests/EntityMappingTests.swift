@@ -147,9 +147,9 @@ struct EntityMappingTests {
                 == "Catching up: 1 recording to transcribe.")
         #expect(
             ProcessNowIntent.dialog(for: PipelineBacklog(queued: 3, awaitingEnrichment: 2))
-                == "Catching up: 3 recordings to transcribe and 2 conversations to summarise.")
+                == "Catching up: 3 recordings to transcribe and 2 conversations to summarize.")
         #expect(
             ProcessNowIntent.dialog(for: PipelineBacklog(queued: 0, awaitingEnrichment: 1))
-                == "Catching up: 1 conversation to summarise.")
+                == "Catching up: 1 conversation to summarize.")
     }
 }

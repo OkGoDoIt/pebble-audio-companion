@@ -107,6 +107,31 @@ public struct ArchivePayloadBuilder: Sendable {
         return ConversationSourceKey.describes(stored: sent, current: current)
     }
 
+    /// The conversation's `people` for the wire: one entry per person, under the plain label
+    /// they first speak as.
+    ///
+    /// Names are filed per recording (`SpeakerKey`), so one person can hold a different label
+    /// in each recording of a conversation, and one label can be a different person in each.
+    /// The stored keys (`seg-…#1`) are not labels the transcript uses, and one entry per
+    /// (recording, label) would list a person once per recording. Who said what is in the
+    /// transcript's turns, which carry their own names; this list says who took part.
+    static func people(
+        _ speakers: [ArchiveConversationPayload.Speaker]
+    ) -> [ArchiveConversationPayload.Speaker] {
+        var seen = Set<String>()
+        var out: [ArchiveConversationPayload.Speaker] = []
+        // Stored keys sort by recording (its id starts with when it arrived), and rows written
+        // before scoping sort ahead of them.
+        for speaker in speakers {
+            let person = speaker.personId.map { "id:\($0)" } ?? "name:\(speaker.name ?? speaker.label)"
+            guard seen.insert(person).inserted else { continue }
+            var plain = speaker
+            plain.label = SpeakerKey(stored: speaker.label)?.label ?? speaker.label
+            out.append(plain)
+        }
+        return out
+    }
+
     // MARK: - Conversations
 
     struct ConversationRecord {
@@ -255,7 +280,7 @@ public struct ArchivePayloadBuilder: Sendable {
                     endMediaMs: piece.member.endMediaMs, startedAt: extent.lowerBound,
                     endedAt: extent.upperBound)
             },
-            people: record.speakers, gaps: gaps)
+            people: Self.people(record.speakers), gaps: gaps)
         let data = try Self.encode(payload)
         let hash = Self.hash(data)
         if hash == row.sentHash { return .unchanged(hash: hash, pieceKey: key) }
