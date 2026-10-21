@@ -326,6 +326,7 @@ public actor MusePushToTalk: MuseWatchSide {
         }
         // Ready by the release: tokens, a VM and a link take a second or two.
         current.opening = Task { try await self.readyConversation() }
+        Task { await tools.questionBegan() }
     }
 
     private func cancel(_ event: PttEvent) {

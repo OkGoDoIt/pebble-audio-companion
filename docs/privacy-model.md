@@ -74,8 +74,9 @@ muse.ai/privacy; nothing has run on a device yet):
 - **Data tools (D7a, D7c-D7e; decided by Roger 2026-10-21, being built on `muse-link-app`):** each
   source is Ask first (the default once paired), Allowed, or Off. Off means the gadget never
   registers that tool, so Muse does not know it exists. Under Ask first, Muse's first call puts a
-  prompt on the watch (see section 4); Allow makes the source Allowed, Don't Allow makes it Off,
-  Not Now refuses only that call. Nothing is read or sent except while a question asked on the
+  prompt on the watch (see section 4); Allow Once (the default) lets that question's reads through
+  and asks again on the next question, Always Allow makes the source Allowed, Never Allow makes it
+  Off, and Not Now refuses only that call (Roger, 2026-10-21). Nothing is read or sent except while a question asked on the
   watch is open. Health comes from the watch's own activity data, not from Apple Health.
   Calendar and Reminders also need iOS's own permission. The app never asks for it up front
   (Roger, 2026-10-21): only when a Muse question needs it, or when the person sets Calendar or
@@ -172,8 +173,8 @@ button that says what it starts ("Link This Phone", "Pair with Muse"). Choices i
 Ask first once paired: nothing is read until the person allows it on the watch, the first time
 Muse asks. The watch prompt, word for word: "Let Muse read your <calendar | reminders |
 follow-ups | health data>? What it reads goes to Meta." For conversations: "Let Muse read your
-conversations? What it reads, including what others said, goes to Meta." Buttons: Allow, Not Now,
-Don't Allow.
+conversations? What it reads, including what others said, goes to Meta." Buttons: Allow Once
+(highlighted), Always Allow, Not Now, Never Allow.
 
 When the person allows Calendar or Reminders on the watch but iOS has not given the app access
 yet, Muse's call answers that access is still needed, and the watch shows, word for word: "Open
@@ -194,7 +195,7 @@ a call does it end as "not answered" (Muse ends a data call at about two minutes
 (`dataCallLimitSeconds`) and a held call ends at 110 s, `MuseTools.holdLimitSeconds`; the question's answer deadline is 240 s, so a
 held call never closes the question first). Every ending tells Muse plainly what happened, so it
 neither retries what was refused nor gives up on what is only pending:
-- Don't Allow on the watch, or the source is Off: denied. "The person does not allow Muse to
+- Never Allow on the watch, or the source is Off: denied. "The person does not allow Muse to
   read their <source>. Do not ask for it again." (An Off source is also never registered.)
 - Not Now on the watch: declined for now. "The person said not now. Do not ask for their
   <source> again in this conversation."

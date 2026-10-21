@@ -480,6 +480,83 @@ struct MuseConversationTests {
     }
 }
 
+
+/// What the watch ends up holding after a streamed answer, rebuilt from the updates the way the
+/// firmware applies them (assistant_view.c): Restart replaces, Answer appends until Done.
+struct MuseStreamedAnswerTests {
+    static func watchText(_ updates: [AssistantUpdate], turn: Int) -> String {
+        var text: [UInt8] = []
+        var done = false
+        for update in updates where update.turn == turn {
+            switch update.kind {
+            case .heard?: if done { text = []; done = false }
+            case .answerRestart?: text = update.text
+            case .answer?: if !done { text += update.text }
+            case .done?: done = true
+            default: break
+            }
+        }
+        return String(decoding: text, as: UTF8.self)
+    }
+
+    /// Roger's 12:01 answer, as Muse wrote it (Markdown), streamed a few words at a time.
+    static let raw = """
+        Done — clean overview, last 7 days, Pebble data only.
+
+        **Summary (Oct 15–21)**
+        - **Steps:** 83,259 total, 11,894/day average (12,715/day for the 6 full days)
+        - **Distance:** 76.5 km total (47.6 miles), 10.9 km/day average (11.7 km/day for full days)
+        - **Daily:** Thu 10,133 steps / 9.34 km · Fri 19,598 / 18.34 km · Sat 12,713 / 11.64 km
+        - **Heart rate: no data** — the watch returned “no heart_rate data” for both 7-day and 1-day reads, so there are no heart rate values to report
+
+        The detailed report is attached below.
+        """
+
+    @Test(arguments: [3, 7, 13, 40])
+    func aLongStreamedAnswerArrivesWhole(step: Int) async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
+            | ProtocolConstants.capabilityFollowUp
+        var script: [MuseQuestionEvent] = [.heard("clean overview only")]
+        var end = Self.raw.startIndex
+        while end < Self.raw.endIndex {
+            end = Self.raw.index(end, offsetBy: step, limitedBy: Self.raw.endIndex) ?? Self.raw.endIndex
+            script.append(.answer(String(Self.raw[..<end])))
+        }
+        fx.muse.script = script
+        await fx.start()
+        try fx.ask(turn: 2, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+        let expected = WatchAnswerText.render(Self.raw, final: true)
+        #expect(Self.watchText(fx.link.updates(), turn: 2) == expected)
+    }
+
+    @Test(arguments: [3, 13])
+    func aLongAnswerToAPickArrivesWhole(step: Int) async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
+            | ProtocolConstants.capabilityFollowUp
+        fx.muse.script = [
+            .heard("walking and heart rate"),
+            .answer("Which format?\n\nA\nB"),
+            .choice(MuseChoice(question: "Which format?", options: [MuseWidget.Option("Full report"), MuseWidget.Option("Clean overview only")])),
+        ]
+        var reply: [MuseQuestionEvent] = [.reaction("👍")]
+        var end = Self.raw.startIndex
+        while end < Self.raw.endIndex {
+            end = Self.raw.index(end, offsetBy: step, limitedBy: Self.raw.endIndex) ?? Self.raw.endIndex
+            reply.append(.answer(String(Self.raw[..<end])))
+        }
+        fx.muse.replyScript = reply
+        await fx.start()
+        try fx.ask(turn: 2, seconds: 1)
+        _ = try #require(await fx.answerNextAction(status: .done, value: 1))
+        #expect(await fx.waitUntil { fx.link.updates().filter { $0.kind == .done }.count == 2 })
+        let expected = WatchAnswerText.render(Self.raw, final: true)
+        #expect(Self.watchText(fx.link.updates(), turn: 2) == expected)
+    }
+}
+
 // MARK: - Fixture
 
 private final class PushToTalkFixture: @unchecked Sendable {
@@ -775,18 +852,65 @@ private final class FakeData: MuseDataProvider, @unchecked Sendable {
 
 /// Muse reaching the wearer's data: Ask first, with the watch asking.
 struct MuseToolsTests {
-    @Test func theFirstUseIsAskedOnTheWatchAndAllowIsKept() async throws {
+    @Test func allowOnceLetsThisQuestionReadAndTheNextOneAsksAgain() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        let reply = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "steps"]) }
+        _ = try #require(await fx.answerNextAction(status: .done, value: 0))
+        // The health read itself, on the watch.
+        _ = try #require(await fx.answerNextAction(status: .done, text: "8100"))
+        #expect((await reply.value)["ok"]?.bool == true)
+        #expect(fx.preferences.current.value.access(.health) == .ask)
+
+        // Another read for the same answer goes straight through.
+        let before = fx.link.actions().count
+        let again = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "distance"]) }
+        _ = try #require(await fx.answerNextAction(status: .done, text: "6200"))
+        #expect((await again.value)["ok"]?.bool == true)
+        #expect(fx.link.actions().count == before + 1)
+
+        // A new question asks again.
+        fx.link.push(.pttEvent(PttEvent(turn: 9, eventRaw: PttEventKind.start.rawValue, detail: PttTrigger.inApp.rawValue, maxSeconds: 15)))
+        try await Task.sleep(for: .milliseconds(50))
+        let next = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "steps"]) }
+        let prompt = try #require(await fx.answerNextAction(status: .done, value: 2))
+        #expect(WatchActionRequest.parse(prompt.payload).map { if case .choose = $0 { true } else { false } } == true)
+        #expect((await next.value)["ok"]?.bool == false)
+    }
+
+    @Test func heartRateComesByDayWithTheLatestReading() async throws {
+        let fx = PushToTalkFixture()
+        fx.preferences.update { $0.dataAccess[.health] = .allowed }
+        await fx.start()
+        let reply = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "heart_rate", "days": 2]) }
+        let latest = try #require(await fx.answerNextAction(status: .done, text: "72,300"))
+        #expect(WatchActionRequest.parse(latest.payload) == .health(.heartRate, days: 1))
+        let daily = try #require(await fx.answerNextAction(status: .done, text: "70/55/140,-1"))
+        #expect(WatchActionRequest.parse(daily.payload) == .health(.heartRateDaily, days: 2))
+        let payload = try #require((await reply.value)["payload"])
+        #expect(payload["latest"]?["bpm"]?.number == 72)
+        #expect(payload["days"]?.array?.first?["average_bpm"]?.number == 70)
+        #expect(payload["days"]?.array?.first?["highest_bpm"]?.number == 140)
+        #expect(payload["days"]?.array?.last?["average_bpm"] == .null)
+
+        // Monitoring off is said as such, not as "no data".
+        let off = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "heart_rate"]) }
+        _ = try #require(await fx.answerNextAction(status: .failed, text: WatchActionRequest.heartRateOff))
+        #expect((await off.value)["error"]?.string?.hasPrefix("heart_rate_off:") == true)
+    }
+
+    @Test func theFirstUseIsAskedOnTheWatchAndAlwaysAllowIsKept() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
         #expect(fx.preferences.current.value.access(.followUps) == .ask)
         let reply = Task { await fx.service.runCommand(MuseTools.followUpsCommand, ["action": "list"]) }
-        let prompt = try #require(await fx.answerNextAction(status: .done, value: 0))
+        let prompt = try #require(await fx.answerNextAction(status: .done, value: 1))
         guard case .choose(let question, let options, _)? = WatchActionRequest.parse(prompt.payload) else {
             Issue.record("the prompt wasn't a choice")
             return
         }
         #expect(question == "Let Muse read your follow-ups? What it reads goes to Meta.")
-        #expect(options == ["Allow", "Not Now", "Don't Allow"])
+        #expect(options == ["Allow Once", "Always Allow", "Not Now", "Never Allow"])
         let result = await reply.value
         #expect(result["payload"]?["follow_ups"]?.array?.first?["text"]?.string == "Send Sam the deck")
         #expect(fx.preferences.current.value.access(.followUps) == .allowed)
@@ -803,7 +927,7 @@ struct MuseToolsTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let reply = Task { await fx.service.runCommand(MuseTools.conversationsCommand, ["action": "search", "query": "budget"]) }
-        let prompt = try #require(await fx.answerNextAction(status: .done, value: 1))
+        let prompt = try #require(await fx.answerNextAction(status: .done, value: 2))
         if case .choose(let question, _, _)? = WatchActionRequest.parse(prompt.payload) {
             #expect(question == "Let Muse read your conversations? What it reads, including what others said, goes to Meta.")
         }
@@ -814,11 +938,11 @@ struct MuseToolsTests {
         #expect(fx.preferences.current.value.access(.conversations) == .ask)
     }
 
-    @Test func dontAllowTurnsTheSourceOffAndHidesIt() async throws {
+    @Test func neverAllowTurnsTheSourceOffAndHidesIt() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
         let reply = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "steps"]) }
-        _ = try #require(await fx.answerNextAction(status: .done, value: 2))
+        _ = try #require(await fx.answerNextAction(status: .done, value: 3))
         #expect((await reply.value)["error"]?.string == "The person does not allow Muse to read their health data. Do not ask for it again.")
         #expect(fx.preferences.current.value.access(.health) == .off)
         let offered = MuseTools.commands(for: fx.preferences.current.value, hasData: true)
@@ -841,7 +965,7 @@ struct MuseToolsTests {
         await fx.start()
         let started = ContinuousClock.now
         let reply = Task { await fx.service.runCommand(MuseTools.calendarCommand, ["action": "list"]) }
-        _ = try #require(await fx.answerNextAction(status: .done, value: 0))
+        _ = try #require(await fx.answerNextAction(status: .done, value: 1))
         // The watch is told what to do on the phone, in the model's words.
         let notice = try #require(await fx.answerNextAction(status: .done))
         #expect(WatchActionRequest.parse(notice.payload) == .notice("Open Pebble Audio on your iPhone to give it access to your calendar."))

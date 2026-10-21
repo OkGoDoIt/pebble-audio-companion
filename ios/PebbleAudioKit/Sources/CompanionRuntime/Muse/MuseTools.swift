@@ -66,6 +66,9 @@ actor MuseTools {
     private var prompting = false
     private let clock: @Sendable () -> Date
     private let holdLimit: Duration
+    /// Sources allowed once, for the question being answered: Muse often reads a source several
+    /// times for one answer (steps, then distance, then heart rate).
+    private var allowedOnce: [MuseSource: Date] = [:]
     /// Calls that change something, and how they went, for a repeat that comes soon after.
     private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
     /// A call that changes something, repeated within this, gets the first one's result: Muse
@@ -245,6 +248,11 @@ actor MuseTools {
 
     // MARK: - Running one
 
+    /// A new question from the watch: what was allowed once is asked about again.
+    func questionBegan() {
+        allowedOnce.removeAll()
+    }
+
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
         let key = Self.changeKey(command, params)
         let now = clock()
@@ -419,7 +427,11 @@ actor MuseTools {
         }
     }
 
-    static let consentOptions = ["Allow", "Not Now", "Don't Allow"]
+    /// Allow Once first, and highlighted: it lets this question's reads through and asks again
+    /// next time (Roger, 2026-10-21).
+    static let consentOptions = ["Allow Once", "Always Allow", "Not Now", "Never Allow"]
+    /// How long an Allow Once lasts at most, if no new question ends it first.
+    static let allowedOnceFor: TimeInterval = 10 * 60
 
     /// How a data call ended without reading anything. Each tells Muse plainly what happened, so
     /// it neither retries a refusal nor gives up on something still pending
@@ -457,6 +469,7 @@ actor MuseTools {
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
+        if let since = allowedOnce[source], clock().timeIntervalSince(since) < Self.allowedOnceFor { return nil }
         // One question on the watch at a time; a second source waits its turn.
         while prompting {
             guard ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
@@ -468,6 +481,7 @@ actor MuseTools {
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
+        if let since = allowedOnce[source], clock().timeIntervalSince(since) < Self.allowedOnceFor { return nil }
         prompting = true
         defer { prompting = false }
         let left = Int((deadline - ContinuousClock.now).components.seconds)
@@ -481,10 +495,14 @@ actor MuseTools {
             wait: .seconds(shown + 8))
         switch (result?.status, result?.value) {
         case (.done?, 0?):
-            preferences.update { $0.dataAccess[source] = .allowed }
-            log("\(source.rawValue): allowed on the watch")
+            allowedOnce[source] = clock()
+            log("\(source.rawValue): allowed once on the watch")
             return nil
-        case (.done?, 2?):
+        case (.done?, 1?):
+            preferences.update { $0.dataAccess[source] = .allowed }
+            log("\(source.rawValue): always allowed on the watch")
+            return nil
+        case (.done?, 3?):
             preferences.update { $0.dataAccess[source] = .off }
             log("\(source.rawValue): turned off on the watch")
             return Self.reply(.notAllowed, source)
@@ -504,20 +522,12 @@ actor MuseTools {
             return Self.error("metric must be steps, distance, active_minutes, calories, sleep or heart_rate")
         }
         let days = min(max(Self.int(params["days"]) ?? 1, 1), ProtocolConstants.watchActionHealthMaxDays)
+        if metric == .heartRate { return await heartRate(days: days, watch: watch) }
         let result = await watch.runWatchAction(.health(metric, days: days), wait: .seconds(10))
         guard result?.status == .done, let text = result?.textString else {
             return Self.error("The watch has no \(params["metric"]?.string ?? "health") data.")
         }
         let numbers = text.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? -1 }
-        if metric == .heartRate {
-            return [
-                "ok": true,
-                "payload": [
-                    "heart_rate_bpm": .number(Double(numbers.first ?? -1)),
-                    "measured_seconds_ago": .number(Double(numbers.count > 1 ? numbers[1] : -1)),
-                ],
-            ]
-        }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: clock())
         let formatter = Self.dayFormatter
@@ -528,6 +538,50 @@ actor MuseTools {
             return .object(entry)
         }
         return ["ok": true, "payload": ["days": .array(daysJSON)]]
+    }
+
+    /// Heart rate: each day's average, lowest and highest from the watch's minute history, and
+    /// the latest reading. Background heart rate off is said plainly, so Muse can say where to
+    /// turn it on rather than that there is no data.
+    private func heartRate(days: Int, watch: any MuseWatchSide) async -> MuseJSON {
+        let latest = await watch.runWatchAction(.health(.heartRate, days: 1), wait: .seconds(10))
+        if latest?.status == .failed, latest?.textString == WatchActionRequest.heartRateOff {
+            return Self.error(
+                "heart_rate_off: Heart rate monitoring is turned off on the watch. The person can turn it on in the watch's Health settings.")
+        }
+        var payload: [String: MuseJSON] = [:]
+        if latest?.status == .done, let text = latest?.textString {
+            let numbers = text.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? -1 }
+            if let bpm = numbers.first, bpm > 0 {
+                payload["latest"] = [
+                    "bpm": .number(Double(bpm)),
+                    "measured_seconds_ago": numbers.count > 1 && numbers[1] >= 0 ? .number(Double(numbers[1])) : .null,
+                ]
+            }
+        }
+        // By day: a few seconds, as the watch reads its minute history a slice at a time.
+        let daily = await watch.runWatchAction(.health(.heartRateDaily, days: days), wait: .seconds(30))
+        if daily?.status == .done, let text = daily?.textString {
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: clock())
+            payload["days"] = .array(text.split(separator: ",").enumerated().map { index, field in
+                let day = calendar.date(byAdding: .day, value: -index, to: today) ?? today
+                var entry: [String: MuseJSON] = ["date": .string(Self.dayFormatter.string(from: day))]
+                let parts = field.split(separator: "/").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                if parts.count == 3, parts[0] > 0 {
+                    entry["average_bpm"] = .number(Double(parts[0]))
+                    entry["lowest_bpm"] = .number(Double(parts[1]))
+                    entry["highest_bpm"] = .number(Double(parts[2]))
+                } else {
+                    entry["average_bpm"] = .null
+                }
+                return .object(entry)
+            })
+        }
+        guard !payload.isEmpty else {
+            return Self.error("no_heart_rate_data: The watch has no heart rate readings for that time.")
+        }
+        return ["ok": true, "payload": .object(payload)]
     }
 
     private func calendar(_ params: MuseJSON) -> MuseJSON {

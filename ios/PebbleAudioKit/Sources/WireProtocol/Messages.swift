@@ -1115,7 +1115,13 @@ public enum WatchActionRequest: Equatable, Sendable {
         case sleepSeconds = 5
         /// The latest reading: the result is "bpm,age_seconds".
         case heartRate = 6
+        /// Each day's heart rate from the watch's minute history, today first:
+        /// "average/lowest/highest" or "-1" (a watch that keeps the conversation, bit5).
+        case heartRateDaily = 7
     }
+
+    /// The result text of a heart rate read that failed because background heart rate is off.
+    public static let heartRateOff = "off"
 
     public enum Invalid: Error, Equatable, Sendable {
         case outOfRange(String)
