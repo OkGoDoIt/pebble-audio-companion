@@ -219,7 +219,13 @@ public enum ArchiveExport {
                 guard !text.isEmpty else { continue }
                 let wall = clock.wallRange(ofMediaStartMs: turn.startMs, endMs: turn.endMs)
                 let label = turn.speaker?.trimmingCharacters(in: .whitespaces)
-                let name = label.flatMap { speakerNames[$0] ?? speakerNames[speakerLabel($0)] }
+                // A provider labels each segment on its own, so a name is the one given to this
+                // label IN THIS SEGMENT (`SpeakerKey`); one given before names were scoped, in
+                // either form it was stored in, still covers the label wherever no segment name
+                // does.
+                let name = label.flatMap {
+                    SpeakerKey(segmentId: piece.member.segmentId, label: $0).name(in: speakerNames)
+                }
                 items.append(
                     .turn(
                         atMs: wall.startMs, endMs: wall.endMs,
