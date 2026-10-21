@@ -1,0 +1,28 @@
+@page "/connect"
+@model PebbleAudio.Server.Pages.View.ConnectHubModel
+@{
+	Layout = "_ServerLayout";
+	ViewData["Title"] = "Connect an app";
+	ViewData["Section"] = "connect";
+}
+<div class="page">
+	<h1 class="screen-title">Connect an app</h1>
+	<p class="lede">Connect each one in its own app. It shows up here once your server sees it.</p>
+	<partial name="_Address" model="(Model.Host, Model.McpUrl)" />
+	<ul class="list-card" aria-label="Assistants">
+		@foreach (var row in Model.Rows)
+		{
+			<li>
+				<a class="row tall" href="@row.Url">
+					@row.Tile
+					<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.Line</span></span>
+					@if (row.Connected)
+					{
+						<span class="check-badge" role="img" aria-label="Connected">@SiteIcons.Check</span>
+					}
+					@SiteIcons.Chevron
+				</a>
+			</li>
+		}
+	</ul>
+</div>

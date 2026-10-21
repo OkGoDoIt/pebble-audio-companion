@@ -47,12 +47,15 @@ Built:
 - MCP Events (`Events/`): `events/list`, `events/subscribe` (verified with a signed challenge), and
   `events/unsubscribe`, with `day_recap.ready` and `followup.created` delivered as Standard Webhooks from the job
   queue. Other modules call `IEventPublisher`.
-- The admin area at `/admin`, passkey-only, one user: status, linked phones, connected apps and event
-  subscriptions, tokens, passkeys, and settings.
+- The site's own pages, passkey-only, one user, in one layout with the round-3 server design: Who can read
+  (`/access`: connected assistants, access keys, and event subscriptions), Connect an app (`/connect` and
+  `/connect/{chatgpt,claude,codex,claude-code,cursor,muse,other}`), Link a phone (`/phones`), and Settings
+  (`/settings`: sync status, passkeys, and the typed limits), beside the viewer at `/`. The old `/admin/*`
+  addresses answer 307 to their new pages (`Pages/OldAdminUrls.cs`).
 - The Postgres-backed job queue (`Jobs/`) with a `noop` handler and `clip.transcode`.
-- Typed settings with defaults, editable at `/admin/settings` (`Settings/`).
+- Typed settings with defaults, editable at `/settings` (`Settings/`).
 - The sync half (`Sync/`, the whole of [`docs/sync-protocol.md`](docs/sync-protocol.md)): linking a phone at
-  `/admin/phones` (one-time code and QR code), device tokens (`pad_…`, their own scheme, `/link` and `/sync/*`
+  `/phones` (one-time code and QR code), device tokens (`pad_…`, their own scheme, `/link` and `/sync/*`
   only), `PUT /sync/batch`, the request channel and clip uploads, the ffmpeg transcode to m4a, signed clip
   links at `/clips/{id}.m4a`, wipe, status with the assistants that have access, and the phone's preferences.
   Other modules reach the phone through `PhoneRequestService` (`RequestClipAsync`, `CreateFollowUpAsync`,
@@ -88,10 +91,10 @@ server/
 │   ├── Events/                    MCP Events: events/* methods, webhook signing and delivery
 │   ├── Jobs/                      IJobQueue, JobRunner, JobWorker, handlers
 │   ├── Mcp/                       server instructions, tools, the AI-read log
-│   ├── Pages/Admin/               Razor Pages for the admin area
+│   ├── Pages/Admin/               Razor Pages for Who can read, Link a phone, Settings, and signing in
 │   ├── Settings/                  ArchiveSettings and SettingsService
 │   ├── Sync/                      linking, device tokens, batches, requests, clips, wipe, status
-│   ├── wwwroot/                   site.css, passkeys.js, admin.js (plain ES modules, no bundler)
+│   ├── wwwroot/                   tokens.css, site.css, server.css, site.js, passkeys.js (plain ES modules, no bundler)
 │   └── Program.cs
 └── tests/PebbleAudio.Server.Tests/
 ```
@@ -115,16 +118,16 @@ It listens on `http://localhost:5090` and applies migrations on startup in Devel
 `Host=localhost;Database=pebbleaudio;Username=roger`; change the user name if yours differs).
 
 - `GET /healthz` answers `Healthy` when Postgres answers.
-- `/admin` sends you to `/admin/setup` until the first passkey exists. The log prints a setup code at every
+- `/` sends you to `/setup` until the first passkey exists. The log prints a setup code at every
   start while none does:
 
   ```text
   warn: PebbleAudio.Server.Auth.SetupAnnouncer[0]
-        No admin passkey exists yet. Open http://localhost:5090/admin/setup and enter the setup code K7QM-3XWD.
+        No admin passkey exists yet. Open http://localhost:5090/setup and enter the setup code K7QM-3XWD.
   ```
 
-  `PebbleAudio__SetupCode` sets a fixed code as well. After setup, `/admin/setup` answers 404 and the admin
-  area signs in with that passkey only. More passkeys can be added at `/admin/passkeys`.
+  `PebbleAudio__SetupCode` sets a fixed code as well. After setup, `/setup` answers 404 and the site signs in
+  with that passkey only. More passkeys can be added in Settings (`/settings#passkeys`).
 
 To start over locally: `dropdb pebbleaudio && createdb pebbleaudio`.
 
@@ -133,11 +136,11 @@ To start over locally: `dropdb pebbleaudio && createdb pebbleaudio`.
 ChatGPT, Claude, and Claude Code sign in with OAuth: add `https://pebbleaudio.okgodoit.com/mcp` as a custom
 connector (ChatGPT: chatgpt.com/plugins, **+**, Add custom MCP server, Authentication OAuth; Claude: Customize,
 Connectors; Claude Code: `claude mcp add --transport http pebble-audio https://pebbleaudio.okgodoit.com/mcp`, then
-`/mcp`). The app opens the consent page; sign in with the admin passkey and allow it. Connected apps are listed,
-and disconnected, at `/admin/apps`.
+`/mcp`). The app opens the consent page; sign in with the passkey and allow it. `/connect` has each assistant's
+steps. Connected apps are listed, and disconnected, in Who can read (`/access`).
 
-For a tool without OAuth, create a token at `/admin/tokens`. The page shows it once, with the server URL and a
-ready Claude Code command:
+For a tool without OAuth, make an access key on its connect page (`/connect/{tool}`, or `/connect/other` for
+anything else). The page shows it once, inside the tool's command where it has one:
 
 ```bash
 claude mcp add --transport http pebble-audio https://pebbleaudio.okgodoit.com/mcp \
@@ -160,7 +163,7 @@ Revoking a token takes effect on the next request.
 
 Business numbers (tool result caps, longest clip, request time to live, job attempts) are not
 configuration: they live in the `Settings` table with defaults in `Settings/ArchiveSettings.cs` and are
-edited at `/admin/settings`.
+edited at `/settings`.
 
 ## Database and migrations
 

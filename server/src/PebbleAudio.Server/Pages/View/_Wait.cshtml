@@ -1,0 +1,14 @@
+@* The waiting row: a spinner until the assistant shows up in Who can read, then a check. connect.js swaps it. *@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+<div class="wait" data-wait aria-live="polite">
+	@if (Model.Ready)
+	{
+		<span class="check-badge small" aria-hidden="true">@SiteIcons.Check</span>
+		<span class="note">@Model.Tool.Name is connected.</span>
+	}
+	else
+	{
+		<span class="spinner" aria-hidden="true"></span>
+		<span class="note">@Model.WaitingLine</span>
+	}
+</div>

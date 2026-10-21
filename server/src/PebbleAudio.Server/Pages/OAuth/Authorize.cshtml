@@ -1,58 +1,52 @@
 @page
 @model PebbleAudio.Server.Pages.OAuth.AuthorizeModel
+@using PebbleAudio.Server.Pages.View
 @{
 	ViewData["Title"] = Model.Problem is null ? $"Connect {Model.AppName}" : "Can't connect";
-	ViewData["HideNav"] = true;
+	// The consent page stands on its own, without the site's menu: it is a step inside another app's sign-in.
+	ViewData["Bare"] = true;
 }
-<section class="auth">
+<div class="auth">
 	@if (Model.Problem is { } problem)
 	{
-		<div class="card auth-card">
-			<h1>This app can't connect</h1>
+		<div class="card">
+			<h1 class="screen-title">This app can't connect</h1>
 			<p class="lede">@problem</p>
 		</div>
 	}
 	else
 	{
 		@* No action: the form posts back to this URL with its query, and the request is checked again. *@
-		<form method="post" class="card auth-card consent">
-			<header class="consent-header">
-				<h1>Connect @Model.AppName?</h1>
-				<p class="lede">It's asking for access to your Pebble Audio archive.</p>
-			</header>
-			<div class="consent-abilities">
-				<h2 class="consent-label">@Model.AppName will be able to</h2>
-				<ul class="consent-list">
+		<form method="post" class="card consent">
+			<div class="consent-head">
+				@BrandMarks.Tile(Model.AppName, large: true)
+				<h1 class="screen-title">Connect @Model.AppName?</h1>
+			</div>
+			<p class="lede">It's asking to read your Pebble Audio conversations.</p>
+			<div class="goes">
+				<h2 class="h">@Model.AppName will be able to</h2>
+				<ul>
 					@foreach (var ability in Model.Abilities)
 					{
 						<li>@ability</li>
 					}
 				</ul>
 			</div>
-			<dl class="facts">
-				<div>
-					<dt>From</dt>
-					<dd>
-						@if (Model.VerifiedHost is { } host)
-						{
-							@host
-						}
-						else
-						{
-							<span class="muted">Not verified</span>
-						}
-					</dd>
-				</div>
-				<div>
-					<dt>Returns you to</dt>
-					<dd>@(Model.ReturnsToThisDevice ? "An app on this device" : Model.ReturnHost)</dd>
-				</div>
-			</dl>
+			<ul class="list-card flush">
+				<li class="row">
+					<span class="grow"><span class="t">From</span></span>
+					<span class="v">@(Model.VerifiedHost ?? "Not verified")</span>
+				</li>
+				<li class="row">
+					<span class="grow"><span class="t">Returns you to</span></span>
+					<span class="v">@(Model.ReturnsToThisDevice ? "An app on this device" : Model.ReturnHost)</span>
+				</li>
+			</ul>
 			@* Deny comes first, so pressing Enter declines. *@
-			<div class="consent-actions">
-				<button type="submit" name="decision" value="deny" class="button">Deny</button>
-				<button type="submit" name="decision" value="allow" class="button button-primary">Allow</button>
+			<div class="consent-acts">
+				<button type="submit" name="decision" value="deny" class="btn gray">Deny</button>
+				<button type="submit" name="decision" value="allow" class="btn filled">Allow</button>
 			</div>
 		</form>
 	}
-</section>
+</div>

@@ -1,11 +1,11 @@
 # Auth
 
 - **Admin sign-in**: ASP.NET Core Identity with passkeys only (schema version 3), one user. The first
-  passkey is registered at `/admin/setup` with the setup code from the startup log (or
-  `PebbleAudio__SetupCode`); after that `/admin/setup` answers 404. See `AdminSetup.cs` and
-  `Pages/Admin/{Setup,Login,Passkeys}`.
-- **Bearer tokens on `/mcp`** (`BearerTokenHandler`, scheme `Bearer`): personal tokens `pat_…` (created and
-  revoked at `/admin/tokens`, `ApiTokenService`) and OAuth access tokens `oat_…` (`OAuthTokenService`). Both are
+  passkey is registered at `/setup` with the setup code from the startup log (or
+  `PebbleAudio__SetupCode`); after that `/setup` answers 404. Sign-in is `/sign-in`, more passkeys are added in
+  Settings. See `AdminSetup.cs` and `Pages/Admin/{Setup,Login,Settings}`.
+- **Bearer tokens on `/mcp`** (`BearerTokenHandler`, scheme `Bearer`): personal tokens `pat_…` (made on the connect pages and
+  revoked in Who can read, `ApiTokenService`) and OAuth access tokens `oat_…` (`OAuthTokenService`). Both are
   SHA-256 hashes at rest. The principal carries the user id, the client's name, and one `scope` claim per granted
   scope; tool code checks them with `User.HasScope(ArchiveScopes.Write)`.
 - **The 401 challenge on `/mcp`**: the MCP SDK's `AddMcp` handler answers unauthenticated requests (and unknown,
@@ -60,6 +60,6 @@ Tokens and grants (`Data/OAuth*.cs`, tables from the `OAuth_AuthorizationServer`
   Expired, revoked, or unknown refresh tokens get `invalid_grant`.
 - Every grant gets a refresh token whether or not the app asked for `offline_access`.
 
-Where people see it: `/admin/apps` lists apps and their connections (name, where they return to, access, connected,
-last used) with Disconnect, and `OAuthConnections` is the `IConnectedAssistantSource` behind the phone's `access` list
+Where people see it: Who can read (`/access`) lists each app from the same access list as the phone (name, what it
+may do, last read) with Disconnect, which ends every connection of that app, and `OAuthConnections` is the `IConnectedAssistantSource` behind the phone's `access` list
 in `GET /sync/status` (sync-protocol.md §5): one entry per app with a live grant, revoked per app.

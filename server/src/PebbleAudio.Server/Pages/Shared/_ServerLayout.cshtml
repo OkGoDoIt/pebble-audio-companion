@@ -1,0 +1,47 @@
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+@inject Microsoft.Extensions.Options.IOptions<PebbleAudio.Server.PebbleAudioOptions> Options
+@using PebbleAudio.Server.Pages.View
+@{
+	var csrfToken = Antiforgery.GetAndStoreTokens(Context).RequestToken;
+	var host = new Uri(Options.Value.PublicOrigin).Authority;
+	// A page that stands alone (signing in, setup, the link page, the consent page, the legal pages, an error) shows
+	// the brand alone; so does any page for someone not signed in.
+	var bare = ViewData["Bare"] is true || User.Identity?.IsAuthenticated != true;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="color-scheme" content="light dark">
+	<meta name="robots" content="noindex">
+	<meta name="csrf-token" content="@csrfToken">
+	<title>@ViewData["Title"] · Pebble Audio</title>
+	<link rel="icon" href="~/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/site.css" asp-append-version="true">
+	<link rel="stylesheet" href="~/css/server.css" asp-append-version="true">
+	<script type="module" src="~/js/site.js" asp-append-version="true"></script>
+	@await RenderSectionAsync("Head", required: false)
+</head>
+<body class="server@(bare ? " bare" : null)">
+	<div class="srv">
+		<aside class="srv-side">
+			<div class="srv-top">
+				<a class="site-brand" href="/">@BrandMarks.Own<span class="brand-words"><span>Pebble Audio</span><span class="host">@host</span></span></a>
+				@if (!bare)
+				{
+					<button type="button" class="site-menu-btn" popovertarget="site-menu" aria-label="Menu">@SiteIcons.Dots</button>
+				}
+			</div>
+			@if (!bare)
+			{
+				<partial name="_SiteMenu" />
+			}
+		</aside>
+		<main class="srv-main">
+			@RenderBody()
+		</main>
+	</div>
+</body>
+</html>

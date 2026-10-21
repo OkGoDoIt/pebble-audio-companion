@@ -1,7 +1,7 @@
 namespace PebbleAudio.Server.Settings;
 
 /// <summary>
-/// The archive's business numbers. Each has a default here and can be changed at <c>/admin/settings</c>;
+/// The archive's business numbers. Each has a default here and can be changed at <c>/settings</c>;
 /// only values that differ from their default are stored.
 /// </summary>
 public sealed record ArchiveSettings

@@ -63,5 +63,5 @@ public sealed class LoginModel(
 	}
 
 	private string SafeReturnUrl() =>
-		!string.IsNullOrWhiteSpace(ReturnUrl) && Url.IsLocalUrl(ReturnUrl) ? ReturnUrl : "/admin";
+		!string.IsNullOrWhiteSpace(ReturnUrl) && Url.IsLocalUrl(ReturnUrl) ? ReturnUrl : "/";
 }

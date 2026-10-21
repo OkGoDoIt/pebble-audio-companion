@@ -85,7 +85,7 @@ public sealed class SetupModel(
 
 		await signInManager.SignInAsync(user, isPersistent: false);
 		logger.LogInformation("Setup is done: the admin account and its first passkey exist.");
-		return PasskeyRequests.Done("/admin");
+		return PasskeyRequests.Done("/phones");
 	}
 
 	private async Task<IActionResult?> RefuseAsync(CancellationToken cancellationToken)

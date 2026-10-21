@@ -1,13 +1,14 @@
-@page
+@page "/sign-in"
 @model PebbleAudio.Server.Pages.Admin.LoginModel
 @{
 	ViewData["Title"] = "Sign in";
+	ViewData["Bare"] = true;
 }
-<section class="auth">
-	<form class="card auth-card" data-passkey="sign-in" data-return-url="@Model.ReturnUrl">
-		<h1>Sign in</h1>
-		<p class="lede">@(Model.ForConnection ? "Use your passkey to connect an app to your archive." : "Use your passkey to open the admin area.")</p>
-		<button type="submit" class="button button-primary button-wide">Sign in with passkey</button>
+<div class="auth">
+	<form class="card" data-passkey="sign-in" data-return-url="@Model.ReturnUrl">
+		<h1 class="screen-title">Sign in</h1>
+		<p class="lede">@(Model.ForConnection ? "Use your passkey to connect an app to your conversations." : "Use your passkey to open Pebble Audio.")</p>
+		<button type="submit" class="btn filled">Sign In with Passkey</button>
 		<p class="status" data-status role="status"></p>
 	</form>
-</section>
+</div>

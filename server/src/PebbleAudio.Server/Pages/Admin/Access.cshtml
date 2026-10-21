@@ -1,0 +1,106 @@
+@page "/access"
+@using PebbleAudio.Server.Events
+@using PebbleAudio.Server.Pages.View
+@model PebbleAudio.Server.Pages.Admin.AccessModel
+@{
+	ViewData["Title"] = "Who can read";
+	ViewData["Section"] = "who";
+	var n = 0;
+}
+<div class="page">
+	<h1 class="screen-title">Who can read</h1>
+
+	@if (Model.NoneConnected)
+	{
+		<section class="card state-card">
+			<p class="state-head">No assistant is connected yet.</p>
+			<a class="btn filled small inline" href="/connect">Connect an App</a>
+		</section>
+	}
+	else
+	{
+		<section class="group" aria-label="Assistants">
+			<ul class="list-card">
+				@foreach (var row in Model.SignedIn)
+				{
+					n++;
+					<li class="row wrap">
+						@BrandMarks.Tile(row.Name)
+						<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· <span class="nb">@row.LastRead</span></span></span>
+						<partial name="_Disconnect" model="(row, n)" />
+					</li>
+				}
+				<li><a class="row tint" href="/connect"><span class="itile own" aria-hidden="true">@SiteIcons.Plus</span><span class="grow"><span class="t">Connect Another Assistant</span></span></a></li>
+			</ul>
+			<p class="footer">Each app connects on its own. Disconnecting one stops only that app.</p>
+		</section>
+
+		@if (Model.Keys.Count > 0)
+		{
+			<section class="group" id="keys" aria-labelledby="keys-h">
+				<h2 class="section-header" id="keys-h">Access keys</h2>
+				<ul class="list-card">
+					@foreach (var row in Model.Keys)
+					{
+						n++;
+						<li class="row wrap">
+							@BrandMarks.Tile(row.Name)
+							<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· <span class="nb">@row.LastRead</span></span></span>
+							<partial name="_Disconnect" model="(row, n)" />
+						</li>
+					}
+				</ul>
+				<p class="footer">For apps that can't sign in with your passkey. Each key works for one app only.</p>
+			</section>
+		}
+	}
+
+	@if (Model.Subscriptions.Count > 0)
+	{
+		<section class="group" aria-labelledby="updates-h">
+			<h2 class="section-header" id="updates-h">Updates they asked for</h2>
+			<ul class="list-card">
+				@foreach (var subscription in Model.Subscriptions)
+				{
+					<li class="row">
+						@BrandMarks.Tile(subscription.ClientName)
+						<span class="grow">
+							<span class="t strong">@EventCatalog.Label(subscription.EventName)</span>
+							<span class="s">@Model.SubscriptionLine(subscription)</span>
+							@if (subscription.LastError is { } error)
+							{
+								<span class="s attention">@error</span>
+							}
+						</span>
+						<form method="post" asp-page-handler="Unsubscribe" asp-route-id="@subscription.Id">
+							<button type="submit" class="btn small gray">Stop</button>
+						</form>
+					</li>
+				}
+			</ul>
+			<p class="footer">Sent to @string.Join(", ", Model.Subscriptions.Select(s => AccessModel.Host(s.CallbackUrl)).Distinct()) when they happen.</p>
+		</section>
+	}
+
+	@if (Model.NotConnected.Count > 0)
+	{
+		<section class="group" aria-labelledby="idle-h">
+			<h2 class="section-header" id="idle-h">Not connected</h2>
+			<ul class="list-card">
+				@foreach (var app in Model.NotConnected)
+				{
+					<li class="row">
+						@BrandMarks.Tile(app.Name)
+						<span class="grow">
+							<span class="t strong">@app.Name</span>
+							<span class="s">@(app.Host is { } host ? $"{host} · " : null)Added @SiteText.ShortDay(app.CreatedAt, Model.Zone)</span>
+						</span>
+						<form method="post" asp-page-handler="Remove" asp-route-id="@app.Id">
+							<button type="submit" class="btn small gray">Remove</button>
+						</form>
+					</li>
+				}
+			</ul>
+		</section>
+	}
+</div>

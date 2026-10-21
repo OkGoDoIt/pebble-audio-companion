@@ -19,7 +19,7 @@ public static class AdminAccount
 	public const string PasskeyDisplayName = "Pebble Audio admin";
 
 	/// <summary>
-	/// Setup is done once a passkey exists. Until then <c>/admin/setup</c> is open to whoever has the code.
+	/// Setup is done once a passkey exists. Until then <c>/setup</c> is open to whoever has the code.
 	/// </summary>
 	public static Task<bool> IsSetUpAsync(ArchiveDbContext db, CancellationToken cancellationToken) =>
 		db.UserPasskeys.AnyAsync(cancellationToken);
@@ -77,7 +77,7 @@ public sealed class SetupAnnouncer(
 {
 	public async Task StartAsync(CancellationToken cancellationToken)
 	{
-		var setupUrl = $"{options.Value.PublicOrigin}/admin/setup";
+		var setupUrl = $"{options.Value.PublicOrigin}/setup";
 		try
 		{
 			await using var scope = scopes.CreateAsyncScope();

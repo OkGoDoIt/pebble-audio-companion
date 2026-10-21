@@ -3,16 +3,37 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 using PebbleAudio.Server.Auth;
 using PebbleAudio.Server.Data;
+using PebbleAudio.Server.Mcp;
 using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Pages.Admin;
 
-public sealed class PhonesModel(PhoneLinkService links, ArchiveWipe wipe, IOptions<PebbleAudioOptions> options) : PageModel
+/// <summary>
+/// <c>/phones</c>, Link a phone: a one-time code with its QR code for the iPhone app's camera (round-3 03a is the
+/// phone's side), and the linked phones, each renamed or unlinked here. Unlinking the last phone clears the server, as
+/// unlinking on the phone does.
+/// </summary>
+public sealed class PhonesModel(
+	PhoneLinkService links,
+	ArchiveWipe wipe,
+	IConnectedAssistants assistants,
+	SharingScopes scopes,
+	IOptions<PebbleAudioOptions> options,
+	TimeProvider time) : PageModel
 {
 	public IReadOnlyList<Device> Phones { get; private set; } = [];
 
 	/// <summary>The code just minted, shown once with its QR code.</summary>
 	public LinkInvitation? Invitation { get; private set; }
+
+	/// <summary>The assistants that lose access when the last phone is unlinked.</summary>
+	public IReadOnlyList<string> AssistantNames { get; private set; } = [];
+
+	public DateTimeOffset Now => time.GetUtcNow();
+
+	public TimeZoneInfo Zone { get; private set; } = TimeZoneInfo.Utc;
+
+	public string Host => new Uri(options.Value.PublicOrigin).Authority;
 
 	/// <summary>What to type in the app's Server field: the host alone for https, the whole origin otherwise.</summary>
 	public string ServerAddress
@@ -35,6 +56,7 @@ public sealed class PhonesModel(PhoneLinkService links, ArchiveWipe wipe, IOptio
 			url,
 			LinkQrCode.Svg(url, "Code to link a phone"),
 			minted.ExpiresAt);
+		Response.Headers.CacheControl = "no-store";
 		await LoadAsync(cancellationToken);
 		return Page();
 	}
@@ -51,11 +73,32 @@ public sealed class PhonesModel(PhoneLinkService links, ArchiveWipe wipe, IOptio
 		return RedirectToPage();
 	}
 
-	private async Task LoadAsync(CancellationToken cancellationToken) =>
-		Phones = await links.ListAsync(CurrentUserId(), cancellationToken);
+	/// <summary>"Version 1.4 (812) · Synced 3 min ago".</summary>
+	public string Line(Device phone)
+	{
+		var parts = new List<string>();
+		if (phone.AppVersion is { } version)
+		{
+			parts.Add($"Version {version}{(phone.AppBuild is { } build ? $" ({build})" : "")}");
+		}
+
+		parts.Add(phone.LastBatchAt is { } synced ? $"Synced {SiteText.Ago(synced, Now, Zone)}" : $"Linked {SiteText.ShortDay(phone.LinkedAt, Zone)}, not synced yet");
+		return string.Join(" · ", parts);
+	}
+
+	/// <summary>"ChatGPT, Claude, and Codex on Mac lose access." for unlinking the last phone, or nothing.</summary>
+	public string? LoseAccessLine => AssistantNames.Count == 0 ? null : $"{Speak.List(AssistantNames)} lose{(AssistantNames.Count == 1 ? "s" : "")} access.";
+
+	private async Task LoadAsync(CancellationToken cancellationToken)
+	{
+		var userId = CurrentUserId();
+		Phones = await links.ListAsync(userId, cancellationToken);
+		Zone = (await scopes.GetAsync(userId, cancellationToken)).TimeZone;
+		AssistantNames = [.. (await assistants.ListAsync(userId, cancellationToken)).Select(a => a.Name).Distinct()];
+	}
 
 	private Guid CurrentUserId() =>
-		User.UserId() ?? throw new InvalidOperationException("The admin page requires a signed-in user.");
+		User.UserId() ?? throw new InvalidOperationException("Link a phone requires a signed-in user.");
 
 	/// <param name="Code">The code as shown, <c>K7QM-3XWD</c>.</param>
 	/// <param name="Url">The <c>/link?code=…</c> universal link the QR code carries.</param>

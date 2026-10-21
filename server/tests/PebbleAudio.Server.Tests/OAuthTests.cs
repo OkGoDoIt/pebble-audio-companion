@@ -73,7 +73,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var signedOut = await browser.GetAsync(authorize);
 		Assert.Equal(HttpStatusCode.Redirect, signedOut.StatusCode);
 		var login = new Uri(new Uri(Origin), signedOut.Headers.Location!);
-		Assert.Equal("/admin/login", login.AbsolutePath);
+		Assert.Equal("/sign-in", login.AbsolutePath);
 		var returnUrl = QueryHelpers.ParseQuery(login.Query)["ReturnUrl"].ToString();
 		Assert.Equal(authorize, returnUrl);
 
@@ -81,7 +81,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		const string unseen = "https://unseen-app.example/oauth/client.json";
 		var unseenAnswer = await browser.GetAsync(AuthorizeUrl(unseen, "https://unseen-app.example/callback", challenge, "unseen"));
 		Assert.Equal(HttpStatusCode.Redirect, unseenAnswer.StatusCode);
-		Assert.Equal("/admin/login", new Uri(new Uri(Origin), unseenAnswer.Headers.Location!).AbsolutePath);
+		Assert.Equal("/sign-in", new Uri(new Uri(Origin), unseenAnswer.Headers.Location!).AbsolutePath);
 		Assert.DoesNotContain(factory.Http.Received, r => r.Request.RequestUri!.ToString() == unseen);
 
 		await SignInAsync(browser, userId);
@@ -277,16 +277,17 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 		var wrote = await CallToolAsync(api, readWrite.Access, TestWriteTools.Name);
 		Assert.False(wrote.TryGetProperty("isError", out var isError) && isError.GetBoolean());
 
-		// The admin area lists it and disconnects it.
-		var apps = await browser.GetAsync("/admin/apps");
+		// Who can read lists it, says what it may do (the phone has not allowed adding), and disconnects it.
+		var apps = await browser.GetAsync("/access");
 		Assert.Equal(HttpStatusCode.OK, apps.StatusCode);
-		var appsHtml = await apps.Content.ReadAsStringAsync();
+		var appsHtml = WebUtility.HtmlDecode(await apps.Content.ReadAsStringAsync());
 		Assert.Contains("ChatGPT", appsHtml);
-		Assert.Contains("Read and write", appsHtml);
+		Assert.Contains("Can read\u00a0·", appsHtml);
+		Assert.Contains("Disconnect ChatGPT?", appsHtml);
 		var disconnect = DisconnectFormPattern().Match(appsHtml);
-		Assert.True(disconnect.Success, "The apps page has no Disconnect form.");
+		Assert.True(disconnect.Success, "Who can read has no Disconnect form.");
 		var disconnected = await browser.PostAsync(
-			WebUtility.HtmlDecode(disconnect.Groups["action"].Value),
+			disconnect.Groups["action"].Value,
 			new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = disconnect.Groups["token"].Value }));
 		Assert.Equal(HttpStatusCode.Redirect, disconnected.StatusCode);
 		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(readWrite.Access))).StatusCode);
@@ -358,7 +359,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			Assert.False(allowed.Headers.Contains("Access-Control-Allow-Credentials"), path);
 		}
 
-		var adminPreflight = new HttpRequestMessage(HttpMethod.Options, "/admin/tokens");
+		var adminPreflight = new HttpRequestMessage(HttpMethod.Options, "/access");
 		adminPreflight.Headers.Add("Origin", inspector);
 		adminPreflight.Headers.Add("Access-Control-Request-Method", "POST");
 		Assert.False((await api.SendAsync(adminPreflight)).Headers.Contains("Access-Control-Allow-Origin"));
@@ -476,6 +477,12 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 			Assert.Contains(text, html);
 		}
 
+		// It stands alone, without the site's menu, on the site's tokens and type.
+		Assert.DoesNotContain("site-menu", html);
+		Assert.Contains("/css/tokens.", html);
+		Assert.Contains("/css/server.", html);
+		Assert.Contains("will be able to", html);
+
 		var allowed = await browser.PostAsync(authorize, Decision(html, "allow"));
 		Assert.Equal(HttpStatusCode.Redirect, allowed.StatusCode);
 		var location = allowed.Headers.Location!;
@@ -559,7 +566,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 	[GeneratedRegex("<input name=\"__RequestVerificationToken\" type=\"hidden\" value=\"([^\"]+)\"")]
 	private static partial Regex AntiforgeryPattern();
 
-	[GeneratedRegex("<form method=\"post\" action=\"(?<action>[^\"]*handler=Disconnect[^\"]*)\">\\s*<button[^>]*>Disconnect</button>\\s*<input name=\"__RequestVerificationToken\" type=\"hidden\" value=\"(?<token>[^\"]+)\"")]
+	[GeneratedRegex("<form method=\"post\"[^>]*action=\"(?<action>[^\"]*handler=Disconnect[^\"]*)\"[^>]*>.*?<input name=\"__RequestVerificationToken\" type=\"hidden\" value=\"(?<token>[^\"]+)\"", RegexOptions.Singleline)]
 	private static partial Regex DisconnectFormPattern();
 }
 
