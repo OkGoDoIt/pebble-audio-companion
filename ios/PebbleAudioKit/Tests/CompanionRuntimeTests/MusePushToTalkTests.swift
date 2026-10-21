@@ -352,6 +352,25 @@ struct MuseConversationTests {
 
     private func text(_ update: AssistantUpdate) -> String { String(decoding: update.text, as: UTF8.self) }
 
+    @Test func museCanUseTheWatchOnlyWhileAnsweringAWatchQuestion() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        // The link is open, but nobody asked anything: a call is refused, and nothing runs.
+        let refused = await fx.muse.call(MuseTools.timerCommand, ["seconds": 60])
+        #expect(refused?["ok"]?.bool == false)
+        #expect(refused?["error"]?.string == MusePushToTalk.outsideQuestion)
+        #expect(fx.link.actions().isEmpty)
+        // Asked on the watch: the same call runs.
+        fx.muse.script = [.heard("set a timer"), .answer("Done.")]
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+        let call = Task { await fx.muse.call(MuseTools.timerCommand, ["seconds": 60]) }
+        _ = try #require(await fx.answerNextAction(status: .done))
+        #expect(await call.value?["ok"]?.bool == true)
+    }
+
     @Test func optionsGoWithTheAnswerAndItsTextLeavesThemOut() async throws {
         let fx = PushToTalkFixture()
         fx.link.watchCapabilities = Self.conversation
@@ -762,6 +781,12 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
             self.handler = handler
         }
         return Conversation(muse: self)
+    }
+
+    /// Calls the gadget's handler as Muse would at any time; nil before a link was opened.
+    func call(_ command: String, _ params: MuseJSON) async -> MuseJSON? {
+        let handler = lock.withLock { self.handler }
+        return await handler?(command, params, nil)
     }
 
     /// Runs the scripted call through the gadget's handler, as Muse would mid-answer.

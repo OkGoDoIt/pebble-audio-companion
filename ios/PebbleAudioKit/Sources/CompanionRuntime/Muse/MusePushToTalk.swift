@@ -313,6 +313,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func begin(_ event: PttEvent) {
+        lastAskedAt = Date()
         log("question \(event.turn): listening (\(event.detail == PttTrigger.quickLaunch.rawValue ? "Quick Launch" : "in the app"))")
         turn?.finished = true
         turnSerial += 1
@@ -510,6 +511,7 @@ public actor MusePushToTalk: MuseWatchSide {
             return
         }
         let option = choice.options[index]
+        lastAskedAt = Date()
         log("question \(event.turn): option \(index + 1) of \(choice.options.count) picked; asking Muse")
         turn?.finished = true
         turnSerial += 1
@@ -707,7 +709,7 @@ public actor MusePushToTalk: MuseWatchSide {
             chatID: chatID, commands: MuseTools.commands(for: prefs, hasData: hasData)
         ) { [weak self] command, params, _ in
             guard let self else { return ["ok": false, "error": "The watch is not available."] }
-            return await self.runCommand(command, params)
+            return await self.runCommandFromMuse(command, params)
         }
         conversation = opened
         return opened
@@ -993,6 +995,25 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     // MARK: - Watch actions and tools
+
+    /// When the wearer last asked from the watch (a question or a pick).
+    private var lastAskedAt: Date?
+    /// Muse may use the watch and read what it is allowed to only while answering a question asked
+    /// on the watch: this long after it, to let a long task finish (the watch itself waits as long).
+    /// The link now stays open, so a call can come at any time; outside this it is refused
+    /// (docs/privacy-model.md, D7a and D7b).
+    static let toolWindow: TimeInterval = 15 * 60
+    static let outsideQuestion =
+        "The person allows this only while you answer a question they asked on their Pebble watch."
+
+    /// A call from Muse over the link: run while a watch question is being answered, refused otherwise.
+    func runCommandFromMuse(_ command: String, _ params: MuseJSON) async -> MuseJSON {
+        guard let lastAskedAt, Date().timeIntervalSince(lastAskedAt) < Self.toolWindow else {
+            log("tools: \(command) refused: no question from the watch is open")
+            return ["ok": false, "error": .string(Self.outsideQuestion)]
+        }
+        return await runCommand(command, params)
+    }
 
     /// What Muse calls while answering: runs on the watch or the phone, through `MuseTools`.
     func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
