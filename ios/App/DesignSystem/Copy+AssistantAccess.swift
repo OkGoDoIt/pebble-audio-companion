@@ -158,13 +158,13 @@ extension Copy {
         static let connectedAccessibility = "Connected"
 
         static let chatGPT = "ChatGPT"
-        static let chatGPTSteps = [
-            "In ChatGPT, open **Plugins** and tap **Add**.",
-            "Tap **Add custom MCP server** and paste your server address.",
-            "Choose **OAuth**, then tap **Create as a plugin**.",
-            "Sign in to your server with your passkey.",
-        ]
-        static let chatGPTButton = "Copy Address and Open ChatGPT"
+        // ChatGPT adds a server on its website only, and chatgpt.com on this phone opens its
+        // app, which can't: the step hands the setup page to a computer instead.
+        static let chatGPTComputerHeading = "Set up once on a computer"
+        static let chatGPTComputerLine = "Then it works in the ChatGPT app on this iPhone."
+        static let sendToMac = "Send to My Mac"
+        static let copyLink = "Copy Link"
+        static let chatGPTShareTitle = "Connect ChatGPT to Pebble Audio"
 
         static let claude = "Claude"
         static let claudeSteps = [
@@ -190,6 +190,13 @@ extension Copy {
                 "Copy it, then paste it into Terminal on your Mac.",
             ]
         }
+        /// Claude Code signed in with a Claude account has the connector added in Claude; once
+        /// Claude is connected, signing in is all that is left.
+        static func claudeCodeSteps(claudeConnected: Bool) -> [String] {
+            let signIn = "Sign in to Claude Code with the same Claude account. Pebble Audio is already in **/mcp**."
+            return claudeConnected ? [signIn] : ["Connect **Claude** above.", signIn]
+        }
+        static let claudeCodeAlt = "Signed in with an API key instead? Your server's setup page has the command."
         static let openSetupInSafari = "Open Setup in Safari"
         static func macAlt(_ host: String) -> String { "Or, on your Mac, open \(host)/connect." }
         static let appAccessibility = "App"
