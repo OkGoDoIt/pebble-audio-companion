@@ -64,7 +64,11 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 			entity.HasIndex(c => new { c.UserId, c.StartedAt });
 			entity.ComplexCollection(c => c.Pieces, pieces => pieces.ToJson());
 			entity.ComplexCollection(c => c.People, people => people.ToJson());
-			entity.ComplexCollection(c => c.Gaps, gaps => gaps.ToJson());
+			entity.ComplexCollection(c => c.Gaps, gaps =>
+			{
+				gaps.ToJson();
+				gaps.ComplexCollection(g => g.Causes);
+			});
 			entity.Property(c => c.SearchVector)
 				.HasColumnType("tsvector")
 				.HasComputedColumnSql(SearchSql.ConversationVector, stored: true);

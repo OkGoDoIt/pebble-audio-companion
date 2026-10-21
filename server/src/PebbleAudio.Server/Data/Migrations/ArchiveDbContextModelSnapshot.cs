@@ -452,6 +452,8 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<DateTimeOffset>("EndedAt");
 
+                            b1.Property<string>("Kind");
+
                             b1.Property<DateTimeOffset>("StartedAt");
 
                             b1
@@ -508,6 +510,9 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.Property<bool>("IsFinal")
                         .HasColumnType("boolean");
 
+                    b.Property<long?>("MissingMs")
+                        .HasColumnType("bigint");
+
                     b.Property<bool>("MostlyQuiet")
                         .HasColumnType("boolean");
 
@@ -560,16 +565,39 @@ namespace PebbleAudio.Server.Data.Migrations
                         {
                             b1.IsRequired();
 
+                            b1.Property<string>("Cause");
+
                             b1.Property<DateTimeOffset>("EndedAt");
 
                             b1.Property<string>("Kind")
                                 .IsRequired();
 
+                            b1.Property<string>("Label");
+
+                            b1.Property<long?>("MissingMs");
+
                             b1.Property<string>("Origin");
 
                             b1.Property<string>("Reason");
 
+                            b1.Property<bool?>("Shown");
+
                             b1.Property<DateTimeOffset>("StartedAt");
+
+                            b1.ComplexCollection(typeof(List<Dictionary<string, object>>), "Causes", "PebbleAudio.Server.Data.Conversation.Gaps#ConversationGap.Causes#GapCause", b2 =>
+                                {
+                                    b2.IsRequired();
+
+                                    b2.Property<string>("Code")
+                                        .IsRequired();
+
+                                    b2.Property<int>("Count");
+
+                                    b2.Property<long>("Ms");
+
+                                    b2.Property<string>("Text")
+                                        .IsRequired();
+                                });
 
                             b1
                                 .ToJson("Gaps")
@@ -1472,6 +1500,8 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<DateTimeOffset>("At");
 
+                            b1.Property<string>("Cause");
+
                             b1.Property<double?>("Confidence");
 
                             b1.Property<string>("Descriptor");
@@ -1481,9 +1511,15 @@ namespace PebbleAudio.Server.Data.Migrations
                             b1.Property<string>("Kind")
                                 .IsRequired();
 
+                            b1.Property<string>("Label");
+
+                            b1.Property<long?>("MissingMs");
+
                             b1.Property<string>("Name");
 
                             b1.Property<string>("Origin");
+
+                            b1.Property<string>("Reason");
 
                             b1.Property<string>("Speaker");
 

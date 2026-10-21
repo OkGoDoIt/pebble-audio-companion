@@ -54,6 +54,13 @@ public sealed class Conversation : SyncedRecord
 	/// <summary>Stored audio inside the conversation, in milliseconds.</summary>
 	public long RecordedMs { get; set; }
 
+	/// <summary>
+	/// The audio genuinely missing inside the conversation, in milliseconds, as the phone's History card counts it.
+	/// Null from a phone before the gap change, whose total <see cref="Mcp.GapRows.MissingSeconds"/> reads from
+	/// the gap records.
+	/// </summary>
+	public long? MissingMs { get; set; }
+
 	public List<ConversationPiece> Pieces { get; set; } = [];
 
 	public List<ConversationSpeaker> People { get; set; } = [];

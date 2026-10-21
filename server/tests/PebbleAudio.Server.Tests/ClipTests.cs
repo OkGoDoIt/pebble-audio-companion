@@ -59,7 +59,8 @@ public sealed class ClipTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.UnsupportedMediaType, (await phone.SendAsync(HttpMethod.Put, path, text)).StatusCode);
 		Assert.Equal(HttpStatusCode.BadRequest, (await phone.SendAsync(HttpMethod.Put, path, SyncTests.Clip(Encoding.ASCII.GetBytes("not audio at all")))).StatusCode);
 		Assert.Equal(HttpStatusCode.NotFound, (await phone.SendAsync(HttpMethod.Put, $"/sync/clips/{Guid.NewGuid()}", SyncTests.Clip(ogg))).StatusCode);
-		var lost = $$"""[{"endedAt":"{{Wire.T(Wire.Start.AddMinutes(2.5))}}","startedAt":"{{Wire.T(Wire.Start.AddMinutes(2))}}"}]""";
+		// One lost stretch, and one the watch skipped as quiet: not lost, but not in the file either.
+		var lost = $$"""[{"endedAt":"{{Wire.T(Wire.Start.AddMinutes(2.5))}}","startedAt":"{{Wire.T(Wire.Start.AddMinutes(2))}}"},{"endedAt":"{{Wire.T(Wire.Start.AddMinutes(2.8))}}","kind":"quiet","startedAt":"{{Wire.T(Wire.Start.AddMinutes(2.6))}}"}]""";
 		var stored = await phone.SendAsync(HttpMethod.Put, path, SyncTests.Clip(ogg, Wire.Start.AddMinutes(1), Wire.Start.AddMinutes(2.9), lost));
 		Assert.Equal(HttpStatusCode.Created, stored.StatusCode);
 		// A retried upload is answered the same and stores nothing twice.
@@ -68,7 +69,7 @@ public sealed class ClipTests(ArchiveServerFactory factory)
 		var clip = await db.Clips.AsNoTracking().SingleAsync(c => c.Id == asked.ClipId);
 		Assert.Equal(ClipStatus.Received, clip.Status);
 		Assert.Equal((Wire.Start.AddMinutes(1), Wire.Start.AddMinutes(2.9)), (clip.CoveredStartAt!.Value, clip.CoveredEndAt!.Value));
-		Assert.Equal(Wire.Start.AddMinutes(2), Assert.Single(clip.Gaps).StartedAt);
+		Assert.Equal([(Wire.Start.AddMinutes(2), true), (Wire.Start.AddMinutes(2.6), false)], clip.Gaps.Select(g => (g.StartedAt, g.IsLost)));
 		Assert.Equal(ogg.Length, clip.ByteCount);
 		Assert.Equal(ogg, await File.ReadAllBytesAsync(Path.Combine(factory.ClipsPath, clip.Path!)));
 		var job = await db.Jobs.AsNoTracking().SingleAsync(j => j.UserId == userId);
