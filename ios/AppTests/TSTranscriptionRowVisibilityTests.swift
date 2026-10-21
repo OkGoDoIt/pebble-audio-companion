@@ -339,17 +339,19 @@ struct TSTranscriptionRowVisibilityTests {
         }
     }
 
-    /// The footer swaps to the stance's own sentence exactly when the advice it used to give has
-    /// already been taken.
-    @Test("the footer states the result once both modes are local")
+    /// The footer swaps to a statement of the result once the advice it used to give has been
+    /// taken — and states only what this screen controls. "Everything stays on this phone" was
+    /// false here whenever older audio moves to iCloud Drive, which this screen does not set.
+    @Test("the footer states the result once both modes are local, and no more")
     func footerMatchesStance() {
         let settings = makeSettings()
         settings.transcriptionMode = .localOnly
         settings.aiMode = .localOnly
         #expect(settings.privacyStance.headline == "Everything stays on this phone")
-        #expect(
-            Copy.Settings.TranscriptionAI.everythingLocalFooter
-                == settings.privacyStance.headline + ".")
+        settings.coldStorageEnabled = true
+        #expect(!settings.privacyStance.isFullyLocal)
+        #expect(settings.privacyStance.headline.contains("iCloud Drive"))
+        #expect(!Copy.Settings.TranscriptionAI.everythingLocalFooter.contains("Everything"))
     }
 
     // ─────────────────────────────────────────────────────────────────────────
