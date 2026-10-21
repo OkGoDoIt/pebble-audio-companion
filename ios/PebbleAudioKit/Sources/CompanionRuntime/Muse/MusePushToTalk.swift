@@ -780,6 +780,9 @@ public actor MusePushToTalk: MuseWatchSide {
         var late: Turn?
         var kept: [MuseChatMessage] = []
         for message in messages {
+            // Muse's messages name no question they answer, so a question's own answer, seen
+            // again by the chat, is known by its id alone.
+            if shown(message.id) { continue }
             let asked = message.root.flatMap { root in
                 ([turn].compactMap { $0 } + recent.reversed()).first { $0.askedIDs.contains(root) }
             }
@@ -796,7 +799,6 @@ public actor MusePushToTalk: MuseWatchSide {
             widgets: kept.flatMap(\.content.widgets), messageIDs: kept.map(\.id))
         pendingMessages.append(PendingMessage(
             content: content, question: late?.heard, replyIDs: Set(kept.map(\.id)), receivedAt: Date()))
-        if let late { late.replyIDs.formUnion(kept.map(\.id)) }
         if let late, lastQuestion.value?.askedAt == late.startedAt {
             // The phone's card shows the answer that came after all.
             let answer = WatchAnswerText.render(
@@ -808,10 +810,17 @@ public actor MusePushToTalk: MuseWatchSide {
         await deliverPending()
     }
 
+    /// Whether a question here already showed this message on the watch.
+    private func shown(_ id: String) -> Bool {
+        ([turn].compactMap { $0 } + recent).contains { $0.replyIDs.contains(id) }
+    }
+
     /// Hands the watch what Muse sent, one message at a time, each as a turn of the phone's own.
     /// A question under way goes first; a watch that is away gets them when it is back.
     private func deliverPending() async {
         pendingMessages.removeAll { Date().timeIntervalSince($0.receivedAt) > Self.messageShelfLife }
+        // A question that was under way may have shown them since.
+        pendingMessages.removeAll { !$0.replyIDs.isEmpty && $0.replyIDs.allSatisfy(shown) }
         guard !pendingMessages.isEmpty else { return }
         guard watchKeepsConversation else {
             log("Muse messages: this watch can't show messages Muse starts; \(pendingMessages.count) left in the Muse app")

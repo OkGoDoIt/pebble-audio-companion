@@ -465,6 +465,27 @@ struct MuseConversationTests {
         #expect(words.map(text).joined() == "Your 3 PM moved to 4.")
     }
 
+    @Test func aQuestionsOwnAnswerIsNotSentAgainWhenMuseNamesNoQuestion() async throws {
+        // Muse's assistant events carry no reply-to id (G17, 2026-10-21/22: every watch question
+        // got its answer twice, the second as "a message from Muse").
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        fx.muse.script = choiceScript()
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+
+        fx.muse.post([MuseChatMessage(id: "a1", content: MuseAnswerContent(raw: "What is 2 times 7?", widgets: []), root: nil)])
+        fx.muse.post([MuseChatMessage(id: "a3", content: MuseAnswerContent(raw: "Your 3 PM moved to 4.", widgets: []), root: nil)])
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.turn == 4 && $0.kind == .done } })
+        try await Task.sleep(for: .milliseconds(100))
+        let begins = fx.link.updates().filter { $0.kind == .begin }
+        #expect(begins.count == 1)
+        let words = fx.link.updates().filter { $0.turn == 4 && ($0.kind == .answer || $0.kind == .answerRestart) }
+        #expect(words.map(text).joined() == "Your 3 PM moved to 4.")
+    }
+
     @Test func aBusyWatchGetsTheMessageOnceItsQuestionIsOver() async throws {
         let fx = PushToTalkFixture(listening: true)
         fx.link.watchCapabilities = Self.conversation
