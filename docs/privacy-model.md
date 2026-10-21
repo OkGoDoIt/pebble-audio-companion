@@ -53,7 +53,20 @@ muse.ai/privacy; nothing has run on a device yet):
   watch): the phone keeps a connection to Meta open while Muse is set up. Meta then sees when the
   phone is online and its IP address; nothing the person says, records, or keeps goes over it
   unless they ask. Either way Meta knows the device exists (it is listed in the person's Muse
-  devices).
+  devices). What crosses the open link while idle (from the code, 2026-10-21):
+  - on each connect: an HTTPS device-token refresh to api.muse.ai (only when the access token is
+    3 h old or more) and a VM fetch; a WSS connection with a Noise handshake to Meta's gadget
+    host; `link.register` with the gadget id, display name, app version, platform, and the
+    names, descriptions, and parameter schemas of the switches that are on (Off sources aren't
+    listed); a subscribe to the watch's chat;
+  - while up: a WebSocket ping from the phone every 20 s; everything else is inbound (that chat's
+    events);
+  - after a drop: reconnects backing off 5 s, 15 s, 45 s, up to 5 min;
+  - nothing else: no audio, transcripts, messages, or data reads.
+  Muse can only use the watch or read anything within 15 minutes of a question or pick on the
+  watch; any other call is refused with "The person allows this only while you answer a
+  question they asked on their Pebble watch." and no data. With the switch off, the link closes
+  60 s after the last question.
 - **Secrets** live in this phone's Keychain (`dev.audiocompanion.muse`, after first unlock, not
   iCloud-synced, included in encrypted backups). Forget Muse deletes the tokens and username and
   keeps the node id. Delete All Recordings does not unpair Muse (pairing is a connection, not
