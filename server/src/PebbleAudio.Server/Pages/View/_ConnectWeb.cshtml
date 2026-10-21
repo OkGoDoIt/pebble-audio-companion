@@ -12,7 +12,14 @@
 	case "chatgpt":
 		<div class="card tool-card">
 			<ol class="open-steps">
-				<li><span>Click <b>Open ChatGPT</b>, then <b>+</b> and <b>Add custom MCP server</b>.</span></li>
+				@if (Model.OnIPhone)
+				{
+					<li><span>On a computer, open ChatGPT's <b>Plugins</b>, then click <b>+</b> and <b>Add custom MCP server</b>.</span></li>
+				}
+				else
+				{
+					<li><span>Click <b>Open ChatGPT</b>, then <b>+</b> and <b>Add custom MCP server</b>.</span></li>
+				}
 				<li><span>Fill in <b>Name</b> and <b>Server URL</b>.<partial name="_CopyValue" model="@(new CopyValue("Name", ConnectModel.ConnectorName, "the name"))" /><partial name="_CopyValue" model="server" /></span></li>
 				<li><span>Under <b>Authentication</b>, choose <b>OAuth</b>, tick <b>I understand and want to continue</b>, and click <b>Create as a plugin</b>.</span></li>
 				<li><span>Sign in to your server with your passkey.</span></li>
