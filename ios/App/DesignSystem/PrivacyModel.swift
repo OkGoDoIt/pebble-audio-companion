@@ -79,7 +79,7 @@ struct PrivacyInputs: Equatable {
 
 /// D7b: what Muse may do on the watch while a question you asked is open.
 enum MuseWatchAction: CaseIterable, Hashable {
-    case timer, alarm, choice, music, quietTime, openApp, findWatch, recording
+    case timer, alarm, music, quietTime, openApp, findWatch, recording
 }
 
 /// D7a, D7c–D7e, in this order everywhere a list names them.

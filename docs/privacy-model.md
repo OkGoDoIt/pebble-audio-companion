@@ -24,7 +24,7 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D6 | Assistants reading your server | whatever they read through the server: text, and clips if D5a | each connected assistant by name (ChatGPT, Claude, Codex on Mac, Muse, …), from the server's `access` list | connecting the assistant in that assistant | none connected |
 | D7 | Muse | the questions you ask Muse: typed ones as text, spoken ones (push-to-talk on the watch) as a short recording of what the watch microphone heard while the button was held; Muse's answers come back as text | Meta | pairing Muse | off |
 | D7a | Muse reads your conversations | transcript excerpts for a time range or a search (including other people's words), a day or week recap, or the answer of this app's own Ask (then only that answer), only while Muse is answering a question you asked | Meta | "What Muse can see" in Settings › Muse: Ask first, Allowed, or Off | Ask first once paired |
-| D7b | Muse acting on your watch | only the outcome (done, declined, timed out, or the option chosen); "what's playing" also returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, choice picker, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
+| D7b | Muse acting on your watch | only the outcome (done, declined, or timed out); "what's playing" also returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
 | D7c | Muse reads your health | steps, distance, active minutes, calories, sleep, and heart rate from the watch's own activity data, for the range asked | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
 | D7d | Muse reads and adds to Calendar and Reminders | events or reminders in the range asked; an event or reminder you asked it to add (it never deletes) | Meta | "What Muse can see": Calendar and Reminders are separate sources, each Ask first, Allowed, or Off, each also needing iOS's own permission | Ask first once paired |
 | D7e | Muse reads and adds follow-ups | your open follow-ups; a follow-up you asked it to add | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
@@ -65,8 +65,12 @@ muse.ai/privacy; nothing has run on a device yet):
   recording is off: while Muse is paired the app keeps the watch linked with capture paused, and
   the microphone is used only while the button is held (confirm in the Muse build's tests).
 - **Muse acting on the watch (D7b):** while a question you asked is open, Muse may set a timer or
-  a one-off alarm, or show a choice picker; only the outcome goes back. Each action has a switch
-  under "What Muse can do on your watch", on by default once paired.
+  a one-off alarm, control music, turn Quiet Time on or off, open a watch app, find the watch, or
+  pause or resume recording; only the outcome goes back. Each action has a switch under "What
+  Muse can do on your watch", on by default once paired. Muse's own option buttons are drawn as a
+  picker on the watch; the option the wearer picks goes to Muse as their own message, the same as
+  a typed or spoken question (D7) and the same as a tap in the Muse app (the separate "choose"
+  action was removed 2026-10-21).
 - **Data tools (D7a, D7c-D7e; decided by Roger 2026-10-21, being built on `muse-link-app`):** each
   source is Ask first (the default once paired), Allowed, or Off. Off means the gadget never
   registers that tool, so Muse does not know it exists. Under Ask first, Muse's first call puts a
@@ -106,7 +110,7 @@ struct MuseState: Equatable {
     var dataSources: [MuseDataSource: MuseAccess]    // D7a, D7c-D7e; a missing key reads as .off
 }
 // Owned by the derivation (so main builds without the Muse branch); the Muse branch maps onto them.
-enum MuseWatchAction: CaseIterable { case timer, alarm, choice, music, quietTime, openApp, findWatch, recording }
+enum MuseWatchAction: CaseIterable { case timer, alarm, music, quietTime, openApp, findWatch, recording }
 enum MuseDataSource: CaseIterable { case conversations, health, calendar, reminders, followUps }  // in this order everywhere
 enum MuseAccess { case ask, allowed, off }
 ```
