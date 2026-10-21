@@ -9,11 +9,15 @@ import SwiftUI
 /// screens or Delete All.
 struct SettingsPrivacyScreen: View {
     @Environment(AppSettings.self) private var settings
+    /// Bumped when Muse's settings change (on its own screen, or Allow on the watch), so the Meta
+    /// row's chips follow them; Muse's settings aren't part of `settings`.
+    @State private var museRevision = 0
 
     private var assistants: AssistantsSource { SettingsDataSources.current.assistants }
 
     private var presentation: PrivacyPresentation {
-        PrivacyModel.derive(PrivacyModel.inputs(settings), nowMs: assistants.nowMs)
+        _ = museRevision
+        return PrivacyModel.derive(PrivacyModel.inputs(settings), nowMs: assistants.nowMs)
     }
 
     /// What the pipeline is doing right now, as against what the configuration allows: the
@@ -108,6 +112,10 @@ struct SettingsPrivacyScreen: View {
         .navigationBarTitleDisplayMode(.large)
         .onAppear { assistants.startObserving() }
         .onDisappear { assistants.stopObserving() }
+        // Only while on screen; it starts again on the way back from the Muse screen.
+        .task {
+            for await _ in PrivacyHooks.museChanges() { museRevision &+= 1 }
+        }
     }
 
     // MARK: The stance
@@ -230,6 +238,8 @@ func destinationTile(_ destination: PrivacyDestination, size: TileSize) -> some 
 @MainActor
 enum PrivacyHooks {
     static var museState: () -> PrivacyInputs.MuseState? = { nil }
+    /// Fires when anything `museState` reads changes: Muse's settings, or its pairing.
+    static var museChanges: () -> AsyncStream<Void> = { AsyncStream { $0.finish() } }
     static var museScreen: (() -> AnyView)?
 }
 

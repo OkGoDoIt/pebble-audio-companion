@@ -71,7 +71,7 @@ struct VoiceTurnFollowerTests {
         #expect(await events.list.isEmpty)
         // One on this chat counts even when it was already waiting.
         try await follower.feed(event(#"""
-            {"type":"event","event":"approvals.snapshot","payload":{"pending_approvals":[{"id":"old","session_id":"elsewhere"},{"id":"mine","session_id":"chat-1"}]}}
+            {"type":"event","event":"approvals.snapshot","payload":{"pending_approvals":[{"id":"old","session_id":"elsewhere"},{"approval_id":"connector-1","type":"connector","status":"pending","scope":{"thread_id":"chat-1","session_scope_id":"s"}}]}}
             """#))
         #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK)])
     }

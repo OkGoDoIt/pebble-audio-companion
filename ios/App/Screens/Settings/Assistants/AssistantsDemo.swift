@@ -206,6 +206,11 @@ enum AssistantsDemo {
                 host: host, paused: false, scope: .all, clipsAllowed: true, editsAllowed: false,
                 assistants: assistants([gpt, claude, codex]))
             inputs.museState = .init(spokenQuestions: true, watchActions: [], dataSources: [:])
+        case "09f":
+            // Muse with two sources allowed on the watch: their chips join Your questions.
+            inputs.museState = .init(
+                spokenQuestions: true, watchActions: [],
+                dataSources: [.conversations: .allowed, .health: .allowed, .calendar: .ask])
         case "09e":
             inputs.aiDestination = "OpenAI"
             inputs.iCloudAgeDays = 60

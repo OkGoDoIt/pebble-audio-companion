@@ -100,7 +100,26 @@ enum MuseComposition {
     /// and where its Meta row leads.
     static func installPrivacyHooks() {
         PrivacyHooks.museState = { museState() }
+        PrivacyHooks.museChanges = { museChanges() }
         PrivacyHooks.museScreen = { AnyView(SettingsMuseScreen()) }
+    }
+
+    /// A tick for each change to Muse's settings or pairing (each publishes only when it changes).
+    static func museChanges() -> AsyncStream<Void> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let settings = preferences.current.stream()
+            let paired = service?.pairedName.stream()
+            let task = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { for await _ in settings { continuation.yield() } }
+                    if let paired {
+                        group.addTask { for await _ in paired { continuation.yield() } }
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     /// Nil until Muse is paired. A source iOS refused can't be read, so it reads as off.

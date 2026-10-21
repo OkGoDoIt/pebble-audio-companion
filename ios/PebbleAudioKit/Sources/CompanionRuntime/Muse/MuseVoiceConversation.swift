@@ -235,7 +235,13 @@ actor VoiceTurnFollower {
     /// Muse waits for an OK before some steps (a purchase, a permission, a password, a sign-in),
     /// shown in its app as an approval card. The watch says where to give it, and the question
     /// stays open until it is answered, so what Muse does next still reaches the watch. An
-    /// approval is this question's when it names this chat or appears while it is being asked.
+    /// approval is this question's when its scope names this chat or it appears while the
+    /// question is being asked.
+    ///
+    /// Answering one from the watch was looked into (2026-10-21): Muse's clients decide with
+    /// `POST /approvals/{id}/decide` on its Sentinel service, signed in as the person. Nothing
+    /// shows a gadget may, Meta's own gadgets send people to the phone, and its SDK terms rule out
+    /// working around safety measures; so the watch points to the phone.
     private func noteApprovals(_ event: MuseJSON) async {
         let pending = event["payload"]?["pending_approvals"]?.array ?? []
         if !pending.isEmpty, approvalShapes < 2 {
@@ -245,10 +251,12 @@ actor VoiceTurnFollower {
         var ids: Set<String> = []
         var onThisChat: Set<String> = []
         for item in pending {
-            let id = ["id", "approval_id", "request_id"].lazy.compactMap { item[$0]?.string }.first ?? item.compactString()
+            let id = ["approval_id", "id", "request_id"].lazy.compactMap { item[$0]?.string }.first ?? item.compactString()
             ids.insert(id)
             if let chat = sessionID,
-                ["session_id", "chat_id", "thread_id"].contains(where: { item[$0]?.string == chat || item["context"]?[$0]?.string == chat })
+                ["session_id", "chat_id", "thread_id"].contains(where: { key in
+                    [item, item["scope"], item["context"]].contains { $0?[key]?.string == chat }
+                })
             {
                 onThisChat.insert(id)
             }
