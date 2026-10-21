@@ -551,6 +551,34 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Contains(await db.AiReads.AsNoTracking().Where(r => r.UserId == phone.UserId).Select(r => r.Tool).ToListAsync(), t => t == "create_note");
 	}
 
+	[Fact]
+	public async Task Every_tool_schema_stands_alone_without_defs_or_refs()
+	{
+		// Gemini cannot read a schema with $defs (or the $ref that points into it), so every input and output schema is
+		// written out in full, the write tools' too.
+		var userId = await factory.CreateUserAsync();
+		await using var mcp = await ArchiveFixture.ConnectAsync(factory, userId, TokenAccess.ReadWrite);
+		var tools = await mcp.ListToolsAsync();
+		Assert.Contains(tools, t => t.Name == "create_note");
+		var problems = new List<string>();
+		foreach (var tool in tools)
+		{
+			foreach (var (kind, schema) in new[] { ("input", (JsonElement?)tool.ProtocolTool.InputSchema), ("output", tool.ProtocolTool.OutputSchema) })
+			{
+				var text = schema?.GetRawText() ?? "";
+				foreach (var word in new[] { "\"$defs\"", "\"definitions\"", "\"$ref\"" })
+				{
+					if (text.Contains(word, StringComparison.Ordinal))
+					{
+						problems.Add($"{tool.Name}'s {kind} schema has {word}");
+					}
+				}
+			}
+		}
+
+		Assert.True(problems.Count == 0, string.Join("; ", problems));
+	}
+
 	/// <summary>A result's length as the model reads it: the JSON text of <c>content</c>, written like the server writes it.</summary>
 	private static int Length(JsonElement element) => ToolJson.Serialize(element).Length;
 
