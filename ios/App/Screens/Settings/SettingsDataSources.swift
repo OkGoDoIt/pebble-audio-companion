@@ -1229,81 +1229,273 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     }
 }
 
-// MARK: - Pebble Audio server (the archive sync)
+// MARK: - AI Assistants (the archive sync)
 
-/// Settings · Pebble Audio server. What the screen shows (`status`, the kit's published value)
-/// and the few things a person does there. `startObserving`/`stopObserving` bracket the screen
-/// being on screen: the source does nothing at all while it is not.
-@MainActor
-protocol ArchiveServerSource: AnyObject {
-    var status: ArchiveSyncStatus { get }
-    /// A link or unlink in flight.
-    var isWorking: Bool { get }
-    /// Why the last link attempt failed, in words; nil when it did not.
-    var linkError: String? { get }
-    /// A `pebbleaudio://link` the app was opened with, waiting for the person to confirm.
-    var pendingInvitation: ArchiveLinkInvitation? { get }
-    /// When "Sync Now" last finished, for its inline result.
-    var lastManualSyncAtMs: Int64? { get }
-    func startObserving()
-    func stopObserving()
-    func receive(_ invitation: ArchiveLinkInvitation)
-    func confirmInvitation()
-    func dismissInvitation()
-    /// Manual entry: the server's address (a host or an origin) and the code it shows.
-    func link(code: String, server: String)
-    func setEnabled(_ enabled: Bool)
-    func syncNow()
-    func unlink()
+/// Why a link attempt failed, as the Link step says it.
+enum AssistantsLinkFailure: Equatable {
+    /// A scanned or opened code the server refused: codes last ten minutes and work once.
+    case expired(code: String)
+    /// A typed code the server refused (it may be mistyped).
+    case refused(code: String)
+    case tooMany
+    case unreachable(host: String)
+    case badAddress
+    case server(host: String)
+    /// The Keychain would not keep the link.
+    case keepFailed
+
+    var code: String? {
+        switch self {
+        case .expired(let code), .refused(let code): return code
+        default: return nil
+        }
+    }
+
+    var heading: String {
+        switch self {
+        case .expired: return Copy.AssistantAccess.expiredHeading
+        case .refused: return Copy.AssistantAccess.refusedHeading
+        case .tooMany: return Copy.AssistantAccess.tooManyHeading
+        case .unreachable(let host): return Copy.AssistantAccess.unreachableHeading(host)
+        case .badAddress: return Copy.AssistantAccess.badAddressHeading
+        case .server(let host): return Copy.AssistantAccess.serverErrorHeading(host)
+        case .keepFailed: return Copy.AssistantAccess.keepFailedHeading
+        }
+    }
+
+    var line: String {
+        switch self {
+        case .expired: return Copy.AssistantAccess.expiredLine
+        case .refused: return Copy.AssistantAccess.refusedLine
+        case .tooMany: return Copy.AssistantAccess.tooManyLine
+        case .unreachable: return Copy.AssistantAccess.unreachableLine
+        case .badAddress: return Copy.AssistantAccess.badAddressLine
+        case .server: return Copy.AssistantAccess.serverErrorLine
+        case .keepFailed: return Copy.AssistantAccess.keepFailedLine
+        }
+    }
+
+    /// The server's refusal (`409`): a code that came from a scan or a link cannot be mistyped,
+    /// so it has expired or been used; a typed one may just be wrong.
+    static func from(_ error: ArchiveSyncService.LinkError?, code: String, host: String, fromScan: Bool) -> AssistantsLinkFailure {
+        switch error {
+        case .codeRefused?: return fromScan ? .expired(code: code) : .refused(code: code)
+        case .server(429)?: return .tooMany
+        case .network?: return .unreachable(host: host)
+        case .badOrigin?: return .badAddress
+        case .server?, .malformed?: return .server(host: host)
+        case nil: return .keepFailed
+        }
+    }
 }
 
-/// Previews and `-demo-data`: a linked phone with a little waiting and one assistant read.
+/// Where the setup flow is: each flag pushes one screen, and clearing the first pops the whole
+/// flow back to AI Assistants (Done on Connect). Held by the source, so a link opened from
+/// outside the app can start it, and so it outlives the screens.
 @MainActor
 @Observable
-final class MockArchiveServerSource: ArchiveServerSource {
-    var status: ArchiveSyncStatus = {
-        var status = ArchiveSyncStatus()
-        status.link = .linked(host: "pebbleaudio.okgodoit.com")
-        status.enabled = true
-        status.lastBatchAtMs = Int64(Date().timeIntervalSince1970 * 1000) - 120_000
-        status.pending = 3
-        status.server = ArchiveServerStatus(
-            lastBatchAtMs: nil, pendingRequests: 0,
-            aiReads: [
-                .init(
-                    atMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, client: "ChatGPT",
-                    tool: "search", ids: ["conv-1", "conv-2", "conv-3"])
-            ])
-        return status
-    }()
+final class AssistantsFlow {
+    /// AI Assistants → Link.
+    var showLink = false
+    /// Link → Choose, once linked.
+    var showChoose = false
+    /// AI Assistants → Choose: linked earlier, not yet chosen.
+    var showChooseDirect = false
+    /// Choose → Connect, after Start Syncing.
+    var showConnect = false
+    /// AI Assistants → Connect (Connect Another Assistant).
+    var showConnectOnly = false
+    /// AI Assistants → Conversations (the scope).
+    var showScope = false
+    /// AI Assistants → one assistant.
+    var detailAccessId: String?
+    /// What the Link step's fields start with (a code from a link or a scan).
+    var serverText = ""
+    var codeText = ""
+
+    // The review screenshots' starting points (`AssistantsDemo`): read once by the screen they
+    // belong to, then cleared.
+    var demoOpenCard: ConnectCard?
+    var demoMacTool: MacTool?
+    var demoScopeDraft: ArchiveSharingScope?
+    var demoConfirmUnlink = false
+
+    func finish() {
+        showConnect = false
+        showChoose = false
+        showChooseDirect = false
+        showConnectOnly = false
+        showLink = false
+    }
+
+    func startLink(server: String = "", code: String = "") {
+        serverText = server
+        codeText = code
+        showChooseDirect = false
+        showConnectOnly = false
+        showScope = false
+        detailAccessId = nil
+        showLink = true
+    }
+}
+
+/// Settings › AI Assistants. What the screens show (the kit's published status, the link and
+/// what the person allowed, and the phone's own counts) and what a person does there.
+/// `startObserving`/`stopObserving` bracket the screens being on screen: the source does nothing
+/// at all while they are not.
+@MainActor
+protocol AssistantsSource: AnyObject {
+    var status: ArchiveSyncStatus { get }
+    /// The link, the switch, what the person allowed, and whether setup finished.
+    var sync: ArchiveSyncSettings { get }
+    /// The phone's own conversation counts, for the scope choices; nil until loaded.
+    var counts: ArchiveScopeCounts? { get }
+    /// A link or an unlink in flight.
+    var isWorking: Bool { get }
+    var linkFailure: AssistantsLinkFailure? { get }
+    /// What the last unlink left to say, when it did not simply delete.
+    var unlinkNote: String? { get }
+    var flow: AssistantsFlow { get }
+    /// The time the screens count from.
+    var nowMs: Int64 { get }
+    func startObserving()
+    func stopObserving()
+    /// `GET /sync/status` once. Connect polls this while it is on screen.
+    func refreshServerStatus() async
+    func loadCounts() async
+    /// A code the app was opened with (`pebbleaudio://link`, or `https://<server>/link`): it
+    /// opens the Link step with the fields filled in. Nothing is sent until Link This Phone.
+    func receive(_ invitation: ArchiveLinkInvitation)
+    func clearLinkFailure()
+    func link(code: String, server: String, fromScan: Bool)
+    /// The Choose step's Start Syncing: what the person allowed, then the sync.
+    func startSyncing(_ preferences: ArchivePreferences)
+    func setEnabled(_ enabled: Bool)
+    func setPreferences(_ preferences: ArchivePreferences)
+    func revoke(_ access: ArchiveServerStatus.Access) async -> Bool
+    func unlink() async -> ArchiveUnlinkOutcome
+    /// Conversation titles for what an assistant read, by id; unknown ids are left out.
+    func titles(conversationIds: [String]) async -> [String: String]
+}
+
+extension AssistantsSource {
+    var host: String? { sync.origin.flatMap { URL(string: $0)?.host ?? $0 } }
+
+    /// The address an assistant connects to.
+    var connectorURL: String? { sync.origin.map { ArchiveEndpoint.url(URL(string: $0)!, "/mcp").absoluteString } }
+
+    var assistants: [ArchiveServerStatus.Access] { status.server?.access ?? [] }
+
+    /// The Settings root row's value.
+    var rowValue: String {
+        guard sync.isLinked else { return Copy.AssistantAccess.rowNotSetUp }
+        if case .revoked = status.link { return Copy.AssistantAccess.rowUnlinked }
+        guard sync.setupComplete else { return Copy.AssistantAccess.rowNotSetUp }
+        guard sync.enabled else { return Copy.AssistantAccess.rowOff }
+        let names = assistants.map(\.name)
+        return names.isEmpty ? Copy.AssistantAccess.rowNoneConnected : Copy.list(names)
+    }
+
+    /// The server as the privacy model sees it: nil until something can have gone there.
+    var privacyServer: PrivacyInputs.ServerState? {
+        guard sync.isLinked, sync.setupComplete, let host else { return nil }
+        return PrivacyInputs.ServerState(
+            host: host, paused: !sync.enabled, scope: sync.preferences.scope,
+            clipsAllowed: sync.preferences.clips, editsAllowed: sync.preferences.edits,
+            assistants: assistants.map {
+                .init(name: $0.name, canWrite: $0.canWrite, lastUsedAtMs: $0.lastUsedAtMs)
+            },
+            assistantsFetchedAtMs: status.serverStatusAtMs,
+            assistantsStale: status.serverUnreachable)
+    }
+
+    /// Delete All names the server only when its wipe can reach it.
+    var deleteAllHost: String? {
+        guard sync.isLinked, let host else { return nil }
+        if case .revoked = status.link { return nil }
+        return host
+    }
+}
+
+/// Previews, `-demo-data`, and the review screenshots (`-assistantsDemo <state>`): the round-3
+/// states, with the mockups' synthetic people and counts.
+@MainActor
+@Observable
+final class MockAssistantsSource: AssistantsSource {
+    var status = ArchiveSyncStatus()
+    var sync = ArchiveSyncSettings(enabled: false, setupComplete: false)
+    var counts: ArchiveScopeCounts?
     var isWorking = false
-    var linkError: String?
-    var pendingInvitation: ArchiveLinkInvitation?
-    var lastManualSyncAtMs: Int64?
+    var linkFailure: AssistantsLinkFailure?
+    var unlinkNote: String?
+    let flow = AssistantsFlow()
+    var nowMs: Int64
+    /// Conversation titles the demo knows.
+    var knownTitles: [String: String] = [:]
+
+    init(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+        self.nowMs = nowMs
+        counts = AssistantsDemo.counts(nowMs: nowMs)
+    }
 
     func startObserving() {}
     func stopObserving() {}
-    func receive(_ invitation: ArchiveLinkInvitation) { pendingInvitation = invitation }
-    func confirmInvitation() {
-        guard let invitation = pendingInvitation else { return }
-        pendingInvitation = nil
-        status.link = .linked(host: invitation.host)
+    func refreshServerStatus() async {}
+    func loadCounts() async {
+        if counts == nil { counts = AssistantsDemo.counts(nowMs: nowMs) }
     }
-    func dismissInvitation() { pendingInvitation = nil }
-    func link(code: String, server: String) {
-        guard !code.isEmpty, let origin = ArchiveEndpoint.acceptableOrigin(server) else {
-            linkError = Copy.ArchiveServer.linkError(.badOrigin, host: server)
+
+    func receive(_ invitation: ArchiveLinkInvitation) {
+        linkFailure = nil
+        flow.startLink(server: invitation.host, code: invitation.code)
+    }
+
+    func clearLinkFailure() { linkFailure = nil }
+
+    func link(code: String, server: String, fromScan: Bool) {
+        let trimmed = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let origin = ArchiveEndpoint.acceptableOrigin(trimmed.isEmpty ? ArchiveSyncProtocol.defaultOrigin : trimmed)
+        else {
+            linkFailure = .badAddress
             return
         }
-        linkError = nil
-        status.link = .linked(host: origin.host ?? server)
+        linkFailure = nil
+        sync = ArchiveSyncSettings(
+            origin: origin.absoluteString, deviceId: "demo-phone", enabled: false, setupComplete: false)
+        status.link = .linked(host: origin.host ?? trimmed)
+        flow.showChoose = true
     }
-    func setEnabled(_ enabled: Bool) { status.enabled = enabled }
-    func syncNow() {
-        status.pending = 0
-        lastManualSyncAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+    func startSyncing(_ preferences: ArchivePreferences) {
+        sync.preferences = preferences
+        sync.setupComplete = true
+        sync.enabled = true
+        status.enabled = true
+        status.lastBatchAtMs = nowMs
+        flow.showConnect = true
     }
-    func unlink() { status = ArchiveSyncStatus() }
+
+    func setEnabled(_ enabled: Bool) {
+        sync.enabled = enabled
+        status.enabled = enabled
+    }
+
+    func setPreferences(_ preferences: ArchivePreferences) { sync.preferences = preferences }
+
+    func revoke(_ access: ArchiveServerStatus.Access) async -> Bool {
+        status.server?.access.removeAll { $0.id == access.id && $0.kind == access.kind }
+        return true
+    }
+
+    func unlink() async -> ArchiveUnlinkOutcome {
+        status = ArchiveSyncStatus()
+        sync = ArchiveSyncSettings(enabled: false, setupComplete: false)
+        return .deleted
+    }
+
+    func titles(conversationIds: [String]) async -> [String: String] {
+        knownTitles.filter { conversationIds.contains($0.key) }
+    }
 }
 
 // MARK: - Holder
@@ -1323,7 +1515,7 @@ final class SettingsDataSources {
     let processing: ProcessingModeSource
     let apiKeys: ApiKeyChecking
     let aiModels: [AiModelOption]
-    let server: ArchiveServerSource
+    let assistants: AssistantsSource
 
     init(
         capture: CaptureControlling? = nil,
@@ -1336,7 +1528,7 @@ final class SettingsDataSources {
         processing: ProcessingModeSource? = nil,
         apiKeys: ApiKeyChecking? = nil,
         aiModels: [AiModelOption]? = nil,
-        server: ArchiveServerSource? = nil
+        assistants: AssistantsSource? = nil
     ) {
         self.capture = capture ?? MockCaptureControl()
         self.watch = watch ?? MockWatchStatusSource()
@@ -1347,7 +1539,7 @@ final class SettingsDataSources {
         self.cloudHealth = cloudHealth ?? MockCloudHealthSource()
         self.processing = processing ?? MockProcessingModeSource()
         self.apiKeys = apiKeys ?? MockApiKeyChecker()
-        self.server = server ?? MockArchiveServerSource()
+        self.assistants = assistants ?? AssistantsDemo.makeSource()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
             .init(id: "gpt-5.6-mini", displayName: "GPT-5.6 Mini"),

@@ -1189,7 +1189,10 @@ final class AppComposition {
                         fetchColdAudio: { try await coldStorage.fetch(segmentIds: $0) },
                         temporaryDirectory: archiveDirectory.appendingPathComponent(
                             "clips", isDirectory: true),
-                        nowMs: nowMs
+                        nowMs: nowMs,
+                        // The phone's own gate on what assistants ask for (clips, edits, the
+                        // scope), whatever the server believes.
+                        permissions: { settingsBox.archiveSync.preferences }
                     )
                 ),
                 http: URLSessionArchiveHTTP(),
@@ -1361,6 +1364,8 @@ final class AppComposition {
             // written to prevent. The demo world states what its own data already claims.
             settings.captureIntent = .active
             settings.onboardingComplete = true
+            // `-assistantsDemo <state>`: the AI Assistants and Privacy review states.
+            AssistantsDemo.apply(to: settings)
         }
 
         registerBackgroundTask()

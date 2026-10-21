@@ -50,6 +50,8 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Scans the code your Pebble Audio server shows when you link this phone.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your Pebble to receive the audio you authorize on the watch.</string>
 	<key>NSContactsUsageDescription</key>

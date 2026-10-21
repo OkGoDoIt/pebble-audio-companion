@@ -71,7 +71,7 @@ struct PrivacyStanceTests {
 
         #expect(stance.isFullyLocal)
         #expect(stance.headline == "Everything stays on this phone")
-        #expect(stance.summary.contains("No recording, transcript or note is sent to any service"))
+        #expect(stance.summary.contains("No recording, transcript, or note is sent to any service"))
         // Nothing to qualify and nothing a provider could still be holding.
         #expect(stance.qualifiers.isEmpty)
         #expect(stance.deletionNote == nil)
@@ -312,15 +312,22 @@ struct PrivacyStanceTests {
 
     // MARK: - The fixed half
 
-    /// The standing commitments are shown in every configuration, and none of them may quietly
-    /// become configuration-dependent.
-    @Test func theCommitmentsAreTheSameInEveryConfiguration() {
+    /// The standing commitments hold in every configuration, with the one exception that must
+    /// follow it: once a provider receives audio or text, "never sold or shared" is false, so it
+    /// says "never sold" (privacy-model.md §3.5). It used to say "shared" in every mode.
+    @Test func theCommitmentsOnlyPromiseNotSharedWhenNothingIsShared() {
         let settings = makeSettings()
 
         for (transcription, ai) in Self.allModePairs {
             settings.transcriptionMode = transcription
             settings.aiMode = ai
-            #expect(settings.privacyStance.commitments == Copy.Privacy.commitments)
+            let stance = settings.privacyStance
+            #expect(
+                stance.commitments
+                    == (stance.isFullyLocal ? Copy.Privacy.commitments : Copy.Privacy.sharedCommitments))
+            #expect(
+                stance.commitments.contains { $0.contains("sold or shared") } == stance.isFullyLocal,
+                "\(transcription)/\(ai)")
         }
     }
 

@@ -17,20 +17,37 @@ public struct ArchiveRequestHandler: Sendable {
         public var fetchColdAudio: @Sendable ([String]) async throws -> Void
         public var temporaryDirectory: URL
         public var nowMs: @Sendable () -> Int64
+        /// What the person allowed, read at each request (`ArchiveSyncSettings.preferences`).
+        /// The phone's own gate: whatever the server believes, no clip leaves while clips are
+        /// off, nothing an assistant writes is applied while edits are off, and no clip is cut
+        /// from a conversation outside the sharing scope. Nothing is allowed by default.
+        public var permissions: @Sendable () -> ArchivePreferences
 
         public init(
             builder: ArchivePayloadBuilder,
             readFrames: @escaping @Sendable (String) async -> [FrameRecord],
             fetchColdAudio: @escaping @Sendable ([String]) async throws -> Void = { _ in },
             temporaryDirectory: URL,
-            nowMs: @escaping @Sendable () -> Int64
+            nowMs: @escaping @Sendable () -> Int64,
+            permissions: @escaping @Sendable () -> ArchivePreferences = { ArchivePreferences() }
         ) {
             self.builder = builder
             self.readFrames = readFrames
             self.fetchColdAudio = fetchColdAudio
             self.temporaryDirectory = temporaryDirectory
             self.nowMs = nowMs
+            self.permissions = permissions
         }
+    }
+
+    /// The `failed` details the phone answers with when the person has not allowed a request.
+    /// The server's own refusal wording (`docs/tool-results.md`, `notAllowed`), so a stale
+    /// server preference reads to the assistant exactly as an up-to-date one would.
+    public enum Refusal {
+        public static let clips = "The person has not allowed clips on the phone."
+        public static let edits =
+            "The person has not allowed assistants to add to their archive on the phone."
+        public static let outsideScope = "That conversation is outside what the person shares."
     }
 
     /// A clip ready to upload: the Ogg file and the span it actually covers.
@@ -61,12 +78,19 @@ public struct ArchiveRequestHandler: Sendable {
     public init(sources: Sources) { self.sources = sources }
 
     public func handle(_ request: ArchiveServerRequest) async -> Outcome {
+        let allowed = sources.permissions()
         do {
             switch request.kind {
-            case "clip": return try await clip(request)
-            case "followUp.create": return try await createFollowUp(request)
-            case "followUp.update": return try await updateFollowUp(request)
-            case "note.create": return try await createNote(request)
+            case "clip":
+                guard allowed.clips else { return .result(.init(status: .failed, detail: Refusal.clips)) }
+                return try await clip(request, scope: allowed.scope)
+            case "followUp.create", "followUp.update", "note.create":
+                guard allowed.edits else { return .result(.init(status: .failed, detail: Refusal.edits)) }
+                switch request.kind {
+                case "followUp.create": return try await createFollowUp(request)
+                case "followUp.update": return try await updateFollowUp(request)
+                default: return try await createNote(request)
+                }
             default:
                 return .result(.init(status: .failed, detail: "This app does not know \(request.kind) requests."))
             }
@@ -77,7 +101,7 @@ public struct ArchiveRequestHandler: Sendable {
 
     // MARK: - Clips
 
-    func clip(_ request: ArchiveServerRequest) async throws -> Outcome {
+    func clip(_ request: ArchiveServerRequest, scope: ArchiveSharingScope) async throws -> Outcome {
         let payload = request.payload
         guard let conversationId = payload["conversationId"]?.string,
             let startMs = ArchiveTime.ms(payload["startAt"]?.string),
@@ -85,6 +109,9 @@ public struct ArchiveRequestHandler: Sendable {
         else { return .result(.init(status: .failed, detail: "The request has no span.")) }
         guard let record = try await sources.builder.conversationRecord(conversationId) else {
             return .result(.init(status: .unavailable, detail: "This phone no longer has that conversation."))
+        }
+        if let cutoff = scope.cutoffMs(nowMs: sources.nowMs()), record.startMs < cutoff {
+            return .result(.init(status: .failed, detail: Refusal.outsideScope))
         }
         let pieces = try await sources.builder.pieces(of: record, withTranscripts: false)
         let ranges = ArchiveClipPlan.resolve(

@@ -24,12 +24,7 @@ struct SettingsScreen: View {
             titleRow
             watchCard
             groupCard
-            SettingsFooter(
-                text: Copy.Settings.Root.footer(
-                    transcription: settings.cloudTranscriptionDestination,
-                    ai: settings.remoteAiDestination
-                )
-            )
+            SettingsFooter(text: PrivacyModel.rootFooter(PrivacyModel.inputs(settings)))
         }
         // The tab roots own their titles. A system large title would reserve a full 54 pt
         // navigation-bar row above it, and this root — unlike Today, which puts Ask there —
@@ -248,6 +243,7 @@ struct SettingsScreen: View {
                 route: .settings(.transcription)
             )
             MuseSettingsRow()
+            AssistantsSettingsRow()
             SettingsNavRow(
                 title: Copy.Settings.Root.storage,
                 value: storagePreview,
@@ -259,11 +255,6 @@ struct SettingsScreen: View {
                 route: .settings(.privacy)
             )
             SettingsNavRow(title: Copy.Settings.Root.aboutYou, route: .settings(.aboutyou))
-            SettingsNavRow(
-                title: Copy.ArchiveServer.rowTitle,
-                value: serverPreview,
-                route: .settings(.server)
-            )
             // Only when a firmware release feed is configured (always in a debug build). With
             // no feed the screen could report nothing but a dead source, which would read as
             // the app being broken rather than as the feature not having started — so the door
@@ -301,18 +292,9 @@ struct SettingsScreen: View {
             inCloud: sources.storage.overview.map { $0.audioInCloudBytes > 0 ? Formatting.storageSize($0.audioInCloudBytes) : nil } ?? nil)
     }
 
-    /// "Not linked", "Paused", or the server's host.
-    private var serverPreview: String {
-        guard settings.archiveSync.isLinked, let origin = settings.archiveSync.origin else {
-            return Copy.ArchiveServer.notLinkedHeading
-        }
-        guard settings.archiveSync.enabled else { return Copy.ArchiveServer.pausedPreview }
-        return URL(string: origin)?.host ?? origin
-    }
-
-    /// Where data goes, in a few words — the same fact the Privacy screen tells at length.
+    /// Where data goes, in a few words — the same derivation the Privacy screen tells at length.
     private var privacyPreview: String {
-        settings.cloudDestinations ?? Copy.Settings.Root.privacyLocal
+        PrivacyModel.rowValue(PrivacyModel.inputs(settings), nowMs: Int64(Date().timeIntervalSince1970 * 1000))
     }
 
     // MARK: Destinations

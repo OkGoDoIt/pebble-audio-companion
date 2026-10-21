@@ -113,7 +113,7 @@ struct SettingsStorageScreen: View {
                     storage.deleteAllRecordings()
                 }
             } message: {
-                Text(Copy.Settings.Storage.deleteAllMessage(serverHost: settings.archiveLinkedHost))
+                Text(Copy.Settings.Storage.deleteAllMessage(serverHost: SettingsDataSources.current.assistants.deleteAllHost))
             }
         }
         .navigationTitle(Copy.Settings.Storage.title)

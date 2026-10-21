@@ -39,18 +39,40 @@ final class ArchiveFakeUploads: ArchiveUploading, @unchecked Sendable {
         self.answer = answer
     }
 
+    /// While true, an upload stays in flight until `cancel` (a slow network under Delete All).
+    var holds = false
+    private var _held: [String: Data] = [:]
+    private var _cancelled: [String] = []
+    var cancelled: [String] { lock.withLock { _cancelled } }
+
     func upload(_ request: URLRequest, fromFile file: URL, description: String) async {
         let body = (try? Data(contentsOf: file)) ?? Data()
-        lock.withLock {
+        let hold = lock.withLock { () -> Bool in
             _bodies.append(body)
             _requests.append(request)
+            if holds { _held[description] = body }
+            return holds
         }
+        guard !hold else { return }
         let (status, response) = answer(body)
         continuation.yield(ArchiveUploadOutcome(description: description, status: status, body: response))
     }
 
-    func inFlight() async -> Set<String> { [] }
+    func inFlight() async -> Set<String> { lock.withLock { Set(_held.keys) } }
     func reconnect() async {}
+
+    func cancel(descriptionsWithPrefix prefix: String) async {
+        let gone = lock.withLock { () -> [String] in
+            let matching = _held.keys.filter { $0.hasPrefix(prefix) }
+            for key in matching { _held[key] = nil }
+            _cancelled += matching
+            return matching
+        }
+        for description in gone {
+            continuation.yield(
+                ArchiveUploadOutcome(description: description, status: 0, body: Data(), error: "cancelled"))
+        }
+    }
 }
 
 /// Accepts every item of a batch.
@@ -193,6 +215,20 @@ struct ArchiveLinkInvitationTests {
         #expect(ArchiveEndpoint.acceptableOrigin("pebbleaudio.okgodoit.com/admin")?.absoluteString
             == "https://pebbleaudio.okgodoit.com")
         #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "companion://today"))) == nil)
+    }
+
+    @Test func theServersOwnLinkPageOpensTheSameStepWithItsOriginAsTheServer() throws {
+        let universal = try #require(URL(string: "https://pebbleaudio.okgodoit.com/link?code=k7qm-3xwd"))
+        let invitation = try #require(ArchiveLinkInvitation.parse(universal))
+        #expect(invitation.code == "K7QM3XWD")
+        #expect(invitation.origin.absoluteString == "https://pebbleaudio.okgodoit.com")
+        // The page's origin is the server; an `origin` in the query cannot redirect the code.
+        let redirect = try #require(
+            URL(string: "https://pebbleaudio.okgodoit.com/link?code=K7QM3XWD&origin=https://example.com"))
+        #expect(ArchiveLinkInvitation.parse(redirect)?.host == "pebbleaudio.okgodoit.com")
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "https://pebbleaudio.okgodoit.com/link"))) == nil)
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "https://pebbleaudio.okgodoit.com/c/conv-1?t=12"))) == nil)
+        #expect(ArchiveLinkInvitation.parse(try #require(URL(string: "http://pebbleaudio.okgodoit.com/link?code=K7QM3XWD"))) == nil)
     }
 }
 

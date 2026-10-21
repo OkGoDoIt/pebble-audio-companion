@@ -36,132 +36,169 @@ enum LiveSettingsDataSources {
             aiModels: AiModels.all.map {
                 AiModelOption(id: $0.id, displayName: $0.displayName)
             },
-            server: LiveArchiveServerSource(composition: composition)
+            assistants: LiveAssistantsSource(composition: composition)
         )
     }
 }
 
-// MARK: - Pebble Audio server
+// MARK: - AI Assistants
 
-/// The archive sync, for its Settings screen. Linking talks to the server through the kit's
-/// service and stores the result through `AppSettings` (the token in the Keychain); the screen
-/// watches the service's published status only while it is on screen.
+/// The archive sync, for Settings › AI Assistants. Linking talks to the server through the kit's
+/// service and stores the result through `AppSettings` (the token in the Keychain); the screens
+/// watch the service's published status only while one of them is on screen.
 @MainActor
 @Observable
-final class LiveArchiveServerSource: ArchiveServerSource {
+final class LiveAssistantsSource: AssistantsSource {
     @ObservationIgnored private let composition: AppComposition
     @ObservationIgnored private var observation: Task<Void, Never>?
+    @ObservationIgnored private var observers = 0
     private(set) var status = ArchiveSyncStatus()
+    private(set) var counts: ArchiveScopeCounts?
     private(set) var isWorking = false
-    private(set) var linkError: String?
-    private(set) var pendingInvitation: ArchiveLinkInvitation?
-    private(set) var lastManualSyncAtMs: Int64?
+    private(set) var linkFailure: AssistantsLinkFailure?
+    private(set) var unlinkNote: String?
+    let flow = AssistantsFlow()
 
     init(composition: AppComposition) {
         self.composition = composition
         status = composition.archiveSync.status.value
     }
 
-    private var sync: ArchiveSyncService { composition.archiveSync }
+    private var service: ArchiveSyncService { composition.archiveSync }
+    var sync: ArchiveSyncSettings { composition.settings.archiveSync }
+    var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+    /// Counted, so the AI Assistants and Privacy screens can both be open in one stack.
     func startObserving() {
+        observers += 1
         guard observation == nil else { return }
-        let sync = self.sync
+        let service = self.service
         observation = Task { [weak self] in
-            await sync.refreshServerStatus()
-            for await status in sync.status.stream() {
+            for await status in service.status.stream() {
                 guard let self, !Task.isCancelled else { return }
-                self.status = status
+                // Only a change reaches the screens (`StateSubject` already publishes no repeat).
+                if self.status != status { self.status = status }
             }
         }
     }
 
     func stopObserving() {
+        observers = max(0, observers - 1)
+        guard observers == 0 else { return }
         observation?.cancel()
         observation = nil
     }
 
+    func refreshServerStatus() async {
+        guard sync.isLinked else { return }
+        await service.refreshServerStatus()
+        status = service.status.value
+    }
+
+    func loadCounts() async {
+        let database = composition.database
+        guard let loaded = try? await ArchiveScopeCounts.load(database) else { return }
+        if loaded != counts { counts = loaded }
+    }
+
     func receive(_ invitation: ArchiveLinkInvitation) {
-        linkError = nil
-        pendingInvitation = invitation
+        linkFailure = nil
+        flow.startLink(server: invitation.host, code: invitation.code)
     }
 
-    func confirmInvitation() {
-        guard let invitation = pendingInvitation else { return }
-        pendingInvitation = nil
-        perform(code: invitation.code, origin: invitation.origin)
-    }
+    func clearLinkFailure() { linkFailure = nil }
 
-    func dismissInvitation() { pendingInvitation = nil }
-
-    func link(code: String, server: String) {
+    func link(code: String, server: String, fromScan: Bool) {
         let trimmed = server.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let origin = ArchiveEndpoint.acceptableOrigin(trimmed.isEmpty ? ArchiveSyncProtocol.defaultOrigin : trimmed)
+        guard
+            let origin = ArchiveEndpoint.acceptableOrigin(
+                trimmed.isEmpty ? ArchiveSyncProtocol.defaultOrigin : trimmed)
         else {
-            linkError = Copy.ArchiveServer.linkError(.badOrigin, host: trimmed)
+            linkFailure = .badAddress
             return
         }
-        perform(code: code, origin: origin)
-    }
-
-    private func perform(code: String, origin: URL) {
         guard !isWorking else { return }
         isWorking = true
-        linkError = nil
-        let sync = self.sync
+        linkFailure = nil
+        unlinkNote = nil
+        let service = self.service
         let settings = composition.settings
         let host = origin.host ?? origin.absoluteString
+        let normalized = ArchiveLinkInvitation.normalizedCode(code)
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
         let deviceName = UIDevice.current.name
         Task { [weak self] in
             do {
-                let linked = try await sync.link(
-                    code: code, origin: origin, deviceName: deviceName, appVersion: version,
+                let linked = try await service.link(
+                    code: normalized, origin: origin, deviceName: deviceName, appVersion: version,
                     appBuild: build)
                 guard settings.linkArchiveServer(
-                    origin: origin.absoluteString, deviceId: linked.deviceId,
-                    token: linked.deviceToken)
+                    origin: origin.absoluteString, deviceId: linked.deviceId, token: linked.deviceToken)
                 else {
-                    self?.linkError = Copy.ArchiveServer.linkError(nil, host: host)
+                    self?.linkFailure = .keepFailed
                     self?.isWorking = false
                     return
                 }
-                await sync.didLink()
+                await service.didLink()
+                self?.status = service.status.value
+                self?.flow.showChoose = true
             } catch let error as ArchiveSyncService.LinkError {
-                self?.linkError = Copy.ArchiveServer.linkError(error, host: host)
+                self?.linkFailure = AssistantsLinkFailure.from(error, code: normalized, host: host, fromScan: fromScan)
             } catch {
-                self?.linkError = Copy.ArchiveServer.linkError(.network("\(error)"), host: host)
+                self?.linkFailure = .unreachable(host: host)
             }
             self?.isWorking = false
         }
     }
 
+    func startSyncing(_ preferences: ArchivePreferences) {
+        // One write: the service hears it through the runtime mirror, sends the preferences,
+        // and starts the sync.
+        var next = composition.settings.archiveSync
+        next.preferences = preferences
+        next.setupComplete = true
+        next.enabled = true
+        composition.settings.archiveSync = next
+        flow.showConnect = true
+    }
+
     func setEnabled(_ enabled: Bool) {
-        // The settings write is the switch; the service hears it through the runtime mirror.
         composition.settings.archiveSync.enabled = enabled
     }
 
-    func syncNow() {
-        let sync = self.sync
-        Task { [weak self] in
-            await sync.syncNow()
-            await sync.refreshServerStatus()
-            self?.lastManualSyncAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-        }
+    func setPreferences(_ preferences: ArchivePreferences) {
+        composition.settings.archiveSync.preferences = preferences
     }
 
-    func unlink() {
-        guard !isWorking else { return }
+    func revoke(_ access: ArchiveServerStatus.Access) async -> Bool {
+        let done = await service.revokeAccess(kind: access.kind, id: access.id)
+        status = service.status.value
+        return done
+    }
+
+    func unlink() async -> ArchiveUnlinkOutcome {
+        guard !isWorking else { return .refused(0) }
         isWorking = true
-        let sync = self.sync
-        let settings = composition.settings
-        Task { [weak self] in
-            await sync.unlink()
-            settings.unlinkArchiveServer()
-            self?.isWorking = false
+        defer { isWorking = false }
+        let outcome = await service.unlink()
+        switch outcome {
+        case .deleted:
+            composition.settings.unlinkArchiveServer()
+            unlinkNote = nil
+        case .alreadyUnlinked:
+            composition.settings.unlinkArchiveServer()
+            unlinkNote = Copy.AssistantAccess.unlinkedAlreadyLine
+        case .unreachable, .refused:
+            break
         }
+        status = service.status.value
+        return outcome
+    }
+
+    func titles(conversationIds: [String]) async -> [String: String] {
+        (try? await ArchiveReadTitles.load(conversationIds, in: composition.database)) ?? [:]
     }
 }
 

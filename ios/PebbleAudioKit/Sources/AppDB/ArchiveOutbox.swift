@@ -757,6 +757,126 @@ public struct ArchiveOutbox: Sendable {
         }
     }
 
+    // MARK: - The sharing scope (`sync-protocol.md` §5)
+
+    /// This version is outside the sharing scope: the phone did not send it, or the server
+    /// answered `outsideScope` (not stored, not recorded). Cleared like an answered row, but with
+    /// nothing remembered as sent, so a later change, or the scope widening over it, sends it as
+    /// new. Only the version still current is touched.
+    public func markOutsideScope(_ key: ArchiveItemKey) async throws {
+        try await db.writer.write { d in
+            try d.execute(
+                sql: """
+                    UPDATE sync_outbox SET pending = 0, attempts = 0, lastError = NULL,
+                        sentVersion = NULL, sentHash = NULL, sentKey = NULL,
+                        inflightVersion = NULL, inflightHash = NULL, inflightKey = NULL
+                    WHERE kind = ? AND entityId = ? AND version = ? AND pending = 1
+                    """,
+                arguments: [key.kind.rawValue, key.entityId, key.version])
+        }
+    }
+
+    /// The scope widened over `[fromMs, toMs)` (days `[fromDay, toDay)`): everything dated in it
+    /// is marked to be sent again, with what was sent before forgotten — the server removed it
+    /// (and forgot its versions) or never stored it, so a payload that "has not changed" still
+    /// has to go. Dated as the server dates it (`ArchiveScopeGate`). Returns how many rows it
+    /// marked.
+    @discardableResult
+    public func markForResend(
+        fromMs: Int64?, toMs: Int64, fromDay: String?, toDay: String
+    ) async throws -> Int {
+        try await db.writer.write { d in
+            guard try Self.isActive(d) else { return 0 }
+            let low = fromMs ?? Int64.min
+            var marked: [(ArchiveEntityKind, String)] = []
+            var days = Set<String>()
+            for row in try Row.fetchAll(
+                d,
+                sql: "SELECT id, startMs, endMs, timezone FROM conversations WHERE startMs >= ? AND startMs < ?",
+                arguments: [low, toMs])
+            {
+                let id: String = row["id"]
+                marked.append((.conversation, id))
+                marked.append((.transcript, id))
+                let start: Int64 = row["startMs"]
+                days.formUnion(
+                    ConversationQueries.dateKeys(
+                        startMs: start, endMs: row["endMs"] ?? start, timeZoneID: row["timezone"]))
+            }
+            for id in try String.fetchAll(
+                d,
+                sql: """
+                    SELECT n.id FROM notes n LEFT JOIN conversations c ON c.id = n.conversationId
+                    WHERE COALESCE(c.startMs, n.createdAtMs) >= ? AND COALESCE(c.startMs, n.createdAtMs) < ?
+                    """,
+                arguments: [low, toMs])
+            {
+                marked.append((.note, id))
+            }
+            for id in try String.fetchAll(
+                d,
+                sql: """
+                    SELECT id FROM follow_ups WHERE COALESCE(sourceWallStartMs, createdAtMs) >= ?
+                    AND COALESCE(sourceWallStartMs, createdAtMs) < ?
+                    """,
+                arguments: [low, toMs])
+            {
+                marked.append((.followUp, id))
+            }
+            func inDays(_ day: String) -> Bool { day >= (fromDay ?? "") && day < toDay }
+            for day in try String.fetchAll(d, sql: "SELECT dateKey FROM recaps") where inDays(day) {
+                marked.append((.recap, day))
+            }
+            for day in days.sorted() where inDays(day) { marked.append((.coverage, day)) }
+            for key in try String.fetchAll(
+                d, sql: "SELECT periodKey FROM period_briefs WHERE text IS NOT NULL")
+            {
+                guard let last = Self.lastDay(ofPeriod: key), inDays(last) else { continue }
+                marked.append((.brief, key))
+            }
+            for (kind, id) in marked {
+                try Self.enqueue(d, kind: kind, id: id, op: .upsert)
+                try d.execute(
+                    sql: """
+                        UPDATE sync_outbox SET sentVersion = NULL, sentHash = NULL, sentKey = NULL
+                        WHERE kind = ? AND entityId = ? AND op = 'upsert'
+                        """,
+                    arguments: [kind.rawValue, id])
+            }
+            return marked.count
+        }
+    }
+
+    /// A brief's last day: `week:2026-10-11` ends six days after it starts, `month:2026-10` on
+    /// the month's last day. What the scope dates a brief by.
+    public static func lastDay(ofPeriod key: String) -> String? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        func string(_ date: Date) -> String {
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        }
+        if key.hasPrefix("week:") {
+            let parts = key.dropFirst("week:".count).split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 3,
+                let start = calendar.date(
+                    from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+                let end = calendar.date(byAdding: .day, value: 6, to: start)
+            else { return nil }
+            return string(end)
+        }
+        if key.hasPrefix("month:") {
+            let parts = key.dropFirst("month:".count).split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 2,
+                let start = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: 1)),
+                let next = calendar.date(byAdding: .month, value: 1, to: start),
+                let end = calendar.date(byAdding: .day, value: -1, to: next)
+            else { return nil }
+            return string(end)
+        }
+        return nil
+    }
+
     /// Turns a pending upsert of something that no longer exists locally into a delete. Only
     /// reached when a row vanished without its delete trigger (a table rebuilt by hand).
     public func convertToDelete(_ key: ArchiveItemKey) async throws {
