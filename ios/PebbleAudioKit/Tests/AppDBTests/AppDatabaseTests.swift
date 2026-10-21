@@ -625,4 +625,30 @@ import Testing
         }
         #expect(identifiers.contains("v16-history-briefs"))
     }
+
+    /// A watch whose clock had not been set dated its recordings to 2010, and the day recaps
+    /// written for those days are keyed there. The recordings now date by their arrival
+    /// (`SegmentMeta.sampleClockAnchorMs`); the recaps for days nothing real happened on go.
+    @Test func recapsForAnUnsetWatchClocksDaysAreRemoved() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unset-clock-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("companion.sqlite")
+        do {
+            let db = try AppDatabase.open(at: url)
+            try db.writer.write { d in
+                try d.execute(
+                    sql: "DELETE FROM grdb_migrations WHERE identifier = 'recaps-unset-watch-clock-v1'")
+                for day in ["2009-12-31", "2010-01-01", "2026-09-14"] {
+                    try d.execute(
+                        sql: "INSERT INTO recaps (dateKey, text, segmentIds, updatedAtMs) VALUES (?, 'A day.', '[]', 1)",
+                        arguments: [day])
+                }
+            }
+        }
+        let upgraded = try AppDatabase.open(at: url)
+        let days = try upgraded.reader.read { try String.fetchAll($0, sql: "SELECT dateKey FROM recaps") }
+        #expect(days == ["2026-09-14"])
+    }
 }

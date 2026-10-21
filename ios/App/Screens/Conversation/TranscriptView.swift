@@ -603,8 +603,9 @@ struct TranscriptStamp: View {
 // MARK: - Speaker rename sheet (plan 6.3)
 
 /// Offers the known-people list first, then free text. The choice applies to every turn
-/// carrying the same diarization label in this conversation; renames of a person apply
-/// everywhere via the people registry.
+/// carrying the same diarization label in the same segment of this conversation — labels are
+/// per segment (`SpeakerKey`), so the next segment's "Speaker 1" is somebody to name on its
+/// own; renames of a person apply everywhere via the people registry.
 ///
 /// Naming somebody used to be a one-way door. The sheet could only assign, so a typo ("Alx")
 /// created a second person that could never be renamed, merged or removed, and picking the

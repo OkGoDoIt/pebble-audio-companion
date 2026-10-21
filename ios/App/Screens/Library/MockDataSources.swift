@@ -36,8 +36,6 @@ final class MockWorld {
         var end: Date
         var isLive = false
         var tags: [ConversationTag] = []
-        var mostlyQuiet = false
-        var hasMissingAudio = false
         var lifecycle: LifecycleDisplay = .complete
         var transcript: [TranscriptItem] = []
         var player: PlayerDisplay?
@@ -130,7 +128,6 @@ final class MockWorld {
                     ConversationTag(id: "tag-planning", name: "planning", source: "ai"),
                     ConversationTag(id: "tag-money", name: "money", source: "ai"),
                 ],
-                hasMissingAudio: true,
                 transcript: [
                     turn("pw1", "S1", "Roger", .you,
                          "I'll send the notes and the extra slide so it can go faster now."),
@@ -173,7 +170,6 @@ final class MockWorld {
                 id: "evening-home",
                 title: "Evening at home",
                 start: yesterday(19, 2), end: yesterday(20, 42),
-                mostlyQuiet: true,
                 lifecycle: .capturedWaiting(queueLine: Copy.Conversation.queueLine("3rd")),
                 player: PlayerDisplay(durationMs: 100 * 60_000)
             ),
@@ -194,7 +190,6 @@ final class MockWorld {
                     ConversationTag(id: "tag-work", name: "work", source: "ai"),
                     ConversationTag(id: "tag-transcription", name: "transcription", source: "ai"),
                 ],
-                hasMissingAudio: true,
                 transcript: [
                     turn("ld1", "S1", "Roger", .you,
                          "Testing one two three, testing one two three."),
@@ -409,8 +404,6 @@ final class MockWorld {
             isLive: conversation.isLive,
             tags: conversation.tags.map(\.name),
             lifecycle: lifecycle,
-            mostlyQuiet: conversation.mostlyQuiet,
-            hasMissingAudio: conversation.hasMissingAudio,
             followUpCount: max(total.count, conversation.followUpCount),
             dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: zone),
             awaitingAnnotation: awaiting
@@ -565,7 +558,6 @@ extension MockWorld: LibraryDataSource {
             case .all: return true
             case .untranscribed: return row.lifecycle != .complete
             case .withFollowUps: return row.followUpCount > 0
-            case .withMissingAudio: return row.hasMissingAudio
             }
         }
         var sections: [String: [LibraryRow]] = [:]

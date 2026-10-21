@@ -170,9 +170,19 @@ public enum HistoryDayBuilder {
 
         let previews = input.turnPreviews.sorted { $0.startMs < $1.startMs }
         var items: [HistoryItem] = []
+        var cardIds = Set<String>()
         for entry in entries {
             if let piece = entry.piece {
                 var item = Self.item(piece, zoneID: entry.zoneID, lossRecords: built[entry.window].lossRecords)
+                // Each window cuts its chapters on its own, so a conversation that runs through
+                // a zone change starts again in the next window as the chapter's FIRST piece and
+                // takes the chapter's own id a second time — two cards the timeline cannot tell
+                // apart. A later piece is `<id>~<start>`, as one after a barrier is.
+                if case .chapter(var block) = item, !cardIds.insert(block.id).inserted {
+                    block.id = "\(block.chapterId ?? block.id)~\(block.startMs)"
+                    cardIds.insert(block.id)
+                    item = .chapter(block)
+                }
                 // A card with no title of its own shows what was said in it: a fallback stretch
                 // always, and a chapter whose title has not been written yet (a conversation
                 // right after it was re-cut, or with AI off) just the same. A titled card never.

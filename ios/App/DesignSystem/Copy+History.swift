@@ -196,7 +196,7 @@ extension Copy {
         // MARK: Chapter cards (5.3 "Chapter card")
 
         /// The title position of a card with no title and no first words to show.
-        static let notSummarisedYet = "Not summarised yet"
+        static let notSummarizedYet = "Not summarized yet"
         /// Verbatim words, quoted: an untitled card's first words.
         static func quote(_ text: String) -> String { "“\(text)”" }
         /// "· 4 min missing" on a card's time line.

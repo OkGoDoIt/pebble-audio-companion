@@ -230,14 +230,17 @@ enum TranscriptItems {
                 let startOffset = mediaOffset(speech.startMs)
                 let endOffset = mediaOffset(speech.endMs)
                 let wordSpans = aligner.spans(for: speech.text, media: mediaOffset)
+                // The provider labelled THIS segment's speakers, so a name is looked up, and
+                // filed, under the segment as well as the label (`SpeakerKey`).
+                let key = speech.speaker.map { SpeakerKey(segmentId: segmentId, label: $0) }
                 result.lastTurnId = itemId
                 result.items.append(
                     .turn(
                         TranscriptTurn(
                             id: itemId,
-                            speakerLabel: speech.speaker ?? "",
-                            name: speakerName(speech.speaker, assignments: assignments),
-                            role: speakerRole(speech.speaker, assignments: assignments),
+                            speakerLabel: key?.stored ?? "",
+                            name: speakerName(key, assignments: assignments),
+                            role: speakerRole(key, assignments: assignments),
                             text: speech.text,
                             startedAt: startedAt,
                             segmentId: segmentId,
@@ -295,17 +298,18 @@ enum TranscriptItems {
         ]
     }
 
-    static func speakerName(_ speaker: String?, assignments: [SpeakerAssignment]) -> String {
+    static func speakerName(_ speaker: SpeakerKey?, assignments: [SpeakerAssignment]) -> String {
         guard let speaker else { return "Speaker" }
-        if let match = assignments.first(where: { $0.label == speaker }) {
+        if let match = SpeakerAssignment.match(speaker, in: assignments) {
             return match.personName
         }
-        return speakerLabel(speaker)
+        return speakerLabel(speaker.label)
     }
 
-    static func speakerRole(_ speaker: String?, assignments: [SpeakerAssignment]) -> SpeakerRole {
+    static func speakerRole(_ speaker: SpeakerKey?, assignments: [SpeakerAssignment]) -> SpeakerRole
+    {
         guard let speaker else { return .unresolved }
-        guard let match = assignments.first(where: { $0.label == speaker }) else {
+        guard let match = SpeakerAssignment.match(speaker, in: assignments) else {
             return .unresolved
         }
         // The wearer is whoever the user named "You"; everyone else is a counterpart.

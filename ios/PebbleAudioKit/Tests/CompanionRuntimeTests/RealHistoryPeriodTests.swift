@@ -13,8 +13,10 @@ import Transcription
 // Gated: set PEBBLE_HISTORY_BACKUP to a backup root (the folder holding `segments/`,
 // `transcription/` and `db/`). The backup is only read: its database is copied to a temporary
 // folder and opened there. Nothing from it is asserted beyond the invariants, and nothing from
-// it is committed. PEBBLE_HISTORY_ZONE overrides the zone unstamped recordings are dated in
-// (default Asia/Jakarta, where the stamped ones were made).
+// it is committed. PEBBLE_HISTORY_ZONE overrides the zone unstamped recordings are dated in;
+// the default is the zone of the backup's newest stamped recording, read from the backup (where
+// the phone was when it was taken, which is what the app dates unstamped recordings in). A
+// fixed city here made every unstamped/stamped boundary a zone change the phone never had.
 
 private let backupRoot: String? = ProcessInfo.processInfo.environment["PEBBLE_HISTORY_BACKUP"]
 
@@ -31,10 +33,15 @@ struct RealHistoryPeriodTests {
     @Test("every day, week and month of the backup builds through the live reader")
     func everyPeriodBuilds() async throws {
         let root = URL(fileURLWithPath: backupRoot!)
-        let zone = ProcessInfo.processInfo.environment["PEBBLE_HISTORY_ZONE"] ?? "Asia/Jakarta"
         let files = SegmentFileReader(root: root)
         let metas = files.listSegments()
         try #require(!metas.isEmpty)
+        let zone =
+            ProcessInfo.processInfo.environment["PEBBLE_HISTORY_ZONE"]
+            ?? metas
+            .filter { $0.recordedTimeZone.flatMap(TimeZone.init(identifier:)) != nil }
+            .max { $0.startWallMs < $1.startWallMs }?
+            .recordedTimeZone ?? TimeZone.current.identifier
 
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("history-periods-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

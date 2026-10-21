@@ -7,7 +7,7 @@ import WireProtocol
 // shows: recorded (persisted frames), missing (visible loss — NEVER silence), quiet (VAD
 // holes: sample-index ranges covered by neither frames nor loss gaps; the watch advances
 // sample indexes across suppressed silence so these holes ARE the quiet spans), paused
-// (pause_intervals), and off (the remainder). Pure computation, cached in `coverage_days`.
+// (pause_intervals), and off (the remainder). Pure computation, done live where it is shown.
 
 /// Coverage taxonomy. Paused is its own state — never rendered as missing (plan 6.1).
 public enum CoverageKind: String, Codable, Sendable {

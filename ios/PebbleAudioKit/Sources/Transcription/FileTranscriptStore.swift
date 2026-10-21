@@ -56,7 +56,9 @@ extension SegmentTranscript: Codable {
         providerId = try c.decode(String.self, forKey: .providerId)
         modelUsed = try c.decodeIfPresent(String.self, forKey: .modelUsed)
         createdAtMs = try c.decode(Int64.self, forKey: .createdAtMs)
-        segments = try c.decodeIfPresent([TranscriptSegment].self, forKey: .segments) ?? []
+        segments = Self.restoringWordSpaces(
+            try c.decodeIfPresent([TranscriptSegment].self, forKey: .segments) ?? [],
+            from: text, providerId: providerId)
         words = try c.decodeIfPresent([TranscriptWord].self, forKey: .words) ?? []
     }
 
@@ -74,6 +76,75 @@ extension SegmentTranscript: Codable {
 }
 
 extension SegmentTranscript {
+    /// The turns with the spaces between words put back, for the Soniox transcripts written
+    /// before `SonioxTranscriptionProvider` stopped dropping the blank tokens Soniox sends some
+    /// spaces as. Those turns glued a word onto the one before it ("so,right") — in a real
+    /// backup 5,140 times, in 765 of 1,176 transcripts — while `text`, which is Soniox's own,
+    /// kept every space. So the spaces come from `text`.
+    ///
+    /// Repaired on read, the way `SegmentMeta.repairedStartTimeMs` is: the files stay as they
+    /// are, and the whole library reads right the next time it is loaded. Only by letters: the
+    /// turns must be `text`'s non-space characters, in order, exactly, or nothing is changed —
+    /// which leaves alone a redacted transcript (its `text` is rebuilt from the turns, so it
+    /// has nothing to add) and anything else that does not line up. A transcript written since
+    /// the fix lines up with nothing to add. Words are untouched: their aligner counts letters.
+    ///
+    /// NOT applied to `FileTranscriptStore.loadSpeechTimings`: the segmenter reads word counts
+    /// from those turns, and moving its inputs under recordings it has already cut would move
+    /// settled conversations.
+    static func restoringWordSpaces(
+        _ segments: [TranscriptSegment], from text: String, providerId: String
+    ) -> [TranscriptSegment] {
+        guard providerId == SonioxTranscriptionProvider.providerId, !segments.isEmpty else {
+            return segments
+        }
+        var reference = text.unicodeScalars.makeIterator()
+        /// The next non-space character of `text`, and whether a space came before it.
+        func nextLetter() -> (scalar: Unicode.Scalar, spaced: Bool)? {
+            var spaced = false
+            while let scalar = reference.next() {
+                if scalar.properties.isWhitespace {
+                    spaced = true
+                } else {
+                    return (scalar, spaced)
+                }
+            }
+            return nil
+        }
+        var repaired = segments
+        var changed = false
+        for index in segments.indices {
+            var rebuilt = String.UnicodeScalarView()
+            var afterSpace = true
+            var inserted = false
+            for scalar in segments[index].text.unicodeScalars {
+                if scalar.properties.isWhitespace {
+                    rebuilt.append(scalar)
+                    afterSpace = true
+                    continue
+                }
+                guard let expected = nextLetter(), expected.scalar == scalar else {
+                    return segments
+                }
+                if expected.spaced && !afterSpace {
+                    rebuilt.append(" ")
+                    inserted = true
+                }
+                rebuilt.append(scalar)
+                afterSpace = false
+            }
+            if inserted {
+                let turn = segments[index]
+                repaired[index] = TranscriptSegment(
+                    text: String(rebuilt), startMs: turn.startMs, endMs: turn.endMs,
+                    speaker: turn.speaker, confidence: turn.confidence,
+                    minConfidence: turn.minConfidence)
+                changed = true
+            }
+        }
+        return changed ? repaired : segments
+    }
+
     /// This transcript without what was said in `ranges` of the segment's stored audio: the
     /// turns and the words that START in one of them are removed and `text` is rebuilt from
     /// the turns that are left.
@@ -325,7 +396,9 @@ public final class FileTranscriptStore: Sendable {
         return SegmentTranscript(
             segmentId: decoded.segmentId, text: decoded.text, modeUsed: decoded.modeUsed,
             providerId: decoded.providerId, modelUsed: decoded.modelUsed,
-            createdAtMs: decoded.createdAtMs, segments: decoded.segments ?? [])
+            createdAtMs: decoded.createdAtMs,
+            segments: SegmentTranscript.restoringWordSpaces(
+                decoded.segments ?? [], from: decoded.text, providerId: decoded.providerId))
     }
 
     public func list() -> [SegmentTranscript] {

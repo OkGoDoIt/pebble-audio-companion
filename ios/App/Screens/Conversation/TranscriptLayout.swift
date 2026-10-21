@@ -164,8 +164,14 @@ struct TranscriptLayout: Equatable {
     /// ONE name header. Real transcripts arrive split at provider segment boundaries — often
     /// mid-sentence — and repeating "Speaker 1" over every fragment turned the card into a wall
     /// of labels.
+    ///
+    /// The same speaker is the same label in the same segment (`SpeakerKey`), or the same
+    /// person by name: a named person talking across a segment boundary is still one run,
+    /// while two unnamed "Speaker 1"s either side of it may be two people.
     static func continuesRun(_ previous: TranscriptTurn, with turn: TranscriptTurn) -> Bool {
-        previous.speakerLabel == turn.speakerLabel && previous.name == turn.name
+        let sameSpeaker =
+            previous.speakerLabel == turn.speakerLabel || previous.role != .unresolved
+        return sameSpeaker && previous.name == turn.name
             && previous.role == turn.role && previous.isInProgress == turn.isInProgress
     }
 

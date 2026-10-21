@@ -174,12 +174,12 @@ struct HistoryFormatTests {
         #expect(HistoryLabels.isUntitled(untitled))
     }
 
-    @Test func withNoWordsTheTitlePositionSaysNotSummarisedYet() {
+    @Test func withNoWordsTheTitlePositionSaysNotSummarizedYet() {
         var bare = block(at(15, 20), at(16, 5))
         bare.title = nil
         bare.snippet = "   "
         #expect(HistoryLabels.heading(bare) == .placeholder)
-        #expect(HistoryLabels.chapterTitle(bare, locale: us) == "Not summarised yet")
+        #expect(HistoryLabels.chapterTitle(bare, locale: us) == "Not summarized yet")
         #expect(HistoryLabels.heading(block(at(9, 0), at(10, 0))) == .title("Invoice details with the vendor"))
     }
 
@@ -194,7 +194,7 @@ struct HistoryFormatTests {
         let label = plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us))
         #expect(label == "First words: Right, try it again. 3:20 to 4:05 PM, 45 minutes")
         untitled.snippet = nil
-        #expect(plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us)) == "Not summarised yet. 3:20 to 4:05 PM, 45 minutes")
+        #expect(plain(HistoryLabels.chapterAccessibilityLabel(untitled, locale: us)) == "Not summarized yet. 3:20 to 4:05 PM, 45 minutes")
     }
 
     @Test func theLiveCardsTimeLine() {

@@ -81,8 +81,6 @@ struct LibraryRow: Equatable, Identifiable {
     var isLive = false
     var tags: [String] = []
     var lifecycle: ConversationLifecycle = .complete
-    var mostlyQuiet = false
-    var hasMissingAudio = false
     var followUpCount = 0
     var dateKey: String
     /// Transcribed, but AI has not written a title/summary yet. The row says so instead of
@@ -121,7 +119,9 @@ struct TranscriptWordSpan: Equatable {
 
 struct TranscriptTurn: Equatable, Identifiable {
     var id: String
-    /// Diarization label within the conversation (stable across renames).
+    /// What the speaker's name is filed under (stable across renames): the diarization label
+    /// AND the segment it labels, as `SpeakerKey.stored`, because a provider labels each
+    /// segment on its own. Empty when the provider gave no speaker.
     var speakerLabel: String
     var name: String
     var role: SpeakerRole
@@ -754,14 +754,13 @@ enum TimeFmt {
         return dayLabel(dateKey: key)
     }
 
-    /// Library row meta: "7:02 PM · 1 hr 40 min · mostly quiet" / "12:04 PM · 48 min so far".
+    /// Library row meta: "7:02 PM · 1 hr 40 min" / "12:04 PM · 48 min so far".
     static func rowMeta(_ row: LibraryRow) -> String {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
         var meta =
             "\(time(start)) · "
             + ConversationDuration.label(durationMs: row.durationMs, isLive: row.isLive)
         if row.isLive { meta += " so far" }
-        if row.mostlyQuiet { meta += " · \(Copy.Library.mostlyQuiet)" }
         // An untitled row is either still being written or genuinely bare; say which.
         if !row.isLive, row.title == nil, row.awaitingAnnotation {
             meta += " · \(Copy.Conversation.rowSummaryComing)"

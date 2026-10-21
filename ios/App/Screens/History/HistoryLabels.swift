@@ -59,7 +59,7 @@ enum HistoryLabels {
         switch heading(block) {
         case .title(let title): return title
         case .quote(let quote): return Copy.History.quote(quote)
-        case .placeholder: return Copy.History.notSummarisedYet
+        case .placeholder: return Copy.History.notSummarizedYet
         }
     }
 
@@ -181,7 +181,7 @@ enum HistoryLabels {
             if case .quote(let quote) = heading(block) {
                 sentences.append(Copy.History.A11y.firstWords(quote))
             } else {
-                sentences.append(Copy.History.notSummarisedYet)
+                sentences.append(Copy.History.notSummarizedYet)
             }
             sentences.append(head)
             var rest: [String] = []

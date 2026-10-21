@@ -297,7 +297,9 @@ public struct Person: Equatable, Sendable {
 
 public struct SpeakerAssignment: Equatable, Sendable {
     public var conversationId: String
-    /// Diarization label within the conversation, e.g. "Speaker 1".
+    /// The key the name is filed under: `SpeakerKey.stored`, the segment and its diarization
+    /// label. Rows written before names were scoped hold the label alone, as the rename sheet
+    /// filed it ("Speaker 1") or bare ("1") — see `SpeakerKey.lookupOrder`.
     public var label: String
     public var personId: String
     public var personName: String
@@ -307,6 +309,94 @@ public struct SpeakerAssignment: Equatable, Sendable {
         self.label = label
         self.personId = personId
         self.personName = personName
+    }
+
+    /// The assignment that names `key`'s speaker, if any, by `SpeakerKey.lookupOrder`.
+    public static func match(
+        _ key: SpeakerKey, in assignments: [SpeakerAssignment]
+    ) -> SpeakerAssignment? {
+        for stored in key.lookupOrder {
+            if let found = assignments.first(where: { $0.label == stored }) { return found }
+        }
+        return nil
+    }
+
+    /// The same for a label as a transcript turn carries it: a `SpeakerKey.stored`, or any
+    /// other label taken as it is.
+    public static func match(
+        stored label: String, in assignments: [SpeakerAssignment]
+    ) -> SpeakerAssignment? {
+        if let key = SpeakerKey(stored: label) { return match(key, in: assignments) }
+        return assignments.first { $0.label == label }
+    }
+}
+
+/// Where a speaker's name is filed: the provider's diarization label AND the segment it labels.
+///
+/// A provider labels ONE segment — one rotation, one transcription — at a time, so "1" in one
+/// segment is not "1" in the next, and one person routinely holds a different number in each.
+/// A conversation spans several segments. Names used to be filed under the bare label, so naming
+/// "Speaker 1" in one segment named whoever held label 1 in every segment of the conversation,
+/// and the archive sync sent that mapping on to the server.
+///
+/// `speaker_assignments.label` holds `stored`. The table and its key are unchanged; only what
+/// the label column says is narrower.
+public struct SpeakerKey: Hashable, Sendable {
+    public var segmentId: String
+    /// The provider's raw label for the speaker within the segment ("1").
+    public var label: String
+
+    /// `label` may be the raw label or the form the transcript renderer shows ("Speaker 1",
+    /// which is what a transcript turn carries): both file under the raw one, so the app and the
+    /// archive export, which reads raw labels, find the same name.
+    public init(segmentId: String, label: String) {
+        self.segmentId = segmentId
+        self.label = Self.rawLabel(label)
+    }
+
+    /// "Speaker 7" → "7"; anything else as it is.
+    static func rawLabel(_ label: String) -> String {
+        let prefix = "Speaker "
+        guard label.hasPrefix(prefix) else { return label }
+        let digits = label.dropFirst(prefix.count)
+        return !digits.isEmpty && digits.allSatisfy(\.isNumber) ? String(digits) : label
+    }
+
+    /// Never in a segment id, which is `seg-<ms>-<hex>-<n>`.
+    static let separator: Character = "#"
+
+    /// What `speaker_assignments.label` holds for this speaker.
+    public var stored: String { "\(segmentId)\(Self.separator)\(label)" }
+
+    /// Reads a stored label. Nil for a row written before names were scoped, which names a
+    /// label rather than a segment's speaker.
+    public init?(stored: String) {
+        guard let separator = stored.firstIndex(of: Self.separator),
+            separator > stored.startIndex
+        else { return nil }
+        self.segmentId = String(stored[..<separator])
+        self.label = String(stored[stored.index(after: separator)...])
+    }
+
+    /// The stored labels that can name this speaker, most specific first.
+    ///
+    /// Its own key, then the two forms rows were written in before names were scoped: the bare
+    /// label, and its display form ("Speaker 1"), which is what the rename sheet filed names
+    /// under because that is what a transcript turn carried. Those named the label in every
+    /// segment of the conversation; they still do wherever a segment has no name of its own,
+    /// because that is what the person saw when they made them.
+    public var lookupOrder: [String] {
+        var keys = [stored, label]
+        if !label.isEmpty, label.allSatisfy(\.isNumber) { keys.append("Speaker \(label)") }
+        return keys
+    }
+
+    /// This speaker's name in a table keyed by stored label (the archive export's form).
+    public func name(in names: [String: String]) -> String? {
+        for stored in lookupOrder {
+            if let name = names[stored] { return name }
+        }
+        return nil
     }
 }
 
@@ -1461,7 +1551,8 @@ public struct PeopleStore: Sendable {
         }
     }
 
-    /// Assigns a diarization label within a conversation to a person (upsert per label).
+    /// Files a speaker under a person, in one conversation (upsert per label). `label` is a
+    /// `SpeakerKey.stored`, so the name reaches that segment's speaker and nobody else's.
     public func assign(conversationId: String, label: String, personId: String) async throws {
         try await db.writer.write { db in
             try db.execute(
@@ -1669,53 +1760,6 @@ public struct CustomTemplateStore: Sendable {
             try Row.fetchAll(
                 db, sql: "SELECT * FROM custom_templates ORDER BY createdAtMs ASC, id"
             ).map(Self.template(from:))
-        }.values(in: db.reader)
-    }
-}
-
-// MARK: - CoverageDayStore (cache for plan 6.2)
-
-public struct CoverageDayStore: Sendable {
-    public let db: AppDatabase
-    public init(db: AppDatabase) { self.db = db }
-
-    public func save(
-        _ coverage: DayCoverage,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
-    ) async throws {
-        let json = String(decoding: try JSONEncoder().encode(coverage.spans), as: UTF8.self)
-        try await db.writer.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO coverage_days (dateKey, spans, updatedAtMs) VALUES (?, ?, ?)
-                    ON CONFLICT(dateKey) DO UPDATE
-                        SET spans = excluded.spans, updatedAtMs = excluded.updatedAtMs
-                    """,
-                arguments: [coverage.dateKey, json, nowMs]
-            )
-        }
-    }
-
-    static func decodeSpans(_ json: String?) -> [CoverageSpan]? {
-        guard let json else { return nil }
-        return try? JSONDecoder().decode([CoverageSpan].self, from: Data(json.utf8))
-    }
-
-    public func load(dateKey: String) async throws -> [CoverageSpan]? {
-        try await db.reader.read { db in
-            Self.decodeSpans(
-                try String.fetchOne(
-                    db, sql: "SELECT spans FROM coverage_days WHERE dateKey = ?",
-                    arguments: [dateKey]))
-        }
-    }
-
-    public func observe(dateKey: String) -> AsyncValueObservation<[CoverageSpan]?> {
-        ValueObservation.tracking { db in
-            Self.decodeSpans(
-                try String.fetchOne(
-                    db, sql: "SELECT spans FROM coverage_days WHERE dateKey = ?",
-                    arguments: [dateKey]))
         }.values(in: db.reader)
     }
 }

@@ -131,7 +131,6 @@ struct LibraryScreen: View {
                 Text(Copy.Library.filterAll).tag(LibraryFilter.all)
                 Text(Copy.Library.filterUntranscribed).tag(LibraryFilter.untranscribed)
                 Text(Copy.Library.filterWithFollowUps).tag(LibraryFilter.withFollowUps)
-                Text(Copy.Library.filterWithMissingAudio).tag(LibraryFilter.withMissingAudio)
             }
         } label: {
             HStack(spacing: 4) {
@@ -151,7 +150,6 @@ struct LibraryScreen: View {
         case .all: return Copy.Library.filterAll
         case .untranscribed: return Copy.Library.filterUntranscribed
         case .withFollowUps: return Copy.Library.filterWithFollowUps
-        case .withMissingAudio: return Copy.Library.filterWithMissingAudio
         }
     }
 

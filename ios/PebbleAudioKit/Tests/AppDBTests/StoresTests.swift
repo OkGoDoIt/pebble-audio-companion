@@ -245,6 +245,45 @@ import Testing
         #expect(try await store.listPeople().isEmpty)
     }
 
+    /// A provider labels one segment at a time, so the same label in two segments of one
+    /// conversation is two speakers, and each is named on its own — while a row written before
+    /// names were scoped (the sheet's "Speaker 1", or the bare label) still names the label
+    /// wherever a segment has no name of its own.
+    @Test func speakerNamesAreFiledPerSegment() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = PeopleStore(db: db)
+        let sam = try await store.createPerson(name: "Sam")
+        let alex = try await store.createPerson(name: "Alex")
+        let first = SpeakerKey(segmentId: "seg-1788000000000-aa-1", label: "1")
+        let second = SpeakerKey(segmentId: "seg-1788000900000-aa-2", label: "1")
+        #expect(SpeakerKey(stored: first.stored) == first)
+        // A turn carries the rendered form; it files under the raw label the export reads.
+        #expect(SpeakerKey(segmentId: first.segmentId, label: "Speaker 1") == first)
+        #expect(first.stored == "seg-1788000000000-aa-1#1")
+        #expect(SpeakerKey(segmentId: "s", label: "Speaker A").label == "Speaker A")
+        #expect(SpeakerKey(stored: "1") == nil)
+        #expect(SpeakerKey(stored: "Speaker 1") == nil)
+
+        try await store.assign(conversationId: "c1", label: second.stored, personId: sam.id)
+        var rows = try await store.assignments(forConversation: "c1")
+        #expect(SpeakerAssignment.match(second, in: rows)?.personName == "Sam")
+        #expect(SpeakerAssignment.match(first, in: rows) == nil)
+
+        for legacy in ["1", "Speaker 1"] {
+            try await store.assign(conversationId: "c1", label: legacy, personId: alex.id)
+            rows = try await store.assignments(forConversation: "c1")
+            #expect(SpeakerAssignment.match(first, in: rows)?.personName == "Alex")
+            #expect(SpeakerAssignment.match(second, in: rows)?.personName == "Sam")
+            #expect(SpeakerAssignment.match(stored: first.stored, in: rows)?.label == legacy)
+            try await store.unassign(conversationId: "c1", label: legacy)
+        }
+        // The archive export's form: names keyed by stored label.
+        let names = ["1": "Alex", second.stored: "Sam"]
+        #expect(first.name(in: names) == "Alex")
+        #expect(second.name(in: names) == "Sam")
+        #expect(SpeakerKey(segmentId: "x", label: "2").name(in: ["Speaker 2": "Dana"]) == "Dana")
+    }
+
     /// Regenerating a note must rewrite the SAME row: the open screen, the Spotlight entry and
     /// every citation address it by id, so a new id silently orphans all three.
     @Test func replaceContentRewritesTheNoteInPlace() async throws {
@@ -326,26 +365,6 @@ import Testing
         #expect(try await store.list().map(\.title) == ["Standup"])
     }
 
-    @Test func coverageDayStoreRoundTrips() async throws {
-        let db = try AppDatabase.inMemory()
-        let store = CoverageDayStore(db: db)
-        let spans = [
-            CoverageSpan(kind: .recorded, startMs: 0, endMs: 60_000),
-            CoverageSpan(kind: .off, startMs: 60_000, endMs: 120_000),
-        ]
-        try await store.save(
-            DayCoverage(
-                dateKey: "2026-03-10", timeZoneID: "UTC", spans: spans,
-                totalRecordedMs: 60_000, totalMissingMs: 0))
-        #expect(try await store.load(dateKey: "2026-03-10") == spans)
-        // Upsert replaces.
-        try await store.save(
-            DayCoverage(
-                dateKey: "2026-03-10", timeZoneID: "UTC", spans: [spans[0]],
-                totalRecordedMs: 60_000, totalMissingMs: 0))
-        #expect(try await store.load(dateKey: "2026-03-10") == [spans[0]])
-    }
-
     @Test func tagObservationEmitsOnWrite() async throws {
         let db = try AppDatabase.inMemory()
         let store = TagStore(db: db)
@@ -360,7 +379,7 @@ import Testing
 
 @Suite struct ConversationQueriesTests {
     /// Builds a two-day library: conv-s1 (2 members, one still pending, tagged, one open
-    /// follow-up) on day one; conv-s3 (complete, mostly quiet with a missing minute) on day two.
+    /// follow-up) on day one; conv-s3 (complete, untitled) on day two.
     func makeFixture() async throws -> (AppDatabase, day1: String, day2: String) {
         let db = try AppDatabase.inMemory()
         let zone = "UTC"
@@ -402,21 +421,6 @@ import Testing
             conversationId: "conv-s1", name: "work", source: "ai")
         _ = try await FollowUpStore(db: db).add(
             text: "Book the walkthrough", conversationId: "conv-s1", nowMs: 1_000)
-
-        // Day-2 coverage: 15 of conv-s3's 20 minutes quiet (>60%) and 1 minute missing.
-        try await CoverageDayStore(db: db).save(
-            DayCoverage(
-                dateKey: day2, timeZoneID: zone,
-                spans: [
-                    CoverageSpan(kind: .recorded, startMs: s3start, endMs: s3start + minutesMs(4)),
-                    CoverageSpan(
-                        kind: .missing, startMs: s3start + minutesMs(4),
-                        endMs: s3start + minutesMs(5)),
-                    CoverageSpan(
-                        kind: .quiet, startMs: s3start + minutesMs(5),
-                        endMs: s3start + minutesMs(20)),
-                ],
-                totalRecordedMs: minutesMs(4), totalMissingMs: minutesMs(1)))
         return (db, day1, day2)
     }
 
@@ -428,8 +432,6 @@ import Testing
         let s3Row = sections[0].rows[0]
         #expect(s3Row.id == "conv-s3")
         #expect(s3Row.lifecycle == .complete)
-        #expect(s3Row.mostlyQuiet)
-        #expect(s3Row.hasMissingAudio)
         #expect(s3Row.title == nil)
 
         let s1Row = sections[1].rows[0]
@@ -439,7 +441,6 @@ import Testing
         #expect(s1Row.lifecycle == .capturedWaiting)
         #expect(s1Row.tags == ["work"])
         #expect(s1Row.followUpCount == 1 && s1Row.openFollowUpCount == 1)
-        #expect(!s1Row.mostlyQuiet && !s1Row.hasMissingAudio)
         #expect(s1Row.durationMs == minutesMs(22))
     }
 
@@ -454,7 +455,6 @@ import Testing
         #expect(try await ids(.all) == ["conv-s3", "conv-s1"])
         #expect(try await ids(.untranscribed) == ["conv-s1"])
         #expect(try await ids(.withFollowUps) == ["conv-s1"])
-        #expect(try await ids(.withMissingAudio) == ["conv-s3"])
         #expect(try await ids(.all, tag: "work") == ["conv-s1"])
         #expect(try await ids(.all, tag: "family") == [])
     }
@@ -599,16 +599,6 @@ import Testing
             try d.execute(sql: "UPDATE follow_ups SET done = 1 WHERE id = ?", arguments: [done.id])
             try d.execute(sql: "UPDATE follow_ups SET archivedAtMs = 5000 WHERE id = ?", arguments: [archived.id])
         }
-        let s3start = day2 + minutesMs(360)
-        try await CoverageDayStore(db: db).save(
-            DayCoverage(
-                dateKey: "2026-03-11", timeZoneID: zone,
-                spans: [
-                    CoverageSpan(kind: .recorded, startMs: s3start, endMs: s3start + minutesMs(4)),
-                    CoverageSpan(kind: .missing, startMs: s3start + minutesMs(4), endMs: s3start + minutesMs(5)),
-                    CoverageSpan(kind: .quiet, startMs: s3start + minutesMs(5), endMs: s3start + minutesMs(20)),
-                ],
-                totalRecordedMs: minutesMs(4), totalMissingMs: minutesMs(1)))
         return db
     }
 
@@ -651,7 +641,6 @@ import Testing
         #expect(all.count == 5)
         #expect(all.contains { $0.isLive })
         #expect(all.contains { $0.tags.count > 1 })
-        #expect(all.contains { $0.hasMissingAudio && $0.mostlyQuiet })
         #expect(all.contains { $0.openFollowUpCount < $0.followUpCount })
         #expect(Set(all.map(\.lifecycle)).count >= 3)
         #expect(Set(all.map(\.timeZoneID)).count == 2)

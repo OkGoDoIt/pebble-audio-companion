@@ -48,8 +48,6 @@ final class LiveWorld {
             isLive: source.isLive,
             tags: source.tags,
             lifecycle: source.lifecycle,
-            mostlyQuiet: source.mostlyQuiet,
-            hasMissingAudio: source.hasMissingAudio,
             followUpCount: source.openFollowUpCount,
             dateKey: source.dateKey,
             awaitingAnnotation: source.awaitingAnnotation
@@ -1928,8 +1926,8 @@ extension LiveWorld: PeopleDataSource {
     }
 
     func assignedPerson(conversationId: String, label: String) async throws -> Person? {
-        try await composition.people.assignments(forConversation: conversationId)
-            .first { $0.label == label }
+        let assignments = try await composition.people.assignments(forConversation: conversationId)
+        return SpeakerAssignment.match(stored: label, in: assignments)
             .map { Person(id: $0.personId, name: $0.personName) }
     }
 
@@ -1943,7 +1941,11 @@ extension LiveWorld: PeopleDataSource {
     }
 
     func unassign(conversationId: String, label: String) async throws {
-        try await composition.people.unassign(conversationId: conversationId, label: label)
+        // The row that names this speaker, which for a name given before names were scoped to
+        // a segment is the conversation-wide one (`SpeakerKey.lookupOrder`).
+        let assignments = try await composition.people.assignments(forConversation: conversationId)
+        let stored = SpeakerAssignment.match(stored: label, in: assignments)?.label ?? label
+        try await composition.people.unassign(conversationId: conversationId, label: stored)
         await reindex([conversationId])
     }
 
