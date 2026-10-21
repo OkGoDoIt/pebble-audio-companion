@@ -20,6 +20,6 @@ extension Copy.Settings.Diagnostics {
     /// capture on for someone who had it off, and this row is the only place that could say so
     /// before they tap it. (Backing out of step 2 puts it back; finishing does not.)
     static let redoOnboardingFooter =
-        "Shows the setup flow again. Recordings, keys and the watch pairing are kept; Connect "
+        "Shows the setup flow again. Recordings, keys, and the watch pairing are kept; Connect "
         + "Watch switches capture on, as on a first run."
 }

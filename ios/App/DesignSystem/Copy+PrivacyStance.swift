@@ -349,7 +349,8 @@ extension Copy.Settings.Storage {
     /// Under the three choices.
     static let systemSearchChoiceFooter =
         "Off keeps everything out of the system index. Titles and summaries shares each "
-        + "conversation's title, AI summary, tags and dates, note titles, and each day's recap. "
+        + "conversation's title, AI summary, tags, and dates, plus note titles and each day's "
+        + "recap. "
         + "Everything also shares transcripts and note bodies, so Spotlight and Siri can match "
         + "the words that were said. Changing this rewrites the index."
 }

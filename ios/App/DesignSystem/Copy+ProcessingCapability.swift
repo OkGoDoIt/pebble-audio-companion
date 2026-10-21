@@ -98,9 +98,9 @@ extension Copy.Settings.TranscriptionAI {
             // right now that is every job. A model that is still downloading gets the temporary
             // wording — "unavailable" would be true today and wrong tomorrow.
             return readiness == .preparing
-                ? "Until Apple Intelligence is ready, every summary, note and answer is written "
+                ? "Until Apple Intelligence is ready, every summary, note, and answer is written "
                     + "by \(remoteName)."
-                : "With Apple Intelligence unavailable, every summary, note and answer is "
+                : "With Apple Intelligence unavailable, every summary, note, and answer is "
                     + "written by \(remoteName)."
         case .remoteFirst, .remoteOnly:
             return nil
@@ -120,7 +120,7 @@ extension Copy.Settings.TranscriptionAI {
             return nil
         case .notSupported:
             return "Apple Intelligence doesn’t run on this iPhone. In Local only, summaries, "
-                + "notes and answers stay empty."
+                + "notes, and answers stay empty."
         case .switchedOff:
             return "Apple Intelligence is off in iOS Settings. Until it’s on, Local only writes "
                 + "nothing."

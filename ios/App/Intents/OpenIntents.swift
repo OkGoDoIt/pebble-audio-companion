@@ -81,7 +81,7 @@ struct OpenNoteIntent: OpenIntent {
 struct SearchInAppIntent: ShowInAppSearchResultsIntent {
     static let title: LocalizedStringResource = "Search Recordings"
     static let description = IntentDescription(
-        "Searches your conversations, notes and follow-ups in Pebble Audio."
+        "Searches your conversations, notes, and follow-ups in Pebble Audio."
     )
     static let searchScopes: [StringSearchScope] = [.general]
     static let supportedModes: IntentModes = .foreground
