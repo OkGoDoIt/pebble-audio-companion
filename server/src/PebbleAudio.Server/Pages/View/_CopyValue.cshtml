@@ -1,0 +1,13 @@
+@* A value to type in another app, under that app's own label, with Copy beside it: the address card (05a), inset in a step. *@
+@model PebbleAudio.Server.Pages.View.CopyValue
+@using System.Text.Encodings.Web
+@using Microsoft.AspNetCore.Html
+@{
+	// An address breaks after a slash, not inside a word.
+	IHtmlContent Breakable(string value) =>
+		new HtmlString(string.Join("/<wbr>", value.Split('/').Select(part => HtmlEncoder.Default.Encode(part))));
+}
+<span class="address inset">
+	<span class="grow"><span class="label">@Model.Label</span><span class="value">@Breakable(Model.Value)</span></span>
+	<button type="button" class="btn small bordered" data-copy-value="@Model.Value">@SiteIcons.Copy<span>Copy</span><span class="visually-hidden"> @Model.Spoken</span></button>
+</span>

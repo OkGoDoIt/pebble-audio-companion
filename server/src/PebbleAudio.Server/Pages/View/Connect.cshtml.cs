@@ -19,7 +19,10 @@ public enum ConnectKind
 	/// <summary>A command or a one-click link on the Mac, then signed in with the passkey (or an access key).</summary>
 	Mac,
 
-	/// <summary>Meta's Muse, which connects through the watch from the iPhone app, not to this server.</summary>
+	/// <summary>
+	/// Meta's Muse: paired through the watch from the iPhone app, or added in the Muse app as a custom connector, which
+	/// signs in here like the others.
+	/// </summary>
 	Muse,
 
 	/// <summary>Any other assistant that can add a custom connector, or use an access key.</summary>
@@ -47,7 +50,7 @@ public sealed record ConnectTool(
 		!(Excludes ?? []).Any(m => name.Contains(m, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>Its page waits for it to show up in Who can read, and says so.</summary>
-	public bool Waits => Kind is ConnectKind.Web or ConnectKind.Mac;
+	public bool Waits => Kind is ConnectKind.Web or ConnectKind.Mac or ConnectKind.Muse;
 
 	/// <summary>
 	/// This assistant, connected: signed in with the passkey, or holding an access key it has used. A key nobody has
@@ -58,12 +61,14 @@ public sealed record ConnectTool(
 }
 
 /// <summary>
-/// <c>/connect/{tool}</c>: connecting one assistant. ChatGPT and Claude are added in their own apps (round-3 05a, 05b);
-/// Codex, Claude Code, and Cursor connect from the Mac (06a on the iPhone, 06b, 06c); Muse connects through the watch
-/// from the iPhone app; anything else adds a custom connector or uses an access key (05d). Every assistant that can
-/// signs in with OAuth, so the steps need no key; an access key (<c>pat_…</c>) is the fallback, minted here, shown
-/// once, and never logged. "Who can read" lists live access the way <c>GET /sync/status</c> does, and the waiting row
-/// turns into a check once the assistant appears, by a light poll while the page is open and in view.
+/// <c>/connect/{tool}</c>: connecting one assistant, each as close to one click as it allows (connect-commands.md).
+/// ChatGPT, Claude, Gemini, and Grok are added on their own websites (round-3 05a, 05b); Claude Code, Codex, and
+/// Cursor connect from the Mac (06a on the iPhone, 06b, 06c), Claude Code through the Claude account when it can;
+/// Muse pairs through the watch from the iPhone app, or is asked in the Muse app to add a connector; anything else,
+/// Antigravity included, adds a custom connector or uses an access key (05d). Every assistant that can signs in with
+/// OAuth, so the steps need no key; an access key (<c>pat_…</c>) is the fallback, minted here, shown once, and never
+/// logged. "Who can read" lists live access the way <c>GET /sync/status</c> does, and the waiting row turns into a
+/// check once the assistant appears, by a light poll while the page is open and in view.
 /// </summary>
 public sealed class ConnectModel(
 	IConnectedAssistants assistants,
@@ -72,15 +77,18 @@ public sealed class ConnectModel(
 	IOptions<PebbleAudioOptions> options,
 	TimeProvider time) : PageModel
 {
+	/// <summary>In the hub's order.</summary>
 	public static IReadOnlyList<ConnectTool> Tools { get; } =
 	[
 		new("chatgpt", "ChatGPT", ConnectKind.Web, "Not connected", "ChatGPT", ["chatgpt"]),
 		new("claude", "Claude", ConnectKind.Web, "Not connected", "Claude", ["claude"], ["claude code", "claude-code"]),
-		new("codex", "Codex", ConnectKind.Mac, "On your Mac", "Codex on Mac", ["codex"]),
 		new("claude-code", "Claude Code", ConnectKind.Mac, "On your Mac", "Claude Code on Mac", ["claude code", "claude-code"]),
+		new("codex", "Codex", ConnectKind.Mac, "On your Mac", "Codex on Mac", ["codex"]),
 		new("cursor", "Cursor", ConnectKind.Mac, "On your Mac", "Cursor on Mac", ["cursor"]),
-		new("muse", "Muse", ConnectKind.Muse, "Through your watch", "Muse", ["muse"]),
-		new("other", "Another assistant", ConnectKind.Other, "Gemini and others", "Another assistant", []),
+		new("gemini", "Gemini", ConnectKind.Web, "Not connected", "Gemini", ["gemini"], ["gemini cli", "gemini-cli", "antigravity"]),
+		new("muse", "Muse", ConnectKind.Muse, "On your watch or in Muse", "Muse", ["muse", "meta ai"]),
+		new("grok", "Grok", ConnectKind.Web, "Not connected", "Grok", ["grok"]),
+		new("other", "Another assistant", ConnectKind.Other, "Antigravity and others", "Another assistant", []),
 	];
 
 	/// <summary>The Mac tools, the segmented picker on their pages.</summary>
@@ -95,11 +103,61 @@ public sealed class ConnectModel(
 	/// <summary>The server address an assistant is given: what its Copy button copies.</summary>
 	public string McpUrl => $"{Origin}/mcp";
 
-	/// <summary>Claude's Add custom connector dialog with this server filled in (connect-commands.md).</summary>
-	public string ClaudeUrl =>
-		$"https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Pebble%20Audio&connectorUrl={Uri.EscapeDataString(McpUrl)}";
+	/// <summary>What the person names it where an assistant asks for a name.</summary>
+	public const string ConnectorName = "Pebble Audio";
 
-	public const string ChatGptUrl = "https://chatgpt.com";
+	/// <summary>
+	/// Claude's Add custom connector dialog with this server filled in (connect-commands.md), the address encoded whole,
+	/// <c>://</c> included, as Claude's own example has it.
+	/// </summary>
+	public string ClaudeUrl =>
+		$"https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName={Uri.EscapeDataString(ConnectorName)}&connectorUrl={Uri.EscapeDataString(McpUrl)}";
+
+	/// <summary>ChatGPT's Plugins, where Add custom MCP server is (on the web only).</summary>
+	public const string ChatGptUrl = "https://chatgpt.com/plugins";
+
+	/// <summary>Gemini's settings for connected apps.</summary>
+	public const string GeminiUrl = "https://gemini.google.com/apps";
+
+	/// <summary>Grok's Connectors, where New Connector is.</summary>
+	public const string GrokUrl = "https://grok.com/connectors";
+
+	/// <summary>Muse on the web, as Meta's own announcement links it.</summary>
+	public const string MuseUrl = "https://muse.ai";
+
+	// What each plan allows, one line each, hedged where the sources disagree (connect-commands.md has the sources).
+
+	public const string ChatGptPlans =
+		"On Business, Enterprise, and Edu it can also add follow-ups and notes. On Pro it reads, and Plus may not offer it yet.";
+
+	public const string GeminiPlans =
+		"For personal Google accounts in the US, 18 and over, in English. It needs Keep Activity on, so Google may use what Gemini reads.";
+
+	public const string GrokPlans = "On Grok Business and Enterprise, an admin adds it first in the xAI console.";
+
+	/// <summary>The same dialog in Claude's admin settings, for a Team or Enterprise Owner adding it for everyone.</summary>
+	public string ClaudeAdminUrl => ClaudeUrl.Replace("https://claude.ai/customize/connectors", "https://claude.ai/admin-settings/connectors", StringComparison.Ordinal);
+
+	/// <summary>Grok Build, xAI's terminal agent, which signs in in the browser on first use.</summary>
+	public string GrokBuildCommand => $"grok mcp add --transport http pebble-audio {McpUrl}";
+
+	/// <summary>What the person sends Muse to have it add the connector.</summary>
+	public string MusePrompt => $"Create a custom connector named {ConnectorName} for {McpUrl}";
+
+	/// <summary>Antigravity's <c>~/.gemini/config/mcp_config.json</c> entry for this server.</summary>
+	public string AntigravityConfig =>
+		$$"""
+		{
+		  "mcpServers": {
+		    "pebble-audio": {
+		      "serverUrl": "{{McpUrl}}"
+		    }
+		  }
+		}
+		""";
+
+	/// <summary>Claude is connected, so Claude Code signed in with the same Claude account has it too.</summary>
+	public bool ClaudeConnected { get; private set; }
 
 	/// <summary>The access key just made, for this response only.</summary>
 	public string? Key { get; private set; }
@@ -181,11 +239,12 @@ public sealed class ConnectModel(
 		return Page();
 	}
 
-	// The Mac tools' commands (server/docs/connect-commands.md, verified 2026-10-21), OAuth first.
+	// The Mac tools' commands (server/docs/connect-commands.md, verified 2026-10-21), OAuth first. Codex's add starts
+	// the sign-in itself; Claude Code's is only for an API-key login (with a Claude account the connector is there).
 
 	public string OAuthCommand => Tool.Key switch
 	{
-		"codex" => $"codex mcp add pebble-audio --url {McpUrl}\ncodex mcp login pebble-audio",
+		"codex" => $"codex mcp add pebble-audio --url {McpUrl}",
 		"claude-code" => $"claude mcp add --transport http --scope user pebble-audio {McpUrl}",
 		_ => CursorLink(null),
 	};
@@ -200,12 +259,21 @@ public sealed class ConnectModel(
 	};
 
 	/// <summary>Cursor's one-click install link: the server's URL, and the key's header in the fallback.</summary>
-	public string CursorLink(string? key)
+	public string CursorLink(string? key) =>
+		$"cursor://anysphere.cursor-deeplink/mcp/install?name=pebble-audio&config={CursorConfig(key)}";
+
+	/// <summary>
+	/// The same install on cursor.com, which hands it to Cursor (undocumented, so the app link stays first). Never with
+	/// a key: it would travel in a web address.
+	/// </summary>
+	public string CursorWebLink => $"https://cursor.com/install-mcp?name=pebble-audio&config={CursorConfig(null)}";
+
+	private string CursorConfig(string? key)
 	{
 		var config = key is null
 			? JsonSerializer.Serialize(new { url = McpUrl })
 			: JsonSerializer.Serialize(new { url = McpUrl, headers = new Dictionary<string, string> { ["Authorization"] = $"Bearer {key}" } });
-		return $"cursor://anysphere.cursor-deeplink/mcp/install?name=pebble-audio&config={Uri.EscapeDataString(Convert.ToBase64String(Encoding.UTF8.GetBytes(config)))}";
+		return Uri.EscapeDataString(Convert.ToBase64String(Encoding.UTF8.GetBytes(config)));
 	}
 
 	public static string ToolUrl(ConnectTool tool) => $"/connect/{tool.Key}";
@@ -223,6 +291,8 @@ public sealed class ConnectModel(
 		// was connected before the page opened is connected too: the page says so instead of waiting for it.
 		bool Here(AccessEntry e) => Tool.Waits && Tool.IsConnected(e);
 		Ready = entries.Any(Here);
+		var claude = Find("claude")!;
+		ClaudeConnected = entries.Any(claude.IsConnected);
 		var rows = entries.Select(e => new WhoRow(
 			e.Name,
 			Here(e) && (e.LastUsedAt ?? e.ConnectedAt) >= since ? SiteText.Connected(e.LastUsedAt ?? e.ConnectedAt, now, zone)
@@ -230,7 +300,9 @@ public sealed class ConnectModel(
 				: SiteText.Connected(e.ConnectedAt, now, zone),
 			Here(e),
 			false)).ToList();
-		if (!Ready && Tool.Waits)
+		// Claude Code with a Claude account reads as Claude, so once Claude is connected only the API-key path waits, and
+		// that in its own section, not in this list.
+		if (!Ready && Tool.Waits && !(Tool.Key == "claude-code" && ClaudeConnected))
 		{
 			// Waiting: the assistant's own row (it may have connected before and not read yet), else a row for it.
 			var index = rows.FindIndex(r => Tool.IsMatch(r.Name));
@@ -258,3 +330,9 @@ public sealed class ConnectModel(
 
 /// <param name="Line">"Connected Oct 12", "Last read 3 min ago", or "Waiting to connect".</param>
 public sealed record WhoRow(string Name, string Line, bool Arrived, bool Waiting);
+
+/// <summary>A value the person types in another app, shown under that app's own label with a Copy button beside it.</summary>
+/// <param name="Label">The other app's label for the field ("Server URL"), exactly as it shows it.</param>
+/// <param name="Value">What to type there.</param>
+/// <param name="Spoken">What the Copy button copies, for a screen reader ("the name").</param>
+public sealed record CopyValue(string Label, string Value, string Spoken);

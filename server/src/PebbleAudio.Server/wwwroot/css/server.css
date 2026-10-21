@@ -257,7 +257,12 @@ dialog.confirm::backdrop { background: var(--scrim); }
 .open-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; counter-reset: s; }
 .open-steps li { counter-increment: s; display: flex; gap: 10px; align-items: flex-start; font: var(--f-sub-body); color: var(--secondary); }
 .open-steps li::before { content: counter(s); flex: 0 0 22px; height: 22px; border-radius: 11px; background: var(--tint-fill-12); color: var(--tint); font: 600 13px/22px var(--font); text-align: center; margin-top: -1px; }
-.open-steps li > span { min-width: 0; overflow-wrap: anywhere; }
+.open-steps li > span, .open-steps li > div { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.open-steps .cmd, .open-steps .goes { margin: 8px 0 0; }
+/* A value to type in another app under that app's own label, with Copy beside it: the address card, inset in a step. */
+.address.inset { margin-top: 8px; padding: 6px 6px 6px 12px; border-radius: 12px; background: var(--inset); }
+.address.inset .value { font: var(--f-callout); }
+.address.inset .btn { flex: 0 0 auto; white-space: nowrap; overflow-wrap: normal; }
 .alt { font: var(--f-footnote); color: var(--tertiary); }
 .alt b { color: var(--secondary); }
 .tool-card .wait { padding-top: 14px; border-top: 0.5px solid var(--hairline); }

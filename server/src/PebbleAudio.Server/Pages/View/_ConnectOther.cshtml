@@ -1,0 +1,58 @@
+@* Another assistant (05d): any that adds a custom connector, Antigravity's own file, and an access key for one that can't
+   sign in. *@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using PebbleAudio.Server.Pages.View
+@{
+	var tool = Model.Tool;
+}
+<p class="lede">Any assistant that adds a custom connector can sign in with your passkey.</p>
+<partial name="_Address" model="(Model.Host, Model.McpUrl)" />
+<div class="card tool-card">
+	<ol class="open-steps">
+		<li><span>In that assistant, find where it adds a custom connector or server.</span></li>
+		<li><span>Paste your server address.</span></li>
+		<li><span>Sign in to your server with your passkey.</span></li>
+	</ol>
+</div>
+
+<section class="group" aria-labelledby="antigravity-h">
+	<h2 class="section-header" id="antigravity-h">Antigravity</h2>
+	<div class="card tool-card">
+		<ol class="open-steps">
+			<li><div>Add this to <b>~/.gemini/config/mcp_config.json</b> on your computer.<pre class="cmd flat" id="antigravity">@Model.AntigravityConfig</pre></div></li>
+			<li><span>Sign in to your server with your passkey when Antigravity asks.</span></li>
+		</ol>
+		<button type="button" class="btn bordered inline" data-copy="#antigravity">@SiteIcons.Copy<span>Copy Settings</span></button>
+	</div>
+</section>
+
+@if (Model.Key is { } otherKey)
+{
+	<section class="group" id="key" aria-labelledby="key-h">
+		<h2 class="section-header" id="key-h">Your access key</h2>
+		<div class="card key-form">
+			<pre class="cmd flat" id="cmd"><span class="k">@otherKey</span></pre>
+			<button type="button" class="btn filled inline" data-copy="#cmd">@SiteIcons.Copy<span>Copy Key</span></button>
+			<p class="note">Paste it where that assistant asks for a key, with your server address. It's shown only once.</p>
+		</div>
+	</section>
+}
+else
+{
+	<section class="group" id="key" aria-labelledby="key-h">
+		<h2 class="section-header" id="key-h">Or use an access key</h2>
+		<form method="post" asp-page-handler="Key" asp-route-tool="@tool.Key" class="card key-form">
+			<div>
+				<label class="field-label" for="key-name">Name</label>
+				<input class="field" id="key-name" asp-for="Input.Name" placeholder="Gemini CLI" maxlength="80" autocomplete="off">
+				<span asp-validation-for="Input.Name" class="field-error"></span>
+			</div>
+			<div class="switch-row">
+				<label for="key-add">Can also add follow-ups and notes</label>
+				<input class="switch" type="checkbox" role="switch" id="key-add" name="Input.CanAdd" value="true">
+			</div>
+			<button type="submit" class="btn bordered inline">Make an Access Key</button>
+		</form>
+		<p class="footer">For an assistant that can't sign in with your passkey. The key works for it alone and is shown once.</p>
+	</section>
+}

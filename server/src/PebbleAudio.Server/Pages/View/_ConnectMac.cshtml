@@ -1,0 +1,209 @@
+@* The Mac tools (06a-06c): Claude Code through the Claude account, Codex's one command, Cursor's button, and an access key
+   only as the fallback. *@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using System.Text.Encodings.Web
+@using Microsoft.AspNetCore.Html
+@using PebbleAudio.Server.Pages.View
+@{
+	var tool = Model.Tool;
+	var cursor = tool.Key == "cursor";
+	var claudeCode = tool.Key == "claude-code";
+	IHtmlContent Marked(string command, string key)
+	{
+		var encoded = HtmlEncoder.Default.Encode(command);
+		var encodedKey = HtmlEncoder.Default.Encode(key);
+		return new HtmlString(encoded.Replace(encodedKey, $"<span class=\"k\">{encodedKey}</span>"));
+	}
+}
+@if (claudeCode && Model.Key is null)
+{
+	<p class="lede">Claude Code reads your conversations through your Claude account.</p>
+}
+else
+{
+	<p class="lede">@tool.Name signs in with your passkey, so it can read your conversations.</p>
+}
+<nav class="seg" aria-label="App">
+	@foreach (var t in ConnectModel.MacTools)
+	{
+		<a href="@ConnectModel.ToolUrl(t)" class="@(t == tool ? "on" : null)" aria-current="@(t == tool ? "page" : null)">@t.Name</a>
+	}
+</nav>
+
+@if (claudeCode && Model.Key is null)
+{
+	@* With a Claude account, the connector added in Claude is already in Claude Code: nothing to install. *@
+	<ol class="card steps-card">
+		<li class="stepn">
+			<span class="n" aria-hidden="true">1</span>
+			<div class="g">
+				<span class="t">Add Pebble Audio in Claude</span>
+				@if (Model.ClaudeConnected)
+				{
+					<div class="wait"><span class="check-badge small" aria-hidden="true">@SiteIcons.Check</span><span class="note">Claude is connected.</span></div>
+				}
+				else
+				{
+					<a class="btn bordered inline" href="@ConnectModel.ToolUrl(ConnectModel.Find("claude")!)">Connect Claude</a>
+				}
+			</div>
+		</li>
+		<li class="stepn">
+			<span class="n" aria-hidden="true">2</span>
+			<div class="g">
+				<span class="t">Sign in to Claude Code with your Claude account</span>
+				<span class="note">Pebble Audio is then already in /mcp, with nothing to install.</span>
+			</div>
+		</li>
+		<li class="stepn">
+			<span class="n" aria-hidden="true">3</span>
+			<div class="g">
+				<span class="t">Ask Claude Code about your conversations</span>
+			</div>
+		</li>
+	</ol>
+
+	<section class="group" aria-labelledby="api-h">
+		<h2 class="section-header" id="api-h">Signed in with an API key</h2>
+		<ol class="card steps-card">
+			<li class="stepn">
+				<span class="n" aria-hidden="true">1</span>
+				<div class="g">
+					<span class="t">Copy this command</span>
+					<pre class="cmd" id="cmd">@Model.OAuthCommand</pre>
+					<button type="button" class="btn filled inline" data-copy="#cmd">@SiteIcons.Copy<span>Copy Command</span></button>
+				</div>
+			</li>
+			<li class="stepn">
+				<span class="n" aria-hidden="true">2</span>
+				<div class="g">
+					<span class="t">Paste it into Terminal on your Mac and press Return</span>
+					<span class="note">Then type /mcp in Claude Code, choose pebble-audio, and sign in with your passkey.</span>
+					@if (Model.OnIPhone)
+					{
+						<span class="note">Copied on this iPhone, it pastes on a Mac signed in to the same Apple Account.</span>
+					}
+				</div>
+			</li>
+			<li class="stepn">
+				<span class="n" aria-hidden="true">3</span>
+				<div class="g">
+					<span class="t">Ask Claude Code about your conversations</span>
+					<partial name="_Wait" model="Model" />
+				</div>
+			</li>
+		</ol>
+		<p class="footer">Only with an API key. With your Claude account, this adds a second Pebble Audio that asks you to sign in again.</p>
+	</section>
+}
+else
+{
+	<ol class="card steps-card">
+		@if (Model.Key is { } key)
+		{
+			<li class="stepn">
+				<span class="n" aria-hidden="true">1</span>
+				<div class="g">
+					@if (cursor)
+					{
+						<span class="t">Click Add to Cursor</span>
+						<a class="btn filled inline" href="@Model.KeyCommand(key)">@SiteIcons.External<span>Add to Cursor</span></a>
+						<span class="note">The access key is in this button. Leave this page and you'll get a new one.</span>
+					}
+					else
+					{
+						<span class="t">Copy @(tool.Key == "codex" ? "these commands" : "this command")</span>
+						<pre class="cmd" id="cmd">@Marked(Model.KeyCommand(key), key)</pre>
+						<button type="button" class="btn filled inline" data-copy="#cmd">@SiteIcons.Copy<span>Copy Command@(tool.Key == "codex" ? "s" : "")</span></button>
+						<span class="note">The access key is shown once. Leave this page and you'll get a new one.</span>
+					}
+				</div>
+			</li>
+			<li class="stepn">
+				<span class="n" aria-hidden="true">2</span>
+				<div class="g">
+					@if (cursor)
+					{
+						<span class="t">Confirm in Cursor</span>
+					}
+					else
+					{
+						<span class="t">Paste @(tool.Key == "codex" ? "them" : "it") into Terminal on your Mac and press Return</span>
+						@if (tool.Key == "codex")
+						{
+							<span class="note">Then open a new Terminal window and start Codex.</span>
+						}
+						@if (Model.OnIPhone)
+						{
+							<span class="note">Copied on this iPhone, it pastes on a Mac signed in to the same Apple Account.</span>
+						}
+					}
+				</div>
+			</li>
+		}
+		else
+		{
+			<li class="stepn">
+				<span class="n" aria-hidden="true">1</span>
+				<div class="g">
+					@if (cursor)
+					{
+						<span class="t">Click Add to Cursor</span>
+						<a class="btn filled inline" href="@Model.OAuthCommand">@SiteIcons.External<span>Add to Cursor</span></a>
+						<a class="btn small plain" href="@Model.CursorWebLink" target="_blank" rel="noopener">Or open in the browser</a>
+						@if (Model.OnIPhone)
+						{
+							<span class="note">Open this page on your Mac to use the button.</span>
+						}
+					}
+					else
+					{
+						<span class="t">Copy this command</span>
+						<pre class="cmd" id="cmd">@Model.OAuthCommand</pre>
+						<button type="button" class="btn filled inline" data-copy="#cmd">@SiteIcons.Copy<span>Copy Command</span></button>
+					}
+				</div>
+			</li>
+			<li class="stepn">
+				<span class="n" aria-hidden="true">2</span>
+				<div class="g">
+					@if (cursor)
+					{
+						<span class="t">Confirm in Cursor</span>
+						<span class="note">Cursor asks you to sign in. Use your passkey, then allow access.</span>
+					}
+					else
+					{
+						<span class="t">Paste it into Terminal on your Mac and press Return</span>
+						<span class="note">Your browser opens to sign in. Use your passkey, then allow access.</span>
+						<span class="note">Codex in your editor and in the ChatGPT app has it too.</span>
+						@if (Model.OnIPhone)
+						{
+							<span class="note">Copied on this iPhone, it pastes on a Mac signed in to the same Apple Account.</span>
+						}
+					}
+				</div>
+			</li>
+		}
+		<li class="stepn">
+			<span class="n" aria-hidden="true">3</span>
+			<div class="g">
+				<span class="t">Ask @tool.Name about your conversations</span>
+				<partial name="_Wait" model="Model" />
+			</div>
+		</li>
+	</ol>
+}
+
+@if (Model.Key is null)
+{
+	<form method="post" asp-page-handler="Key" asp-route-tool="@tool.Key" class="fallback">
+		<p class="fallback-head">No browser on that Mac?</p>
+		<p class="note">Use an access key instead. It is shown once, and only this app gets it.</p>
+		<button type="submit" class="btn small bordered">Make an Access Key</button>
+	</form>
+}
+else
+{
+	<p class="fallback"><a class="btn small plain" href="@ConnectModel.ToolUrl(tool)">Sign in with the browser instead</a></p>
+}
