@@ -90,8 +90,9 @@ unlinked there once the import is done.
 
 What the phone would mark provisional (a boundary the segmenter may still move) is decided by a live
 grouping pass and is not stored, so a backup's closed conversations are sent as not provisional. The
-conversation that was recording when the backup was taken is sent as live and provisional, as the
-phone sends it.
+conversation that was recording when the backup was taken is sent as finished (closed, not provisional,
+ending where its last piece ends): no phone will send it again to close it, so as live it would stay
+live on the server for good.
 
 ## Trying it against a local server
 
