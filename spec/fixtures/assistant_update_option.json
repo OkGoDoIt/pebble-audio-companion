@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "The answer's second option, shown under it and on its notification",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "kind": 8,
+    "request_token": 81,
+    "text_hex": "423a203134",
+    "turn": 7
+  },
+  "name": "assistant_update_option",
+  "size": 11
+}

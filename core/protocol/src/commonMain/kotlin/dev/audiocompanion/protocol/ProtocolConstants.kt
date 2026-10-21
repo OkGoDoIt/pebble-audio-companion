@@ -63,9 +63,16 @@ object ProtocolConstants {
     const val CAPABILITY_ANSWER_RESTART: UInt = 8u
     /** A Heard update after Done starts a follow-up on the same screen (Section 4.4). */
     const val CAPABILITY_FOLLOW_UP: UInt = 16u
+    /**
+     * The watch keeps the conversation: notifications for answers that arrive with its screen
+     * closed, options with the answer, picks, and turns the receiver begins (Section 4.4).
+     */
+    const val CAPABILITY_CONVERSATION: UInt = 32u
 
     const val PTT_MAX_SECONDS: Int = 15
     const val ASSISTANT_TEXT_MAX_BYTES: Int = 180
+    const val ASSISTANT_MAX_OPTIONS: Int = 6
+    const val ASSISTANT_OPTION_MAX_BYTES: Int = 48
     const val WATCH_ACTION_FRAGMENT_MAX_BYTES: Int = 180
     const val WATCH_ACTION_FLAG_MORE: Int = 1
 

@@ -1,0 +1,14 @@
+{
+  "channel": "control_in",
+  "description": "The phone begins a turn of its own: an answer that came after it stopped waiting",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "kind": 7,
+    "request_token": 80,
+    "text_hex": "77686174277320746865207765617468657220746f6d6f72726f77",
+    "turn": 200
+  },
+  "name": "assistant_update_begin_late_answer",
+  "size": 33
+}

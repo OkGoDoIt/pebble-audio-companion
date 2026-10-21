@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "The wearer picked the answer's second option, on the watch or its notification",
+  "expect": "parse",
+  "fields": {
+    "detail": 1,
+    "event": 4,
+    "frame_count": 0,
+    "max_seconds": 0,
+    "turn": 7
+  },
+  "name": "ptt_event_pick",
+  "size": 8
+}

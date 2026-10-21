@@ -690,6 +690,24 @@ def build_fixtures():
         {"request_token": 0x4F, "turn": 7, "kind": 6, "detail": 0, "text_hex": restart.hex()},
         "The finished answer replaces what streamed",
     )
+    late_question = "what's the weather tomorrow".encode("utf-8")
+    add(
+        "assistant_update_begin_late_answer",
+        assistant_update(0x50, 200, 7, 1, late_question),
+        "control_in",
+        "parse",
+        {"request_token": 0x50, "turn": 200, "kind": 7, "detail": 1, "text_hex": late_question.hex()},
+        "The phone begins a turn of its own: an answer that came after it stopped waiting",
+    )
+    option = "B: 14".encode("utf-8")
+    add(
+        "assistant_update_option",
+        assistant_update(0x51, 7, 8, 1, option),
+        "control_in",
+        "parse",
+        {"request_token": 0x51, "turn": 7, "kind": 8, "detail": 1, "text_hex": option.hex()},
+        "The answer's second option, shown under it and on its notification",
+    )
     add(
         "watch_action_timer",
         watch_action(0x48, 3, 0, timer),
@@ -940,6 +958,14 @@ def build_fixtures():
         "parse",
         {"turn": 9, "event": 3, "detail": 1, "frame_count": 9, "max_seconds": 0},
         "Released right after the hold was confirmed: no question",
+    )
+    add(
+        "ptt_event_pick",
+        ptt_event(7, 4, 1, 0, 0),
+        "control_out",
+        "parse",
+        {"turn": 7, "event": 4, "detail": 1, "frame_count": 0, "max_seconds": 0},
+        "The wearer picked the answer's second option, on the watch or its notification",
     )
     add(
         "ptt_event_short",

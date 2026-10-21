@@ -877,6 +877,8 @@ public enum PttEventKind: UInt8, Sendable {
     case start = 1
     case end = 2
     case cancel = 3
+    /// The wearer picked option `detail` of the turn's answer (watch capability bit5).
+    case pick = 4
 }
 
 public enum PttTrigger: UInt8, Sendable {
@@ -963,6 +965,18 @@ public enum AssistantUpdateKind: UInt8, Sendable {
     case error = 5
     /// The answer so far is replaced by this text; `answer` appends to it from here.
     case answerRestart = 6
+    /// The receiver begins a turn of its own (`AssistantBegin` in `detail`); bit5.
+    case begin = 7
+    /// One option the wearer can pick: `detail` its index, the text its words; bit5.
+    case option = 8
+}
+
+/// ASSISTANT_UPDATE Begin `detail`.
+public enum AssistantBegin: UInt8, Sendable {
+    /// A message the assistant sent by itself.
+    case message = 0
+    /// An answer that came after the receiver stopped waiting; the text is its question.
+    case lateAnswer = 1
 }
 
 public enum AssistantError: UInt8, Sendable {
@@ -971,6 +985,8 @@ public enum AssistantError: UInt8, Sendable {
     case noAnswer = 3
     case didNotCatch = 4
     case busy = 5
+    /// The receiver stopped waiting while the assistant still works; the answer comes later.
+    case stillWorking = 6
 }
 
 /// What the assistant heard, is doing, and answered, for the watch to show.
