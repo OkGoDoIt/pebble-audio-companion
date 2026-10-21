@@ -1011,11 +1011,11 @@ public actor ArchiveSyncService {
     }
 
     /// When the export's meaning changes (`ArchiveExport.transcriptExportVersion`), every
-    /// transcript the server holds is sent again once — and at the pace of ordinary changes,
-    /// not as the whole library at once: each pass marks one batch's worth more
-    /// (`ArchiveSyncProtocol.maxItemsPerBatch`), oldest conversation id first, and the version is
-    /// recorded once the last page is marked. A phone linked before the version existed has none
-    /// recorded, and re-exports too.
+    /// conversation and transcript the server holds is sent again once — and at the pace of
+    /// ordinary changes, not as the whole library at once: each pass marks one batch's worth of
+    /// conversations more (`ArchiveSyncProtocol.maxItemsPerBatch`, each with its transcript),
+    /// oldest conversation id first, and the version is recorded once the last page is marked.
+    /// A phone linked before the version existed has none recorded, and re-exports too.
     private func markNextTranscriptsForExport() async {
         let version = ArchiveExport.transcriptExportVersion
         guard state.transcriptExportMarked != version else { return }
@@ -1025,13 +1025,13 @@ public actor ArchiveSyncService {
             // the whole library piled up behind it, and real changes go first.
             guard try await deps.outbox.counts().pending < page else { return }
             guard
-                let marked = try await deps.outbox.markTranscripts(
+                let marked = try await deps.outbox.markForReExport(
                     after: state.transcriptExportCursor, limit: page)
             else { return }
             if marked.count < page {
                 state.transcriptExportMarked = version
                 state.transcriptExportCursor = nil
-                deps.log.write("archive sync: transcripts re-marked for \(version)")
+                deps.log.write("archive sync: conversations re-marked for \(version)")
             } else {
                 state.transcriptExportCursor = marked.last
             }

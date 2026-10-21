@@ -55,13 +55,16 @@ public struct ArchiveRequestHandler: Sendable {
         public var file: URL
         public var startMs: Int64
         public var endMs: Int64
-        /// The lost stretches inside it.
+        /// The stretches inside it with no audio: lost, and (kind `quiet`) the silence the watch
+        /// skipped and its power-save pause, which are not in the file either.
         public var lost: [ArchiveGap]
 
-        /// `X-Clip-Gaps`: `[{"startedAt": …, "endedAt": …}]`.
+        /// `X-Clip-Gaps`: `[{"startedAt": …, "endedAt": …}]` for each lost stretch, and the same
+        /// with `"kind":"quiet"` for each quiet one (§4).
         public var gapsHeader: String {
-            let entries = lost.map {
-                "{\"endedAt\":\"\(ArchiveTime.string($0.endMs))\",\"startedAt\":\"\(ArchiveTime.string($0.startMs))\"}"
+            let entries = lost.map { gap in
+                let kind = gap.kind == .quiet ? "\"kind\":\"quiet\"," : ""
+                return "{\"endedAt\":\"\(ArchiveTime.string(gap.endMs))\",\(kind)\"startedAt\":\"\(ArchiveTime.string(gap.startMs))\"}"
             }
             return "[" + entries.joined(separator: ",") + "]"
         }
@@ -152,7 +155,9 @@ public struct ArchiveRequestHandler: Sendable {
             "clip-\(Self.safe(request.id)).ogg", isDirectory: false)
         try ogg.write(to: file, options: .atomic)
         let span = first.wallRange.lowerBound..<max(last.wallRange.upperBound, first.wallRange.lowerBound + 1)
-        let lost = ArchiveExport.gaps(pieces, window: span).filter { $0.kind == .lost }
+        // Where the clip's audio really has holes: the records themselves, not the screen's
+        // merged rows, whose stretch includes the audio heard between brief drops.
+        let lost = ArchiveExport.holes(pieces, window: span)
         return .clip(Clip(file: file, startMs: span.lowerBound, endMs: span.upperBound, lost: lost))
     }
 

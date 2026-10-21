@@ -208,22 +208,27 @@ struct ArchiveSyncServiceTests {
             try JSONEncoder().encode(ArchiveSyncService.PersistedState())
                 .write(to: directory.appendingPathComponent("state.json"))
         })
-        func transcriptsSent() -> Int {
+        func sent(_ kind: String) -> Int {
             w.uploads.bodies.reduce(0) { total, body in
                 let items = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["items"]
                     as? [[String: Any]] ?? []
-                return total + items.filter { $0["kind"] as? String == "transcript" }.count
+                return total + items.filter { $0["kind"] as? String == kind }.count
             }
         }
         var perPass: [Int] = []
+        var conversationsPerPass: [Int] = []
         for _ in 0..<4 {
-            let before = transcriptsSent()
+            let before = (sent("transcript"), sent("conversation"))
             await w.service.pass(.userAsked)
             await w.service.idle()
-            perPass.append(transcriptsSent() - before)
+            perPass.append(sent("transcript") - before.0)
+            conversationsPerPass.append(sent("conversation") - before.1)
         }
         let page = ArchiveSyncProtocol.maxItemsPerBatch
         #expect(perPass == [page, page, count - 2 * page, 0])
+        // Each conversation goes again with its transcript: its gaps are the screen's rows too,
+        // and they changed with the export.
+        #expect(conversationsPerPass == perPass)
         #expect(try await w.outbox.counts().pending == 0)
     }
 

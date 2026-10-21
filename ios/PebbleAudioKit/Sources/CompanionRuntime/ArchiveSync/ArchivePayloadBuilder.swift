@@ -217,8 +217,10 @@ public struct ArchivePayloadBuilder: Sendable {
         }
     }
 
-    func pieces(of record: ConversationRecord, withTranscripts: Bool) async throws
-        -> [ArchiveExport.Piece]
+    /// `masks: false` skips the model-input mask, which only the transcript's turns read; the
+    /// conversation's rows need the words (quiet is the time between them) but not the mask.
+    func pieces(of record: ConversationRecord, withTranscripts: Bool, masks: Bool = true)
+        async throws -> [ArchiveExport.Piece]
     {
         var out: [ArchiveExport.Piece] = []
         for member in record.members {
@@ -227,7 +229,7 @@ public struct ArchivePayloadBuilder: Sendable {
                 ArchiveExport.Piece(
                     member: member, meta: meta,
                     transcript: withTranscripts ? sources.transcript(member.segmentId) : nil,
-                    masked: withTranscripts ? try await masked(meta.segmentId) : []))
+                    masked: withTranscripts && masks ? try await masked(meta.segmentId) : []))
         }
         return out
     }
@@ -254,9 +256,13 @@ public struct ArchivePayloadBuilder: Sendable {
         if Self.isRetentionTail(current: key, sent: row.sentKey) {
             return .unchanged(hash: nil, pieceKey: row.sentKey)
         }
-        let pieces = try await pieces(of: record, withTranscripts: false)
+        // The words are read (without their timings) because the rows are the screen's: a quiet
+        // row is the time between two turns, not only what the watch skipped.
+        let pieces = try await pieces(of: record, withTranscripts: true, masks: false)
         let gaps = ArchiveExport.gaps(pieces, window: record.window)
-        let quietMs = gaps.filter { $0.kind == .quiet }.reduce(0) { $0 + $1.durationMs }
+        let missingMs = ArchiveExport.missingMs(pieces, window: record.window)
+        let quietMs = gaps.filter { $0.kind == .quiet && $0.reason == nil }
+            .reduce(0) { $0 + $1.durationMs }
         let span = max(record.endMs - record.startMs, 0)
         let (contentKind, descriptor) = try await content(record)
         let provisional = await sources.provisionalIds().contains(record.id)
@@ -270,8 +276,9 @@ public struct ArchivePayloadBuilder: Sendable {
             annotationProvider: record.provider, annotationModel: record.model,
             contentKind: contentKind, contentDescriptor: descriptor,
             mostlyQuiet: span > 0 && quietMs * 10 > span * 6,
-            hasMissingAudio: gaps.contains { $0.kind == .lost },
+            hasMissingAudio: missingMs > 0,
             recordedMs: ArchiveExport.recordedMs(pieces, window: record.window),
+            missingMs: missingMs,
             pieces: pieces.enumerated().map { index, piece in
                 let extent = ArchiveExport.wallExtent(piece)
                 return ArchiveConversationPayload.Piece(
