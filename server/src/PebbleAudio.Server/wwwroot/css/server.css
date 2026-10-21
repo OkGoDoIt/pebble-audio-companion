@@ -19,11 +19,11 @@ b { font-weight: 600; color: var(--label); }
 .srv { min-height: 100vh; }
 .srv-side { padding: calc(18px + env(safe-area-inset-top)) var(--margin) 6px; }
 .srv-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; min-height: var(--target); font: var(--f-headline); color: var(--label); min-width: 0; }
-.brand:hover { text-decoration: none; }
-.brand .itile { width: 30px; height: 30px; border-radius: 8px; }
+.site-brand { display: inline-flex; align-items: center; gap: 10px; min-height: var(--target); font: var(--f-headline); color: var(--label); min-width: 0; }
+.site-brand:hover { text-decoration: none; }
+.site-brand .itile { width: 30px; height: 30px; border-radius: 8px; }
 .brand-words { display: flex; flex-direction: column; min-width: 0; }
-.brand .host { font: var(--f-footnote); color: var(--tertiary); overflow-wrap: anywhere; }
+.site-brand .host { font: var(--f-footnote); color: var(--tertiary); overflow-wrap: anywhere; }
 .srv-main { padding: 10px var(--margin) calc(48px + env(safe-area-inset-bottom)); }
 
 @media (min-width: 1000px) {
