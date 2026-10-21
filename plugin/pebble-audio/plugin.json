@@ -12,7 +12,7 @@
     "com.openai": {
       "interface": {
         "displayName": "Pebble Audio",
-        "shortDescription": "Ask about anything you said, heard, or agreed to.",
+        "shortDescription": "Ask about your conversations",
         "longDescription": "Pebble Audio keeps your own all-day voice recordings as conversations with titles, summaries, and transcripts, plus day recaps, week and month briefs, and follow-ups. Ask what happened on a day, what you discussed with someone, what you promised, or where a topic came up. Every answer links to the exact moment. Quiet stretches are shown as quiet, not as missing audio.",
         "developerName": "Roger Pincombe",
         "category": "productivity",
