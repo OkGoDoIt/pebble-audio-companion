@@ -29,6 +29,8 @@ builder.WebHost.ConfigureKestrel(options =>
 {
 	// Same ceiling as nginx's client_max_body_size: clip uploads and sync batches are the large bodies.
 	options.Limits.MaxRequestBodySize = 64L * 1024 * 1024;
+	// Same ceiling as nginx's header limits: a clip's X-Clip-Gaps can run to hundreds of KB.
+	options.Limits.MaxRequestHeadersTotalSize = 1024 * 1024;
 });
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
