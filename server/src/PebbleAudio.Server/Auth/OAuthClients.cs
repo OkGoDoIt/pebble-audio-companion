@@ -137,8 +137,10 @@ public static class OAuthClientNames
 		("chatgpt.com", "ChatGPT"),
 		("claude.ai", "Claude"),
 		("gemini.google.com", "Gemini"),
+		("oauth-redirect.googleusercontent.com", "Gemini"),
 		("antigravity.google", "Antigravity"),
 		("meta.ai", "Muse"),
+		("muse.ai", "Muse"),
 		("grok.com", "Grok"),
 	];
 
