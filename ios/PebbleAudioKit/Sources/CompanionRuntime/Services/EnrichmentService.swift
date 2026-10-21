@@ -374,12 +374,7 @@ public actor EnrichmentService {
         if let donator {
             for item in written {
                 do {
-                    try await donator.donateFollowUp(
-                        id: item.id,
-                        text: item.text,
-                        sourceConversationId: item.sourceConversationId,
-                        createdAtMs: item.createdAtMs
-                    )
+                    try await donator.donateFollowUp(item)
                 } catch {
                     log.failure("follow-up donation", error)
                 }
@@ -485,7 +480,8 @@ public actor EnrichmentService {
             // re-donation a different document to the change gate, and told Spotlight that a
             // week-old conversation was new. The foreground pass already donated it this way.
             createdAtMs: conversation.startMs,
-            systemIndex: !(conversation.isLive || conversation.isProvisional)
+            systemIndex: !(conversation.isLive || conversation.isProvisional),
+            timeZoneID: conversation.timeZoneID
         )
     }
 

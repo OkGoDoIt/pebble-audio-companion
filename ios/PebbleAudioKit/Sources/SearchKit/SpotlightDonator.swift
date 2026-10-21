@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import os
 #if canImport(CoreSpotlight)
@@ -36,6 +37,17 @@ public struct SpotlightDonation: Equatable, Sendable {
     /// When a conversation ended. Without it the entity built from a donation had ended the
     /// moment it began: zero minutes long, modified at its start.
     public var endDateMs: Int64?
+    /// The zone a conversation was RECORDED in. The entity built from the donation files the
+    /// conversation under its day and reads its times in this zone, as the Library does; without
+    /// it a conversation from a trip landed on the phone's current day.
+    public var timeZoneID: String? = nil
+
+    // A follow-up's state, so the entity attached to its item says what the list says. Without
+    // these a done, dated, flagged follow-up resolved through Spotlight read as open and undated.
+    public var dueDateMs: Int64? = nil
+    public var completionDateMs: Int64? = nil
+    public var isCompleted = false
+    public var isFlagged = false
 
     public init(
         entityId: String,
@@ -212,13 +224,16 @@ public final class SpotlightDonator: Sendable {
         /// search still gets it. A live conversation is still growing: Spotlight and Siri get it
         /// once it has closed, not a new partial copy at every provisional refresh.
         public var systemIndex: Bool
+        /// The recorded zone (`SpotlightDonation.timeZoneID`).
+        public var timeZoneID: String?
 
         public init(
             conversationId: String, title: String?, summary: String? = nil, tags: [String] = [],
             people: [String] = [], fullTranscript: String? = nil, startDateMs: Int64? = nil,
             endDateMs: Int64? = nil, createdAtMs: Int64, excluded: Bool = false,
-            systemIndex: Bool = true
+            systemIndex: Bool = true, timeZoneID: String? = nil
         ) {
+            self.timeZoneID = timeZoneID
             self.conversationId = conversationId
             self.title = title
             self.summary = summary
@@ -251,15 +266,17 @@ public final class SpotlightDonator: Sendable {
                 excluded: input.excluded
             )
         }
-        let people = Dictionary(
-            batch.map { ($0.conversationId, $0.people) }, uniquingKeysWith: { _, last in last })
-        let ends = Dictionary(
-            batch.map { ($0.conversationId, $0.endDateMs) }, uniquingKeysWith: { _, last in last })
+        let inputs = Dictionary(
+            batch.map { ($0.conversationId, $0) }, uniquingKeysWith: { _, last in last })
         let heldBack = Set(batch.filter { !$0.systemIndex }.map(\.conversationId))
         try await donate(
             items,
-            people: { people[$0.id] ?? [] },
-            endDateMs: { ends[$0.id] ?? nil },
+            decorate: { item, donation in
+                guard let input = inputs[item.id] else { return }
+                donation.people = input.people
+                donation.endDateMs = input.endDateMs
+                donation.timeZoneID = input.timeZoneID
+            },
             systemIndex: { !heldBack.contains($0.id) })
     }
 
@@ -318,6 +335,28 @@ public final class SpotlightDonator: Sendable {
         try await donate(item, sourceConversationId: sourceConversationId)
     }
 
+    /// A follow-up with everything the list shows about it: the text, the extractor's reason,
+    /// done or open, the due day and the high-priority flag. Every write to one of those goes
+    /// through here, so the entity Siri resolves from the index never says "open" about a
+    /// follow-up the person has ticked off.
+    public func donateFollowUp(_ followUp: FollowUp, excluded: Bool = false) async throws {
+        guard index.isAvailable else { return }
+        let item = IndexItem(
+            id: followUp.id,
+            kind: .followUp,
+            title: followUp.text,
+            contentCreationDateMs: followUp.createdAtMs,
+            excluded: excluded
+        )
+        try await donate(item, sourceConversationId: followUp.sourceConversationId) { _, donation in
+            donation.contentDescription = followUp.why?.nilIfBlank
+            donation.dueDateMs = followUp.dueAtMs
+            donation.isCompleted = followUp.done
+            donation.completionDateMs = followUp.done ? followUp.completedAtMs : nil
+            donation.isFlagged = followUp.priority == .high
+        }
+    }
+
     public func donateNote(
         id: String,
         title: String,
@@ -351,18 +390,21 @@ public final class SpotlightDonator: Sendable {
         try await spotlight.removeAll()
     }
 
-    private func donate(_ item: IndexItem, sourceConversationId: String?) async throws {
+    private func donate(
+        _ item: IndexItem, sourceConversationId: String?,
+        decorate: (IndexItem, inout SpotlightDonation) -> Void = { _, _ in }
+    ) async throws {
         try await donate(
-            [item], people: { _ in [] }, endDateMs: { _ in nil }, systemIndex: { _ in true },
+            [item], decorate: decorate, systemIndex: { _ in true },
             sourceConversationId: { _ in sourceConversationId })
     }
 
     /// FTS first, always and in full; then the system index, where an excluded item becomes a
     /// removal and an item held back (`systemIndex` false) is left as the index already has it.
+    /// `decorate` adds what only the system index carries (people, an end, a follow-up's state).
     private func donate(
         _ items: [IndexItem],
-        people: (IndexItem) -> [String],
-        endDateMs: (IndexItem) -> Int64?,
+        decorate: (IndexItem, inout SpotlightDonation) -> Void,
         systemIndex: (IndexItem) -> Bool,
         sourceConversationId: (IndexItem) -> String? = { _ in nil }
     ) async throws {
@@ -375,23 +417,23 @@ public final class SpotlightDonator: Sendable {
             try await spotlight.remove(uniqueIdentifiers: removals)
         }
         let donations = items.filter { !$0.excluded && systemIndex($0) }.map { item in
-            SpotlightDonation(
+            var donation = SpotlightDonation(
                 entityId: item.id,
                 kind: item.kind,
                 title: item.title,
                 contentDescription: item.summary,
                 textContent: item.fullText,
                 keywords: item.tags,
-                people: people(item),
                 deepLinkURL: Self.deepLink(
                     kind: item.kind,
                     entityId: item.id,
                     sourceConversationId: sourceConversationId(item)
                 ),
                 contentCreationDateMs: item.contentCreationDateMs,
-                startDateMs: item.startDateMs,
-                endDateMs: endDateMs(item)
+                startDateMs: item.startDateMs
             )
+            decorate(item, &donation)
+            return donation
         }
         if !donations.isEmpty {
             try await spotlight.donate(donations)
@@ -558,6 +600,13 @@ extension String {
             }
             if let endMs = donation.endDateMs {
                 attributes.endDate = Date(timeIntervalSince1970: Double(endMs) / 1000.0)
+            }
+            if let dueMs = donation.dueDateMs {
+                attributes.dueDate = Date(timeIntervalSince1970: Double(dueMs) / 1000.0)
+            }
+            if let completedMs = donation.completionDateMs {
+                attributes.completionDate = Date(
+                    timeIntervalSince1970: Double(completedMs) / 1000.0)
             }
             attributes.contentURL = URL(string: donation.deepLinkURL)
             let item = CSSearchableItem(

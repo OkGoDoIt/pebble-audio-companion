@@ -374,6 +374,16 @@ final class AppSettings {
         }
     }
 
+    /// "Notify me when my recap is ready" — OFF by default, and turning it on is what asks for
+    /// notification permission. In this app's OWN defaults: notifications belong to the app that
+    /// posts them, and the side-by-side build shares the App Group. `RecapReadyNotifier` reads
+    /// the key itself at the moment a recap is written, so a change applies at once.
+    var recapNotificationsEnabled: Bool {
+        didSet { localDefaults.set(recapNotificationsEnabled, forKey: Self.recapNotificationsKey) }
+    }
+
+    nonisolated static let recapNotificationsKey = "recap_notifications_enabled"
+
     /// Whether a Q14 transcription choice has been made. "Later" leaves this false, which
     /// drives the "Transcripts are off" status family until a mode is configured (6.7).
     var transcriptsConfigured: Bool {
@@ -526,6 +536,8 @@ final class AppSettings {
         self.defaults = defaults
         self.keychain = keychain
         self.localDefaults = localDefaults
+        // Absent key => false: opt-in, so a fresh install is silent.
+        recapNotificationsEnabled = localDefaults.bool(forKey: Self.recapNotificationsKey)
         archiveSync = ArchiveSyncSettings(
             origin: localDefaults.string(forKey: Keys.archiveSyncOrigin),
             deviceId: localDefaults.string(forKey: Keys.archiveSyncDeviceId),

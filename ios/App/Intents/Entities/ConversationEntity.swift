@@ -133,6 +133,11 @@ struct ConversationEntity: IndexedEntity {
     init?(donation: SpotlightDonation, visibility: SystemSearchVisibility) {
         guard donation.kind == .conversation else { return nil }
         let startMs = donation.startDateMs ?? donation.contentCreationDateMs
+        // The zone it was recorded in, as the Library files it; the phone's zone only for a
+        // donation that predates carrying one (or names a zone this OS does not know).
+        let zone =
+            donation.timeZoneID.flatMap { TimeZone(identifier: $0) }?.identifier
+            ?? TimeZone.current.identifier
         self.init(
             snapshot: ConversationEntitySnapshot(
                 id: donation.entityId,
@@ -140,8 +145,8 @@ struct ConversationEntity: IndexedEntity {
                 summary: donation.contentDescription,
                 startMs: startMs,
                 endMs: max(startMs, donation.endDateMs ?? startMs),
-                timeZoneID: TimeZone.current.identifier,
-                dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: TimeZone.current.identifier),
+                timeZoneID: zone,
+                dateKey: LogicalDay.dateKey(forMs: startMs, timeZoneID: zone),
                 tags: donation.keywords,
                 isLive: false,
                 transcript: donation.textContent,

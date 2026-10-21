@@ -84,21 +84,22 @@ struct FollowUpEntity: IndexedEntity {
         self.conversation = conversation
     }
 
-    /// From a donation alone (the indexing pass): a follow-up donation carries only its text
-    /// and creation date, so the entity is the open, undated shape of it.
+    /// From a donation alone (the indexing pass). The donation carries the follow-up's state —
+    /// done, due, flagged, its reason — so the entity says what the list says. It used to carry
+    /// only the text, and every follow-up resolved through Spotlight read as open and undated.
     init?(donation: SpotlightDonation) {
         guard donation.kind == .followUp else { return nil }
         self.init(
             snapshot: FollowUpEntitySnapshot(
                 id: donation.entityId,
                 text: donation.title,
-                done: false,
-                dueAtMs: nil,
-                priority: .normal,
+                done: donation.isCompleted,
+                dueAtMs: donation.dueDateMs,
+                priority: donation.isFlagged ? .high : .normal,
                 createdAtMs: donation.contentCreationDateMs,
-                completedAtMs: nil,
+                completedAtMs: donation.completionDateMs,
                 sourceConversationId: nil,
-                why: nil
+                why: donation.contentDescription
             ),
             conversation: nil
         )

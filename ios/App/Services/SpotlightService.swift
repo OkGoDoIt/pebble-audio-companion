@@ -24,6 +24,13 @@ final class SpotlightService {
     /// default visibility (Everything) whatever "Siri & Spotlight can see" said, without the
     /// iOS 27 entity association, and past the index's change gate.
     private let donator: SpotlightDonator
+    /// Where the watermark lives: this app's OWN defaults, like the index gate, never the App
+    /// Group. The watermark describes this app's Spotlight index, and the side-by-side Debug
+    /// build shares the group with the main app but has an index of its own — so with a shared
+    /// watermark one app's pass made the other skip conversations it had never indexed. (The
+    /// old shared key is simply not read: the first pass after this change donates everything
+    /// that ended since 0 once, which the new mapping wants anyway, and the gate keeps every
+    /// later pass to what changed.)
     private let defaults: UserDefaults
     /// The changed conversations go through the PIPELINE's donation (`EnrichmentService
     /// .donate`), the one that carries the transcript pieces, the people and the tags the
@@ -36,7 +43,7 @@ final class SpotlightService {
     init(
         database: AppDatabase,
         donator: SpotlightDonator,
-        defaults: UserDefaults = SharedAppGroup.defaults,
+        defaults: UserDefaults = .standard,
         donateConversations: @escaping @Sendable ([String]) async -> Void
     ) {
         self.database = database

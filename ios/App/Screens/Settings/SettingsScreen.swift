@@ -139,6 +139,44 @@ struct SettingsScreen: View {
                     .labelsHidden()
                     .tint(Tokens.good)
             }
+
+            // The recap-ready notification: the same row shape, and the same rule — turning it
+            // on is what asks iOS for permission (`RecapReadyNotifier`).
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Copy.RecapNotification.settingTitle)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        settings.recapNotificationsEnabled && notificationsDenied
+                            ? Copy.Settings.Root.lossAlertsDenied
+                            : Copy.RecapNotification.settingSub
+                    )
+                    .font(AppFont.footnote)
+                    .foregroundStyle(
+                        settings.recapNotificationsEnabled && notificationsDenied
+                            ? Tokens.attention : Tokens.meta)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 10)
+                Toggle(
+                    Copy.RecapNotification.settingTitle,
+                    isOn: Binding(
+                        get: { settings.recapNotificationsEnabled },
+                        set: { enabled in
+                            settings.recapNotificationsEnabled = enabled
+                            guard enabled else { return }
+                            Task {
+                                _ = await UserNotificationLossNotifier()
+                                    .requestAuthorizationIfNeeded()
+                                await refreshNotificationPermission()
+                            }
+                        })
+                )
+                .labelsHidden()
+                .tint(Tokens.good)
+            }
         }
         .task { await refreshNotificationPermission() }
     }

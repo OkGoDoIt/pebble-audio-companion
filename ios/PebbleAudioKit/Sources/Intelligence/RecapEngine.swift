@@ -69,15 +69,20 @@ public enum RecapIndex {
 public struct DailyRecapStore: Sendable {
     public let db: AppDatabase
     private let nowMs: @Sendable () -> Int64
+    /// Told the day key after a recap or its day brief (the headline) is written — the one
+    /// point the recap-ready notification listens at, so it never has to poll.
+    private let didWrite: (@Sendable (String) async -> Void)?
 
     public init(
         db: AppDatabase,
         nowMs: @escaping @Sendable () -> Int64 = {
             Int64(Date().timeIntervalSince1970 * 1000)
-        }
+        },
+        didWrite: (@Sendable (String) async -> Void)? = nil
     ) {
         self.db = db
         self.nowMs = nowMs
+        self.didWrite = didWrite
     }
 
     static func recap(from row: Row) -> DailyRecap? {
@@ -127,6 +132,7 @@ public struct DailyRecapStore: Sendable {
                 ]
             )
         }
+        await didWrite?(toWrite.dateKey)
         return toWrite
     }
 
@@ -147,6 +153,7 @@ public struct DailyRecapStore: Sendable {
                 arguments: [headline, lineSummary, hash, dateKey, sourceText]
             )
         }
+        await didWrite?(dateKey)
     }
 
     /// Records the outcome of one condense pass WITHOUT touching the digest.

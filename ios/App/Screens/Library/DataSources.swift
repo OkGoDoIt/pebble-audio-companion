@@ -467,6 +467,10 @@ protocol AskDataSource: AnyObject {
     /// Answers `question` as the next turn of `thread` (nil starts a new conversation): the
     /// earlier turns go to the model as context and the answer joins the same thread.
     func ask(question: String, thread: AskThread?, scope: AskScope) async throws -> AskEntry
+    /// The same question answered from conversation titles, summaries and tags and the day
+    /// recaps only — never a transcript. Siri's Ask under "Siri & Spotlight can see: Titles and
+    /// summaries"; the Ask screen itself always uses `ask`.
+    func askFromSummaries(question: String, scope: AskScope) async throws -> AskEntry
     func clearHistory() async throws
     /// Conversation title for a citation's source id (footer + tap-through).
     func conversationTitle(citedId: String) -> String?

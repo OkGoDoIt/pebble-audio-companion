@@ -60,12 +60,7 @@ struct SearchIndexRebuilder {
         //    when it first decides to keep it — so without this step every follow-up the person
         //    already had disappeared from search permanently while the rebuild reported success.
         for followUp in try await composition.followUps.list(scope: .all) {
-            try? await donator.donateFollowUp(
-                id: followUp.id,
-                text: followUp.text,
-                sourceConversationId: followUp.sourceConversationId,
-                createdAtMs: followUp.createdAtMs
-            )
+            try? await donator.donateFollowUp(followUp)
         }
 
         // 6. Day recaps, whose only other writer is the recap generator — without this they

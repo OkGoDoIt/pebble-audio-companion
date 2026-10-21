@@ -4,12 +4,14 @@ import Foundation
 import Intelligence
 import os
 import SearchKit
+import UIKit
 
 // "Ask Pebble Audio what I agreed with Sam yesterday." Siri's own answer, from the app's own
 // data, with no assistant plugin in between (decided by Roger 2026-10-20).
 //
-// `AskCompanionIntent` opens the Ask screen; this one ANSWERS, out loud and on a card, without
-// bringing the app forward. It is the same Ask: the question goes through the Ask data source
+// `AskCompanionIntent` ("Open Ask") opens the Ask screen; this one ("Ask Pebble Audio …")
+// ANSWERS, out loud and on a card, and brings the app forward only on a tap or when the answer
+// runs past Siri's wait. It is the same Ask: the question goes through the Ask data source
 // the screen uses (`AskLibraryDataSources.current.ask`), so it reads the same range the same
 // way, with the AI the person chose, and is saved to Ask's Recent like any other question. The
 // honesty Ask gets from its scope pill and its citations is kept on the card: the period and how
@@ -70,7 +72,10 @@ struct AskArchiveIntent: AppIntent {
     static let description = IntentDescription(
         "Answers a question from your recorded conversations and shows which ones the answer came from."
     )
-    static let supportedModes: IntentModes = .background
+    /// Answered in the background; may continue into the foreground, and only does when the
+    /// answer runs past Siri's wait (`continueInApp(_:)`). A stored literal: the metadata
+    /// processor reads it off the type.
+    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
 
     @Parameter(title: "Question", requestValueDialog: "What would you like to know?")
     var question: String
@@ -93,7 +98,8 @@ struct AskArchiveIntent: AppIntent {
     func perform() async throws
         -> some IntentResult & ReturnsValue<String> & ProvidesDialog & ShowsSnippetView
     {
-        let answerer = await AskArchiveAnswerer.live()
+        var answerer = await AskArchiveAnswerer.live()
+        answerer.continueInApp = { url in await self.continueInApp(url) }
         let outcome = await answerer.answer(question: question, period: period)
         return .result(
             value: outcome.full,
@@ -102,6 +108,23 @@ struct AskArchiveIntent: AppIntent {
                 supporting: LocalizedStringResource(stringLiteral: outcome.supporting)),
             view: AskArchiveSnippetView(card: outcome.card)
         )
+    }
+
+    /// Continues this intent in the foreground, then opens `url` there — the app's own
+    /// `companion://` route, through the same `onOpenURL` every other link takes.
+    private func continueInApp(_ url: URL) async -> Bool {
+        guard systemContext.currentMode.canContinueInForeground else { return false }
+        do {
+            try await continueInForeground(
+                IntentDialog(stringLiteral: Copy.Siri.continuePrompt), alwaysConfirm: false)
+        } catch {
+            return false
+        }
+        return await Self.open(url)
+    }
+
+    @MainActor private static func open(_ url: URL) async -> Bool {
+        await UIApplication.shared.open(url)
     }
 }
 
@@ -112,8 +135,9 @@ struct AskArchiveIntent: AppIntent {
 struct AskArchiveCard: Equatable, Sendable {
     /// "Yesterday" — the period read, in the words of Ask's scope pill.
     var periodLabel: String
-    /// The answer, citation markers taken out; or the notice when there is no answer.
-    var body: String
+    /// The answer, citation markers taken out; or, with no answer, the one line under the
+    /// heading (nil when the heading says it all).
+    var body: String?
     var isAnswer: Bool
     /// Ask's own partial-coverage line, under an answer built from part of the period only. A
     /// complete answer says nothing, exactly as on the Ask screen.
@@ -157,12 +181,19 @@ struct AskArchiveAnswerer: Sendable {
     var isReady: @MainActor @Sendable () -> Bool
     var visibility: @Sendable () -> SystemSearchVisibility
     var hasContent: @MainActor @Sendable () async -> Bool
+    /// Ask over everything, transcripts included: only under "Everything".
     var ask: @MainActor @Sendable (String, AskScope) async throws -> AskEntry
+    /// Ask over titles, summaries, tags and recaps (`SummaryAskCorpus`): under "Titles and
+    /// summaries", where no transcript may reach Siri.
+    var askSummaries: @MainActor @Sendable (String, AskScope) async throws -> AskEntry
     var target: @MainActor @Sendable (AskCitation) async -> CitationTarget?
     /// How long Ask may take before Siri is told to ask in the app instead. Siri does not wait
     /// indefinitely for an intent, and an answer that never arrives is worse than one that says
     /// where to find it.
     var deadline: Duration = AskArchiveAnswerer.defaultDeadline
+    /// Brings the app forward on `url` once Siri has stopped waiting. False when the system
+    /// cannot (or the person declines); the default, for anything that is not a live intent.
+    var continueInApp: @MainActor @Sendable (URL) async -> Bool = { _ in false }
 
     static let defaultDeadline: Duration = .seconds(25)
 
@@ -175,6 +206,10 @@ struct AskArchiveAnswerer: Sendable {
             ask: { question, scope in
                 try await AskLibraryDataSources.current.ask.ask(
                     question: question, thread: nil, scope: scope)
+            },
+            askSummaries: { question, scope in
+                try await AskLibraryDataSources.current.ask.askFromSummaries(
+                    question: question, scope: scope)
             },
             target: { await AskLibraryDataSources.current.ask.citationTarget(for: $0) }
         )
@@ -190,40 +225,53 @@ struct AskArchiveAnswerer: Sendable {
 
         guard await isReady() else {
             return Self.notice(
-                Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading, period: period,
-                action: nil)
+                spoken: Copy.Siri.notReady, heading: Copy.Siri.notReadyHeading,
+                line: Copy.Siri.notReadyLine, period: period, action: nil)
         }
-        // The person's "Siri & Spotlight can see" choice. Off means Siri hears nothing from
-        // the archive — not even an answer built from it.
-        guard visibility().donates else {
+        // The person's "Siri & Spotlight can see" choice, read once for the whole answer. Off
+        // means Siri hears nothing from the archive — not even an answer built from it; Titles
+        // and summaries means the answer is built from those alone, never a transcript.
+        let visibility = self.visibility()
+        guard visibility.donates else {
             return Self.notice(
-                Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading, period: period,
-                action: askInApp)
+                spoken: Copy.Siri.offForSiri("answers"), heading: Copy.Siri.offHeading,
+                line: Copy.Siri.offLine, period: period, action: askInApp)
         }
         guard await hasContent() else {
             return Self.notice(
-                Copy.Siri.nothingRecorded, heading: Copy.Siri.nothingRecordedHeading,
-                period: period, action: nil)
+                spoken: Copy.Siri.nothingRecorded, heading: Copy.Siri.nothingRecordedHeading,
+                line: nil, period: period, action: nil)
         }
 
+        let summariesOnly = !visibility.includesText
         let entry: AskEntry
         do {
-            let ask = self.ask
+            let ask = summariesOnly ? self.askSummaries : self.ask
             guard
                 let answered = try await Self.withDeadline(
                     deadline, { try await ask(trimmed, period.askScope) })
             else {
+                // Past Siri's wait the question carries on in the app, on the Ask screen, where
+                // it is asked again and answered with its sources. Where the system cannot bring
+                // the app forward (a locked phone, a Shortcut run in the background, the person
+                // declining), the card offers the same as a button instead.
+                if await continueInApp(askInApp.link) {
+                    return Self.notice(
+                        spoken: Copy.Siri.continuingInApp, heading: Copy.Siri.continuingHeading,
+                        line: nil, period: period, action: nil)
+                }
                 return Self.notice(
-                    Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading, period: period,
-                    action: askInApp)
+                    spoken: Copy.Siri.tookTooLong, heading: Copy.Siri.tookTooLongHeading,
+                    line: Copy.Siri.tookTooLongLine, period: period, action: askInApp)
             }
             entry = answered
         } catch {
             let failure = AiFailure.classify(error)
             // `.unknown` adds nothing the sentence does not already say, as on the Ask screen.
-            let line = Copy.Siri.couldNotAnswer(failure.kind == .unknown ? nil : failure.reason)
+            let reason = failure.kind == .unknown ? nil : failure.reason
             return Self.notice(
-                line, heading: Copy.Siri.noAnswerHeading, period: period, action: askInApp)
+                spoken: Copy.Siri.couldNotAnswer(reason), heading: Copy.Siri.noAnswerHeading,
+                line: reason, period: period, action: askInApp)
         }
 
         // One row per cited CONVERSATION, in the order the answer first cites it. Two
@@ -243,13 +291,20 @@ struct AskArchiveAnswerer: Sendable {
         if entry.isPartialCoverage, let read = entry.conversationsRead,
             let inScope = entry.conversationsInScope
         {
-            full += " " + Copy.Siri.partiallyRead(read: read, inScope: inScope, period: period)
-            partialNote = Copy.Ask.partialCoverage(read: read, inScope: inScope)
+            full +=
+                " "
+                + Copy.Siri.partiallyRead(
+                    read: read, inScope: inScope, period: period, summariesOnly: summariesOnly)
+            partialNote =
+                summariesOnly
+                ? Copy.Siri.partialSummaries(read: read, inScope: inScope)
+                : Copy.Ask.partialCoverage(read: read, inScope: inScope)
         }
         let shown = Array(sources.prefix(AskArchiveCard.sourceLimit))
         return AskArchiveOutcome(
             full: full,
-            supporting: Copy.Siri.supporting(read: entry.conversationsRead, period: period),
+            supporting: Copy.Siri.supporting(
+                read: entry.conversationsRead, period: period, summariesOnly: summariesOnly),
             card: AskArchiveCard(
                 periodLabel: Copy.Siri.periodLabel(period),
                 body: text,
@@ -276,14 +331,14 @@ struct AskArchiveAnswerer: Sendable {
         )
     }
 
-    /// No answer: a heading above the card, the reason on it (and spoken in full), and one way
-    /// on. The heading is short so the card's line is not said twice on screen.
+    /// No answer: a heading above the card and at most one line on it, each said once, and one
+    /// way on. `spoken` is the whole of it, for when there is no screen.
     static func notice(
-        _ line: String, heading: String, period: AskArchivePeriod,
+        spoken: String, heading: String, line: String?, period: AskArchivePeriod,
         action: AskArchiveCard.Action?
     ) -> AskArchiveOutcome {
         AskArchiveOutcome(
-            full: line,
+            full: spoken,
             supporting: heading,
             card: AskArchiveCard(
                 periodLabel: Copy.Siri.periodLabel(period), body: line, isAnswer: false,

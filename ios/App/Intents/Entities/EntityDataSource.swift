@@ -457,9 +457,7 @@ struct LiveEntityDataSource: EntityDataSource {
         guard let graph = await Self.graph() else { return }
         for id in followUpIds {
             guard let item = try? await graph.followUps.load(id: id) else { continue }
-            try? await graph.donator.donateFollowUp(
-                id: item.id, text: item.text, sourceConversationId: item.sourceConversationId,
-                createdAtMs: item.createdAtMs)
+            try? await graph.donator.donateFollowUp(item)
         }
         AppRuntimeLog.shared.record("entities  reindex followups=\(followUpIds.count)")
     }

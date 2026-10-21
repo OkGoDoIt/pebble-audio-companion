@@ -166,6 +166,10 @@ struct PebbleAudioApp: App {
                 .overlay {
                     if AskArchiveSnippetPreview.isRequested { AskArchiveSnippetPreview() }
                 }
+                // `-recap-notification-preview`: one made-up recap notification, for screenshots.
+                .task {
+                    if RecapNotificationPreview.isRequested { await RecapNotificationPreview.run() }
+                }
                 #endif
         }
     }

@@ -916,6 +916,57 @@ extension LiveWorld: AskDataSource {
         )
     }
 
+    /// Siri's Ask under "Titles and summaries": the same planner, prompt, sweep and Recent as
+    /// `ask`, over a corpus of conversation titles, summaries and tags plus the day recaps
+    /// (`SummaryAskCorpus`) — never a transcript, which that setting keeps away from Siri.
+    func askFromSummaries(question: String, scope: AskScope) async throws -> AskEntry {
+        let kitScope = scope.kitScope
+        let nowMs = composition.clock.nowMs
+        let corpus = await SummaryAskCorpus.load(
+            queries: queries, recaps: composition.recapStore, scope: kitScope, nowMs: nowMs)
+        guard !corpus.isEmpty else {
+            return try await save(
+                question: question,
+                answer: "There is nothing recorded in that window to answer from.",
+                citations: [], scope: kitScope, coverage: nil, threadId: nil, nowMs: nowMs)
+        }
+        let budget = await askBudget(
+            mode: composition.settings.aiMode, modelId: composition.settings.aiModel)
+        let plan = AskCorpusPlanner.plan(
+            stretches: corpus.stretches, budget: budget, relevance: { _ in .none },
+            policy: .keywordFirst, conversationOf: { corpus.conversationOf($0) })
+        let header = corpus.header(nowMs: nowMs, scopeDescription: kitScope.promptDescription)
+        let retriever = composition.askRetriever
+        @Sendable func render(_ batch: [CitableExcerpt]) -> String {
+            retriever.formatForPrompt(
+                stretches: batch, whenLabel: { corpus.whenLabels[$0.segmentId] },
+                gapSummary: { _ in nil })
+        }
+        let answer: String
+        if plan.isSinglePass {
+            answer = try await run(
+                prompt: AiPromptTemplates.ask,
+                content: SummaryAskCorpus.content(
+                    header: header, coverageLine: plan.coverage.promptLine, question: question,
+                    rendered: render(plan.batches.first ?? [])))
+        } else {
+            // Labelled for what it is: the sweep would otherwise call these "TRANSCRIPTS".
+            answer = try await sweep(
+                plan: plan, question: question, header: header, threadContext: nil,
+                sourcesLabel: "SUMMARIES", render: render)
+        }
+        return try await save(
+            question: question,
+            answer: answer,
+            citations: renderedAnswerCitations(answer, sources: plan.stretches)
+                .map(corpus.realCitation),
+            scope: kitScope,
+            coverage: plan.coverage,
+            threadId: nil,
+            nowMs: nowMs
+        )
+    }
+
     private func run(prompt: AiPromptTemplate, content: String) async throws -> String {
         try await composition.aiRouter.run(
             AiRunRequest(
@@ -935,6 +986,7 @@ extension LiveWorld: AskDataSource {
         question: String,
         header: String,
         threadContext: String?,
+        sourcesLabel: String = "TRANSCRIPTS",
         render: @escaping @Sendable ([CitableExcerpt]) -> String
     ) async throws -> String {
         let total = plan.batches.count
@@ -949,7 +1001,7 @@ extension LiveWorld: AskDataSource {
                     var content = header
                     content += "\n\nQUESTION: \(question)"
                     content += "\n\nThis is part \(index + 1) of \(total) of the range."
-                    content += "\n\nTRANSCRIPTS:\n" + render(batch)
+                    content += "\n\n\(sourcesLabel):\n" + render(batch)
                     let text = try await self.run(
                         prompt: AiPromptTemplates.askSweepFindings, content: content)
                     return (index, text)
@@ -2019,30 +2071,36 @@ extension LiveFollowUps: FollowUpsDataSource {
             text: text, dueAtMs: dueAtMs, nowMs: composition.clock.nowMs)
         // Findable from the moment it exists. Extraction donates what it writes; a follow-up
         // somebody typed themselves is at least as worth finding.
-        try? await composition.donator.donateFollowUp(
-            id: item.id, text: item.text, createdAtMs: item.createdAtMs)
+        try? await composition.donator.donateFollowUp(item)
         return item.id
     }
 
     func setDone(id: String, done: Bool) async throws {
         try await composition.followUps.setDone(id: id, done, nowMs: composition.clock.nowMs)
+        await redonateFollowUp(id: id)
     }
 
     func setText(id: String, text: String) async throws {
         try await composition.followUps.setText(id: id, text, nowMs: composition.clock.nowMs)
         // Otherwise the old wording is what search keeps finding.
-        guard let row = try await composition.followUps.load(id: id) else { return }
-        try? await composition.donator.donateFollowUp(
-            id: row.id, text: row.text, sourceConversationId: row.sourceConversationId,
-            createdAtMs: row.createdAtMs)
+        await redonateFollowUp(id: id)
     }
 
     func setDue(id: String, dueAtMs: Int64?) async throws {
         try await composition.followUps.setDue(id: id, dueAtMs)
+        await redonateFollowUp(id: id)
     }
 
     func setPriority(id: String, priority: FollowUpPriority) async throws {
         try await composition.followUps.setPriority(id: id, priority)
+        await redonateFollowUp(id: id)
+    }
+
+    /// The index document carries done, due and flagged (the entity Siri resolves reads them),
+    /// so every change to one of those is donated again, from the row as it now is.
+    private func redonateFollowUp(id: String) async {
+        guard let row = try? await composition.followUps.load(id: id) else { return }
+        try? await composition.donator.donateFollowUp(row)
     }
 
     func snooze(id: String, untilMs: Int64?) async throws {

@@ -34,12 +34,22 @@ extension Copy {
 
         // ── Ask My Archive ───────────────────────────────────────────────────
 
-        // Headings Siri shows above a card that has no answer on it. The card carries the reason.
+        // A card with no answer on it: a heading (shown above the card) plus at most one line on
+        // it, each said once. The spoken dialog below each is the whole of it, for AirPods.
         static let notReadyHeading = "Still starting up"
+        static let notReadyLine = "Try again in a moment."
         static let offHeading = "Kept in Pebble Audio"
+        static let offLine = "Siri & Spotlight can see is set to Off."
         static let nothingRecordedHeading = "Nothing recorded yet"
         static let tookTooLongHeading = "Taking longer than Siri waits"
+        static let tookTooLongLine = "Ask in Pebble Audio for the full answer."
+        /// Its line is the AI failure's own sentence, when there is one worth saying.
         static let noAnswerHeading = "No answer this time"
+        /// Past Siri's wait, the question carries on in the app.
+        static let continuePrompt =
+            "That is taking longer than Siri can wait. Continue in Pebble Audio?"
+        static let continuingHeading = "Opening in Pebble Audio"
+        static let continuingInApp = "Opening Ask in Pebble Audio for the full answer."
 
         /// A Siri request that raced the app's own start-up.
         static let notReady = "Pebble Audio is still starting up. Try again in a moment."
@@ -74,19 +84,37 @@ extension Copy {
             }
         }
 
-        /// The line Siri shows above the card: what the answer was drawn from.
-        static func supporting(read: Int?, period: AskArchivePeriod) -> String {
+        /// The heading Siri shows above the card: what the answer was drawn from. No closing
+        /// period, like every other card heading; the answer itself is what is read aloud.
+        /// `summariesOnly` (Titles and summaries) says so, because that is all that was read.
+        static func supporting(
+            read: Int?, period: AskArchivePeriod, summariesOnly: Bool = false
+        ) -> String {
             let when = periodPhrase(period)
+            let of = summariesOnly ? "summaries of " : ""
             switch read {
-            case .none: return "From your conversations \(when)."
-            case .some(1): return "From 1 conversation \(when)."
-            case .some(let n): return "From \(n) conversations \(when)."
+            case .none:
+                return summariesOnly
+                    ? "From your conversation summaries \(when)"
+                    : "From your conversations \(when)"
+            case .some(1): return "From \(of)1 conversation \(when)"
+            case .some(let n): return "From \(of)\(n) conversations \(when)"
             }
         }
 
         /// Said after a partial answer, the spoken twin of Ask's `partialCoverage` footnote.
-        static func partiallyRead(read: Int, inScope: Int, period: AskArchivePeriod) -> String {
-            "Pebble Audio read \(read) of the \(inScope) conversations \(periodPhrase(period))."
+        static func partiallyRead(
+            read: Int, inScope: Int, period: AskArchivePeriod, summariesOnly: Bool = false
+        ) -> String {
+            let what = summariesOnly ? "the summaries of " : ""
+            return "Pebble Audio read \(what)\(read) of the \(inScope) conversations "
+                + "\(periodPhrase(period))."
+        }
+
+        /// Ask's `partialCoverage` line, for an answer read from summaries alone.
+        static func partialSummaries(read: Int, inScope: Int) -> String {
+            "Read the summaries of \(read) of \(inScope) conversations — anything not mentioned "
+                + "may not have been reached."
         }
 
         static func moreSources(_ count: Int) -> String { "and \(count) more" }

@@ -4,6 +4,7 @@ import Foundation
 import Intelligence
 import SearchKit
 import Testing
+import Transcription
 
 // The phone's own Siri / Spotlight / Shortcuts path: what the entities carry, what the
 // "Siri & Spotlight can see" setting lets out, the change gate in front of the system index,
@@ -147,6 +148,74 @@ struct SiriPathTests {
         // It used to end the moment it began: zero minutes, modified at its start.
         #expect(entity?.durationMinutes == 25)
         #expect(entity?.modificationDate == Date(timeIntervalSince1970: 1 + 25 * 60))
+    }
+
+    /// The entity attached to a conversation's item is filed under the day it was RECORDED,
+    /// in the zone it was recorded in — not the phone's zone at indexing time.
+    @Test func anEntityFromADonationUsesTheRecordedZone() async throws {
+        // 06:00 UTC: mid-afternoon in Tokyo, the evening before in Los Angeles.
+        let startMs: Int64 = 1_792_476_000_000
+        let tokyoDay = LogicalDay.dateKey(forMs: startMs, timeZoneID: "Asia/Tokyo")
+        let laDay = LogicalDay.dateKey(forMs: startMs, timeZoneID: "America/Los_Angeles")
+        #expect(tokyoDay != laDay)
+
+        // The zone travels from the pipeline's donation onto the item.
+        let system = FakeSystemIndex()
+        try await SpotlightDonator(index: FakeAppIndex(), spotlight: system).donateConversations([
+            .init(
+                conversationId: "c1", title: "Ramen with Ken", startDateMs: startMs,
+                endDateMs: startMs + 60_000, createdAtMs: startMs, timeZoneID: "Asia/Tokyo")
+        ])
+        let donation = try #require(system.donateCalls.first?.first)
+        #expect(donation.timeZoneID == "Asia/Tokyo")
+
+        guard #available(iOS 27, *) else { return }
+        #expect(ConversationEntity(donation: donation, visibility: .full)?.folder?.id == tokyoDay)
+        var elsewhere = donation
+        elsewhere.timeZoneID = "America/Los_Angeles"
+        #expect(ConversationEntity(donation: elsewhere, visibility: .full)?.folder?.id == laDay)
+        // An item from before the zone was carried falls back to the phone's zone.
+        elsewhere.timeZoneID = nil
+        #expect(
+            ConversationEntity(donation: elsewhere, visibility: .full)?.folder?.id
+                == LogicalDay.dateKey(forMs: startMs, timeZoneID: TimeZone.current.identifier))
+    }
+
+    private static let doneFollowUp = FollowUp(
+        id: "fu-9", text: "Send Sam the lease", done: true, sourceConversationId: "conv-1",
+        sourceSegmentId: "s1", createdAtMs: 1_000, why: "He asked for it by Friday.",
+        dueAtMs: 1_792_800_000_000, priority: .high, completedAtMs: 1_792_700_000_000)
+
+    /// A follow-up's item carries its state, so the entity resolved from Spotlight agrees with
+    /// the list: it used to be rebuilt as open, undated and unflagged whatever the row said.
+    @Test func aFollowUpsIndexDocumentCarriesItsState() async throws {
+        let system = FakeSystemIndex()
+        let donator = SpotlightDonator(index: FakeAppIndex(), spotlight: system)
+        try await donator.donateFollowUp(Self.doneFollowUp)
+        let donation = try #require(system.donateCalls.first?.first)
+        #expect(donation.isCompleted)
+        #expect(donation.isFlagged)
+        #expect(donation.dueDateMs == 1_792_800_000_000)
+        #expect(donation.completionDateMs == 1_792_700_000_000)
+        #expect(donation.contentDescription == "He asked for it by Friday.")
+        #expect(donation.deepLinkURL == "companion://followup/fu-9")
+
+        // Reopened: no completion date is left behind on the document.
+        var reopened = Self.doneFollowUp
+        reopened.done = false
+        try await donator.donateFollowUp(reopened)
+        let open = try #require(system.donateCalls.last?.first)
+        #expect(!open.isCompleted)
+        #expect(open.completionDateMs == nil)
+        #expect(SpotlightIndexGate.fingerprint(open) != SpotlightIndexGate.fingerprint(donation))
+
+        guard #available(iOS 27, *) else { return }
+        let entity = try #require(FollowUpEntity(donation: donation))
+        #expect(entity.isCompleted)
+        #expect(entity.isFlagged == true)
+        #expect(entity.dueDate?.day != nil)
+        #expect(entity.completionDate == Date(timeIntervalSince1970: 1_792_700_000))
+        #expect(entity.note.map { String($0.characters) } == "He asked for it by Friday.")
     }
 
     // MARK: - Visibility
@@ -297,6 +366,12 @@ struct SiriPathTests {
         d = base; d.deepLinkURL = "companion://conversation/b"; variants.append(d)
         d = base; d.contentCreationDateMs = 11; variants.append(d)
         d = base; d.startDateMs = nil; variants.append(d)
+        d = base; d.endDateMs = 99; variants.append(d)
+        d = base; d.timeZoneID = "Asia/Tokyo"; variants.append(d)
+        d = base; d.dueDateMs = 99; variants.append(d)
+        d = base; d.completionDateMs = 99; variants.append(d)
+        d = base; d.isCompleted = true; variants.append(d)
+        d = base; d.isFlagged = true; variants.append(d)
         let reference = SpotlightIndexGate.fingerprint(base)
         #expect(SpotlightIndexGate.fingerprint(base) == reference)
         for variant in variants {
@@ -418,7 +493,10 @@ struct SiriPathTests {
 
     private struct Recorder: @unchecked Sendable {
         final class Box: @unchecked Sendable {
+            /// Questions sent to the corpus WITH transcripts.
             var asked: [(String, AskScope)] = []
+            /// Questions sent to the titles-and-summaries corpus.
+            var summaryAsked: [(String, AskScope)] = []
         }
         let box = Box()
     }
@@ -438,6 +516,10 @@ struct SiriPathTests {
             hasContent: { hasContent },
             ask: { question, scope in
                 recorder.box.asked.append((question, scope))
+                return try await ask(question, scope)
+            },
+            askSummaries: { question, scope in
+                recorder.box.summaryAsked.append((question, scope))
                 return try await ask(question, scope)
             },
             target: { citation in
@@ -477,7 +559,7 @@ struct SiriPathTests {
         #expect(recorder.box.asked.first?.0 == "What did I agree with Sam yesterday?")
         #expect(recorder.box.asked.first?.1 == .yesterday)
         #expect(outcome.full == "You agreed to send Sam the lease by Friday. He checks the date.")
-        #expect(outcome.supporting == "From 6 conversations yesterday.")
+        #expect(outcome.supporting == "From 6 conversations yesterday")
         let card = outcome.card
         #expect(card.isAnswer)
         #expect(card.periodLabel == "Yesterday")
@@ -505,6 +587,7 @@ struct SiriPathTests {
         let outcome = await answerer(visibility: .off, recorder: recorder) { _, _ in Self.entry() }
             .answer(question: "anything", period: .today)
         #expect(recorder.box.asked.isEmpty)
+        #expect(recorder.box.summaryAsked.isEmpty)
         #expect(outcome.full == Copy.Siri.offForSiri("answers"))
         #expect(!outcome.card.isAnswer)
         #expect(outcome.card.action?.label == "Ask in Pebble Audio")
@@ -519,11 +602,23 @@ struct SiriPathTests {
         outcome = await answerer(hasContent: false) { _, _ in Self.entry() }
             .answer(question: "q", period: .today)
         #expect(outcome.full == Copy.Siri.nothingRecorded)
+        // The heading says it all; the card adds no line repeating it.
+        #expect(outcome.supporting == Copy.Siri.nothingRecordedHeading)
+        #expect(outcome.card.body == nil)
         // No AI set up: Ask's own failure sentence, and a way to ask in the app.
         outcome = await answerer { _, _ in throw AiError.providerUnavailable(providerId: "none") }
             .answer(question: "q", period: .today)
         #expect(outcome.full == Copy.Siri.couldNotAnswer(AiFailureKind.notConfigured.reason))
+        #expect(outcome.card.body == AiFailureKind.notConfigured.reason)
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "today", query: "q"))
+        // No card heading ends in a period, the answer's included.
+        for heading in [
+            Copy.Siri.notReadyHeading, Copy.Siri.offHeading, Copy.Siri.nothingRecordedHeading,
+            Copy.Siri.tookTooLongHeading, Copy.Siri.noAnswerHeading,
+            Copy.Siri.supporting(read: 3, period: .today),
+        ] {
+            #expect(!heading.hasSuffix("."))
+        }
     }
 
     @Test func siriIsNotKeptWaitingPastTheDeadline() async {
@@ -537,8 +632,146 @@ struct SiriPathTests {
         #expect(outcome.full == Copy.Siri.tookTooLong)
         // The heading above the card is not the card's own line said twice.
         #expect(outcome.supporting == Copy.Siri.tookTooLongHeading)
-        #expect(outcome.card.body == Copy.Siri.tookTooLong)
+        #expect(outcome.card.body == "Ask in Pebble Audio for the full answer.")
         #expect(outcome.card.action.flatMap { Route.parse($0.link) } == .ask(scope: "last7", query: "a long one"))
+    }
+
+    /// Under "Titles and summaries" the answer is built from titles, summaries, tags and recaps:
+    /// the corpus with transcripts is never asked, and the card says what was read.
+    @Test func underTitlesAndSummariesTheAnswerReadsSummariesOnly() async {
+        let recorder = Recorder()
+        let outcome = await answerer(visibility: .summaries, recorder: recorder) { _, _ in
+            Self.entry(read: 4, inScope: 9)
+        }
+        .answer(question: "what about the budget", period: .yesterday)
+        #expect(recorder.box.asked.isEmpty)
+        #expect(recorder.box.summaryAsked.count == 1)
+        #expect(outcome.supporting == "From summaries of 4 conversations yesterday")
+        #expect(outcome.card.partialNote == Copy.Siri.partialSummaries(read: 4, inScope: 9))
+        #expect(
+            outcome.full.hasSuffix(
+                "Pebble Audio read the summaries of 4 of the 9 conversations yesterday."))
+
+        // Everything reads transcripts, never the summaries corpus.
+        let everything = Recorder()
+        _ = await answerer(visibility: .full, recorder: everything) { _, _ in Self.entry() }
+            .answer(question: "q", period: .today)
+        #expect(everything.box.asked.count == 1)
+        #expect(everything.box.summaryAsked.isEmpty)
+    }
+
+    /// The model's whole input under "Titles and summaries", built from a real database with a
+    /// transcript on disk beside it: the title, the summary and the day's recap are in it, and
+    /// not one word of what was said.
+    @Test func underTitlesAndSummariesNoTranscriptTextReachesTheModelsInput() async throws {
+        let database = try AppDatabase.inMemory()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let startMs = nowMs - 2 * 3_600_000
+        try await database.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO conversations (id, startMs, endMs, timezone, state)
+                    VALUES ('c1', ?, ?, 'UTC', 'closed')
+                    """,
+                arguments: [startMs, startMs + 1_800_000])
+            try db.execute(
+                sql: "INSERT INTO annotations (conversationId, title, summary) VALUES (?, ?, ?)",
+                arguments: ["c1", "Lease call with Sam", "Agreed to send the lease by Friday."])
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_segments
+                        (conversationId, segmentId, ordinal, transcriptionState)
+                    VALUES ('c1', 'seg-c1', 0, 'Complete')
+                    """)
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("siri-summaries-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let transcripts = FileTranscriptStore(root: directory, nowMs: { nowMs })
+        _ = try transcripts.save(
+            "seg-c1",
+            result: RoutedTranscription(
+                text: "the door code is pineapple", modeUsed: .localOnly, providerId: "fake",
+                modelUsed: nil))
+        #expect(transcripts.load("seg-c1")?.text.contains("pineapple") == true)
+        let recaps = DailyRecapStore(db: database, nowMs: { nowMs })
+        _ = try await recaps.save(
+            DailyRecap(
+                dateKey: LogicalDay.dateKey(forMs: nowMs, timeZoneID: TimeZone.current.identifier),
+                text: "A day of lease talk.", segmentIds: ["seg-c1"]))
+
+        let corpus = await SummaryAskCorpus.load(
+            queries: ConversationQueries(db: database), recaps: recaps, scope: .lastSevenDays,
+            nowMs: nowMs)
+        let plan = AskCorpusPlanner.plan(
+            stretches: corpus.stretches, budget: AskBudget.forMode(.remoteFirst, modelId: nil),
+            relevance: { _ in .none }, policy: .keywordFirst,
+            conversationOf: { corpus.conversationOf($0) })
+        let rendered = AskRetriever().formatForPrompt(
+            stretches: plan.batches.first ?? [], whenLabel: { corpus.whenLabels[$0.segmentId] },
+            gapSummary: { _ in nil })
+        let input = SummaryAskCorpus.content(
+            header: corpus.header(nowMs: nowMs, scopeDescription: "the last 7 days"),
+            coverageLine: plan.coverage.promptLine, question: "What did I agree with Sam?",
+            rendered: rendered)
+
+        #expect(input.contains("Lease call with Sam"))
+        #expect(input.contains("Agreed to send the lease by Friday."))
+        #expect(input.contains("A day of lease talk."))
+        #expect(input.contains(SummaryAskCorpus.sourcesNote))
+        #expect(!input.contains("pineapple"))
+        #expect(!input.contains("door code"))
+        #expect(plan.coverage.conversationsRead == 1)
+        // A citation of the stretch opens the conversation's own recording, at its start.
+        let key = try #require(corpus.stretches.first?.segmentId)
+        let cited = corpus.realCitation(AskCitation(segmentId: key, number: 1))
+        #expect(cited.segmentId == "seg-c1")
+        #expect(cited.startMs == startMs)
+    }
+
+    /// Past Siri's wait the question carries on in the app, on the Ask screen.
+    @Test func pastTheDeadlineTheQuestionCarriesOnInTheApp() async {
+        final class Opened: @unchecked Sendable { var urls: [URL] = [] }
+        let opened = Opened()
+        var slow = answerer(deadline: .milliseconds(100)) { _, _ in
+            try await Task.sleep(for: .seconds(30))
+            return Self.entry()
+        }
+        slow.continueInApp = { url in
+            opened.urls.append(url)
+            return true
+        }
+        let outcome = await slow.answer(question: "a long one", period: .last7Days)
+        #expect(opened.urls.compactMap(Route.parse) == [.ask(scope: "last7", query: "a long one")])
+        #expect(outcome.supporting == Copy.Siri.continuingHeading)
+        #expect(outcome.full == Copy.Siri.continuingInApp)
+        #expect(outcome.card.action == nil)
+    }
+
+    /// "Ask Pebble Audio …" is Siri's answer, opening the Ask screen is worded as an open, and
+    /// no two shortcuts share a phrase (Siri would pick one of them at random).
+    @Test func askPebbleAudioIsAnsweredBySiriAndNoPhraseIsUsedTwice() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("App/Intents/AppShortcuts.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        var phrases: [String: [String]] = [:]
+        for block in source.components(separatedBy: "AppShortcut(").dropFirst() {
+            guard let intent = block.firstMatch(of: /intent:\s*(\w+)\(/)?.output.1 else {
+                continue
+            }
+            let list = block.components(separatedBy: "shortTitle:").first ?? ""
+            phrases[String(intent), default: []] +=
+                list.matches(of: /"([^"]*)"/).map { String($0.output.1) }
+        }
+        let all = phrases.values.flatMap { $0 }.map { $0.lowercased() }
+        #expect(all.count >= 20)
+        #expect(Set(all).count == all.count)
+        let ask = #"Ask \(.applicationName)"#
+        #expect(phrases["AskArchiveIntent"]?.contains(ask) == true)
+        let openAsk = phrases["AskCompanionIntent"] ?? []
+        #expect(!openAsk.isEmpty)
+        #expect(openAsk.allSatisfy { $0.hasPrefix("Open Ask") || $0.hasPrefix("Show Ask") })
     }
 
     @Test func theCardsButtonsOpenOnlyRoutesTheAppKnows() async throws {

@@ -107,6 +107,39 @@ import Transcription
         #expect(fixture.index.ids.isEmpty)
     }
 
+    /// A conversation that survives losing one of its recordings is indexed again from what it
+    /// now is, straight away. It used to be dropped from the index until an AI re-title donated
+    /// it again — which, with AI off, never happened.
+    @Test func aConversationThatSurvivesASegmentDeleteIsIndexedAgainAtOnce() async throws {
+        let fixture = try RuntimeFixture()
+        let first = try await Fixture.writeSegment(
+            into: fixture.store, streamId: 1, startTimeMs: 1_756_512_000_000, receivedAtMs: 0
+        )
+        let second = try await Fixture.writeSegment(
+            into: fixture.store, streamId: 2,
+            startTimeMs: 1_756_512_000_000 + 60_000, receivedAtMs: 60_000
+        )
+        for (segmentId, words) in [(first, "kept words"), (second, "deleted words")] {
+            _ = try fixture.transcriptStore.save(
+                segmentId,
+                result: RoutedTranscription(
+                    text: words, modeUsed: .localOnly, providerId: "fake", modelUsed: nil))
+        }
+        let conversations = try await fixture.enrichment.regroup()
+        let conversationId = try #require(conversations.first?.id)
+        #expect(conversations.first?.memberSegmentIds == [first, second])
+        await fixture.enrichment.donate(conversationIds: [conversationId])
+        let before = fixture.index.fullText(id: conversationId, kind: .conversation) ?? ""
+        #expect(before.contains("deleted words"))
+
+        #expect(await fixture.cascade.deleteSegment(second))
+
+        #expect(fixture.index.contains(id: conversationId, kind: .conversation))
+        let after = fixture.index.fullText(id: conversationId, kind: .conversation) ?? ""
+        #expect(after.contains("kept words"))
+        #expect(!after.contains("deleted words"))
+    }
+
     @Test func theOpenSegmentIsNeverDeleted() async throws {
         let fixture = try RuntimeFixture()
         _ = try await Fixture.writeSegment(into: fixture.store, close: false)
