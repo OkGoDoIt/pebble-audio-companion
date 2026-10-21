@@ -13,6 +13,41 @@ public enum MuseQuestionEvent: Sendable, Equatable {
     case choice(MuseChoice)
     /// Muse reacted to the question with an emoji, as the Muse app shows on the person's message.
     case reaction(String)
+    /// Muse took the message: its ids, so a later message answering it can be told apart.
+    case asked(Set<String>)
+    /// Muse waits for the person's OK on their phone, for this (`display.action_label`) when it says.
+    case approval(String?)
+    /// The answer as Muse wrote it: Markdown with widget placeholders, and the widgets.
+    case content(MuseAnswerContent)
+}
+
+/// An answer as Muse wrote it, before it is made into watch text.
+public struct MuseAnswerContent: Sendable, Equatable {
+    public let raw: String
+    public let widgets: [MuseWidget]
+    /// The ids of Muse's messages it is made of.
+    public let messageIDs: [String]
+
+    public init(raw: String, widgets: [MuseWidget], messageIDs: [String] = []) {
+        self.raw = raw
+        self.widgets = widgets
+        self.messageIDs = messageIDs
+    }
+}
+
+/// A message Muse sent on the watch's chat that no question was waiting for: one it started, or
+/// an answer that came after its question was over.
+public struct MuseChatMessage: Sendable, Equatable {
+    public let id: String
+    public let content: MuseAnswerContent
+    /// The user message it answers; nil when Muse started it.
+    public let root: String?
+
+    public init(id: String, content: MuseAnswerContent, root: String?) {
+        self.id = id
+        self.content = content
+        self.root = root
+    }
 }
 
 /// Options Muse put to the wearer (its buttons, or list rows that send a message), and the
@@ -53,6 +88,14 @@ public protocol MuseVoiceConversation: Sendable {
     ) async throws -> Bool
     var isOpen: Bool { get async }
     func close() async
+    /// Follows the chat until the link ends, reporting each message Muse finishes there, for the
+    /// caller to decide who it is for. User messages seen on the chat are reported as
+    /// `typedElsewhere` (they weren't sent by this gadget unless the caller knows otherwise).
+    func followChat(onMessages: @escaping @Sendable ([MuseChatMessage], Set<String>) async -> Void) async throws
+}
+
+extension MuseVoiceConversation {
+    public func followChat(onMessages: @escaping @Sendable ([MuseChatMessage], Set<String>) async -> Void) async throws {}
 }
 
 /// Opens links to Muse as this gadget.
@@ -88,6 +131,22 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
 
     func close() async {
         await session.close()
+    }
+
+    func followChat(onMessages: @escaping @Sendable ([MuseChatMessage], Set<String>) async -> Void) async throws {
+        let events = try await session.subscribeChat(sessionID: chatID)
+        trace?("following the chat")
+        let inbox = InboxBox(MuseInbox(sessionID: chatID, startedAt: ProcessInfo.processInfo.systemUptime))
+        let ticker = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                let (due, typed) = await inbox.due()
+                if !due.isEmpty { await onMessages(due, typed) }
+            }
+        }
+        defer { ticker.cancel() }
+        for try await event in events { await inbox.feed(event) }
+        trace?("the chat's events ended")
     }
 
     func ask(
@@ -266,9 +325,15 @@ actor VoiceTurnFollower {
         }
         var ids: Set<String> = []
         var onThisChat: Set<String> = []
+        var labels: [String: String] = [:]
         for item in pending {
             let id = ["approval_id", "id", "request_id"].lazy.compactMap { item[$0]?.string }.first ?? item.compactString()
             ids.insert(id)
+            if let label = (item["display"]?["action_label"]?.string ?? item["display"]?["title"]?.string)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty
+            {
+                labels[id] = label
+            }
             if let chat = sessionID,
                 ["session_id", "chat_id", "thread_id"].contains(where: { key in
                     [item, item["scope"], item["context"]].contains { $0?[key]?.string == chat }
@@ -289,6 +354,7 @@ actor VoiceTurnFollower {
         trace?("Muse is waiting for an approval")
         lastStatus = Self.waitingForOK
         await onEvent(.status(Self.waitingForOK))
+        await onEvent(.approval(ownApprovals.sorted().lazy.compactMap { labels[$0] }.first))
     }
 
     func acknowledge(_ response: MuseJSON?) async throws {
@@ -297,6 +363,7 @@ actor VoiceTurnFollower {
         userIDs = Set(["message_id", "reply_to_message_id"].compactMap { result?[$0]?.string }.filter { !$0.isEmpty })
         let held = try turn.acknowledge(response)
         acknowledged = true
+        if !userIDs.isEmpty { await onEvent(.asked(userIDs)) }
         for message in heldUserMessages { await noteHeard(message) }
         heldUserMessages = []
         await emit(held)
@@ -374,6 +441,7 @@ actor VoiceTurnFollower {
                 let answer = MuseWidget.substitute(raw, widgets: widgets, elsewhere: Self.seeInMuse)
                 if answer != lastAnswer {
                     lastAnswer = answer
+                    await onEvent(.content(MuseAnswerContent(raw: raw, widgets: widgets, messageIDs: turn.replies.map(\.messageID))))
                     await onEvent(.answer(answer))
                 }
                 if let widget = widgets.last(where: \.isChoice) {
@@ -428,5 +496,21 @@ actor VoiceTurnFollower {
             .filter { !$0.isEmpty && !$0.hasPrefix("[file:") && $0 != "[Voice note]" }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// The chat's inbox, shared by the event reader and the clock that hands out what is due.
+private actor InboxBox {
+    private var inbox: MuseInbox
+
+    init(_ inbox: MuseInbox) { self.inbox = inbox }
+
+    func feed(_ event: MuseJSON) { inbox.feed(event, now: ProcessInfo.processInfo.systemUptime) }
+
+    func due() -> ([MuseChatMessage], Set<String>) {
+        let messages = inbox.due(now: ProcessInfo.processInfo.systemUptime).map {
+            MuseChatMessage(id: $0.id, content: MuseAnswerContent(raw: $0.text, widgets: $0.widgets, messageIDs: [$0.id]), root: $0.root)
+        }
+        return (messages, inbox.userMessages)
     }
 }

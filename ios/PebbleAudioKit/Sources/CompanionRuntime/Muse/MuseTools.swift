@@ -66,6 +66,11 @@ actor MuseTools {
     private var prompting = false
     private let clock: @Sendable () -> Date
     private let holdLimit: Duration
+    /// Calls that change something, and how they went, for a repeat that comes soon after.
+    private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
+    /// A call that changes something, repeated within this, gets the first one's result: Muse
+    /// retries a call whose reply it never got, and the timer may already be running.
+    static let repeatWindow: TimeInterval = 180
 
     init(
         preferences: MusePreferencesStore, data: (any MuseDataProvider)?, eventKit: MuseEventKitSource = MuseEventKitSource(),
@@ -241,6 +246,33 @@ actor MuseTools {
     // MARK: - Running one
 
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
+        let key = Self.changeKey(command, params)
+        let now = clock()
+        recentChanges.removeAll { now.timeIntervalSince($0.at) > Self.repeatWindow }
+        if let key, let earlier = recentChanges.last(where: { $0.key == key }) {
+            log("\(command) repeated within \(Int(Self.repeatWindow / 60)) minutes; answering with the first one's result")
+            return earlier.result
+        }
+        let result = await perform(command, params, watch: watch)
+        if let key, result["ok"]?.bool == true { recentChanges.append((key, now, result)) }
+        return result
+    }
+
+    /// What identifies a call that changes something (a timer, an alarm, a new reminder or
+    /// follow-up, a calendar event): its command and parameters. Nil for a call that only reads.
+    static func changeKey(_ command: String, _ params: MuseJSON) -> String? {
+        switch command {
+        case timerCommand, alarmCommand:
+            break
+        case remindersCommand, followUpsCommand, calendarCommand:
+            guard let action = params["action"]?.string, ["add", "create", "complete"].contains(action) else { return nil }
+        default:
+            return nil
+        }
+        return command + " " + params.compactString()
+    }
+
+    private func perform(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
         let prefs = preferences.current.value
         // The person may need time to answer; past this, the call ends as not answered.
         let deadline = ContinuousClock.now + holdLimit

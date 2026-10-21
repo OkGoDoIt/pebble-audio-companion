@@ -4,6 +4,7 @@ import CompanionRuntime
 import Foundation
 import SegmentStore
 import StatusUI
+import UIKit
 import UserNotifications
 
 // Q9 — the ONE notification this product sends (plan 6.7 copy, 6.10 trigger mechanics). The
@@ -285,6 +286,11 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        // A Muse handoff opens what it is about: a web page, a place, the Muse chat.
+        if let url = MuseHandoffNotifier.url(for: response) {
+            await MainActor.run { UIApplication.shared.open(url) }
+            return
+        }
         guard let route = Self.route(for: response.notification.request.content.userInfo) else {
             return
         }

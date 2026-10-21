@@ -21,6 +21,30 @@ public struct MuseWidget: Sendable, Equatable {
         }
     }
 
+    /// A row that opens a web page or an app.
+    public struct Link: Sendable, Equatable {
+        public let title: String
+        public let url: String
+
+        public init(title: String, url: String) {
+            self.title = title
+            self.url = url
+        }
+    }
+
+    /// A place on a map, with where it is when Muse says.
+    public struct Place: Sendable, Equatable {
+        public let name: String
+        public let latitude: Double?
+        public let longitude: Double?
+
+        public init(name: String, latitude: Double? = nil, longitude: Double? = nil) {
+            self.name = name
+            self.latitude = latitude
+            self.longitude = longitude
+        }
+    }
+
     public let id: String
     /// What the widget says it is (`"kind": "options"`), when it says.
     public let kind: String?
@@ -29,14 +53,26 @@ public struct MuseWidget: Sendable, Equatable {
     /// Lines that describe it and can't be picked: places on a map, list rows that are links.
     public let lines: [String]
     public let options: [Option]
+    /// What its rows open (list rows of type `link`).
+    public let links: [Link]
+    /// The places on a map.
+    public let places: [Place]
 
-    public init(id: String, kind: String? = nil, title: String? = nil, lines: [String] = [], options: [Option] = []) {
+    public init(
+        id: String, kind: String? = nil, title: String? = nil, lines: [String] = [], options: [Option] = [],
+        links: [Link] = [], places: [Place] = []
+    ) {
         self.id = id
         self.kind = kind
         self.title = title
         self.lines = lines
         self.options = options
+        self.links = links
+        self.places = places
     }
+
+    /// Something only a phone shows properly: anything beyond buttons and rows that send a message.
+    public var needsAScreen: Bool { !lines.isEmpty || !links.isEmpty || !places.isEmpty || (title != nil && !isChoice) }
 
     /// Something to pick from: buttons, or list rows that send a message.
     public var isChoice: Bool { !options.isEmpty }
@@ -46,12 +82,14 @@ public struct MuseWidget: Sendable, Equatable {
 
     /// What stands in for the widget in plain text: buttons as their words, one per line; anything
     /// more (a map, a chart, a card) its words and `elsewhere`, a pointer to where it can be seen.
-    public func plainText(elsewhere: String) -> String {
-        if isOnlyOptionsWidget { return options.map(\.label).joined(separator: "\n") }
+    /// `optionsApart`: the screen shows the options on their own (as buttons), so the text
+    /// leaves them out.
+    public func plainText(elsewhere: String, optionsApart: Bool = false) -> String {
+        if isOnlyOptionsWidget { return optionsApart ? "" : options.map(\.label).joined(separator: "\n") }
         var parts: [String] = []
         if let title { parts.append(title) }
         parts += lines
-        parts += options.map(\.label)
+        if !optionsApart { parts += options.map(\.label) }
         if !elsewhere.isEmpty { parts.append(elsewhere) }
         return parts.joined(separator: "\n")
     }
@@ -93,13 +131,16 @@ public struct MuseWidget: Sendable, Equatable {
         reading.read(value, depth: 0)
         return MuseWidget(
             id: id, kind: kindKeys.lazy.compactMap { object[$0]?.string }.first(where: { !$0.isEmpty }),
-            title: title(in: value, depth: 0), lines: reading.lines, options: reading.options)
+            title: title(in: value, depth: 0), lines: reading.lines, options: reading.options,
+            links: reading.links, places: reading.places)
     }
 
     /// Walks a widget for the parts a watch can use, wherever its spec nests them.
     struct Reading {
         var options: [Option] = []
         var lines: [String] = []
+        var links: [Link] = []
+        var places: [Place] = []
         var found = false
 
         mutating func read(_ value: MuseJSON, depth: Int) {
@@ -113,6 +154,7 @@ public struct MuseWidget: Sendable, Equatable {
                 // A map's places and pins.
                 if let elements = object["elements"]?.array, elements.contains(where: { $0.object != nil }) {
                     lines = Array(elements.compactMap(MuseWidget.placeName).prefix(maxEntries))
+                    places = Array(elements.compactMap(MuseWidget.place).prefix(maxEntries))
                     found = !lines.isEmpty
                     if found { return }
                 }
@@ -142,9 +184,21 @@ public struct MuseWidget: Sendable, Equatable {
                 } else if !words.isEmpty {
                     lines.append(words.joined(separator: " \u{00B7} "))
                 }
+                if send == nil, let url = (row["data"]?["url"]?.string ?? row["url"]?.string).flatMap(MuseWidget.clean) {
+                    links.append(Link(title: words.first ?? url, url: url))
+                }
             }
             found = !options.isEmpty || !lines.isEmpty
         }
+    }
+
+    static func place(_ value: MuseJSON) -> Place? {
+        guard let object = value.object, let name = (object["name"]?.string ?? object["title"]?.string).flatMap(clean)
+        else { return nil }
+        let coordinate = object["coordinate"] ?? object["location"]
+        return Place(
+            name: name, latitude: coordinate?["latitude"]?.number ?? coordinate?["lat"]?.number,
+            longitude: coordinate?["longitude"]?.number ?? coordinate?["lng"]?.number ?? coordinate?["lon"]?.number)
     }
 
     static func placeName(_ value: MuseJSON) -> String? {
@@ -201,7 +255,9 @@ public struct MuseWidget: Sendable, Equatable {
 
     /// `text` with each placeholder of a known widget replaced by its words. A placeholder for a
     /// widget not seen yet stays, so a later call can fill it in.
-    public static func substitute(_ text: String, widgets: [MuseWidget], elsewhere: String = "") -> String {
+    public static func substitute(
+        _ text: String, widgets: [MuseWidget], elsewhere: String = "", optionsApart: Bool = false
+    ) -> String {
         guard text.contains(placeholderPrefix), !widgets.isEmpty else { return text }
         var out = ""
         var rest = Substring(text)
@@ -210,7 +266,7 @@ public struct MuseWidget: Sendable, Equatable {
             let id = String(rest[open.upperBound..<close.lowerBound])
             out += rest[..<open.lowerBound]
             if let widget = find(id, in: widgets) {
-                out += widget.plainText(elsewhere: elsewhere)
+                out += widget.plainText(elsewhere: elsewhere, optionsApart: optionsApart)
             } else {
                 out += rest[open.lowerBound..<close.upperBound]
             }

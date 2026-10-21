@@ -132,6 +132,16 @@ public actor MusePushToTalk: MuseWatchSide {
         var reaction: String?
         /// What Muse asked of the watch or the phone while answering.
         var tools: [MuseToolUse] = []
+        /// The answer as Muse wrote it, for a watch that shows its options as buttons.
+        var content: MuseAnswerContent?
+        /// The ids of the message this sent Muse: a message answering one later is a late answer.
+        var askedIDs: Set<String> = []
+        /// The messages that answered it here, so the chat's listener doesn't send them again.
+        var replyIDs: Set<String> = []
+        /// The options the watch shows with the answer, for a pick that comes later.
+        var offered: MuseChoice?
+        /// What the watch says went to the phone ("Link sent to your phone"), once it did.
+        var handoffLine: String?
 
         init(serial: Int, id: Int, trigger: PttTrigger?) {
             self.serial = serial
@@ -147,6 +157,10 @@ public actor MusePushToTalk: MuseWatchSide {
     private var started = false
     private var consumer: Task<Void, Never>?
     private var pairedFollower: Task<Void, Never>?
+    private var preferencesFollower: Task<Void, Never>?
+    private var isPaired = false
+    private var listenedChat = ""
+
 
     private enum Outgoing {
         case update(turn: Int, kind: AssistantUpdateKind, detail: UInt8, text: [UInt8])
@@ -155,11 +169,42 @@ public actor MusePushToTalk: MuseWatchSide {
     private var outbox: [Outgoing] = []
     private var sending = false
 
+    /// The last few exchanges, newest last: a pick can come minutes later, and a late answer
+    /// names the question it answers.
+    private var recent: [Turn] = []
+    static let recentTurns = 8
+    /// The highest turn number the watch has seen, so a turn this begins comes after it.
+    private var lastTurnSeen = 0
+    /// Following the watch's chat for messages Muse sends by itself.
+    private var listening = false
+    private var listener: Task<Void, Never>?
+    /// Messages from Muse waiting for the watch to take them.
+    private var pendingMessages: [PendingMessage] = []
+    private var messageRetry: Task<Void, Never>?
+    /// How long a message from Muse waits for the watch before it's dropped.
+    static let messageShelfLife: TimeInterval = 6 * 3600
+    /// How long a message the watch couldn't take yet waits before it's offered again.
+    private let messageRetryDelay: Duration
+
+    private struct PendingMessage {
+        let content: MuseAnswerContent
+        /// For a late answer: the question it answers.
+        let question: String?
+        let replyIDs: Set<String>
+        let receivedAt: Date
+    }
+
+    /// The watch keeps the conversation: options as buttons, picks, and turns this begins.
+    private var watchKeepsConversation: Bool {
+        (link.watchCapabilities ?? 0) & ProtocolConstants.capabilityConversation != 0
+    }
+
     private var nextActionID = 0
     /// Muse's calls still running: the link must not close under one.
     private var commandsInFlight = 0
     private let tools: MuseTools
     private let hasData: Bool
+    private let handoff: (any MusePhoneHandoffPosting)?
     private var actionWaiters: [Int: CheckedContinuation<WatchActionResult?, Never>] = [:]
 
     public init(
@@ -170,6 +215,8 @@ public actor MusePushToTalk: MuseWatchSide {
         eventKit: MuseEventKitSource = MuseEventKitSource(),
         // MuseTools.holdLimitSeconds: a little under the 180 s Muse is given for a data call.
         toolHoldLimit: Duration = .seconds(170),
+        messageRetryDelay: Duration = .seconds(20),
+        handoff: (any MusePhoneHandoffPosting)? = nil,
         keepAwake: @escaping @Sendable () -> Void = {},
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -179,6 +226,8 @@ public actor MusePushToTalk: MuseWatchSide {
         self.keepAwake = keepAwake
         self.log = log
         self.hasData = data != nil
+        self.messageRetryDelay = messageRetryDelay
+        self.handoff = handoff
         self.tools = MuseTools(
             preferences: preferences, data: data, eventKit: eventKit, holdLimit: toolHoldLimit, log: { log("tools: \($0)") })
     }
@@ -198,9 +247,34 @@ public actor MusePushToTalk: MuseWatchSide {
         pairedFollower = Task { [weak self] in
             for await name in names {
                 await self?.link.setQuietLink(name != nil)
+                await self?.followSettings(paired: name != nil)
+            }
+        }
+        let preferenceChanges = preferences.current.stream()
+        preferencesFollower = Task { [weak self] in
+            for await _ in preferenceChanges {
+                await self?.followSettings(paired: nil)
             }
         }
         await link.setQuietLink(paired.value != nil)
+        isPaired = paired.value != nil
+        followSettings(paired: isPaired)
+    }
+
+    /// Muse's own messages are followed while Muse is set up and the person wants them.
+    private func followSettings(paired: Bool?) {
+        if let paired { isPaired = paired }
+        let prefs = preferences.current.value
+        let chat = prefs.chatPlace == .watchChat ? "watch" : "main"
+        if listening, chat != listenedChat {
+            // Another chat: follow that one from a new link.
+            setListening(false)
+            let open = conversation
+            conversation = nil
+            Task { await open?.close() }
+        }
+        listenedChat = chat
+        setListening(isPaired && prefs.messagesOnWatch)
     }
 
     /// The next question from the watch is also sent at every check level.
@@ -219,9 +293,12 @@ public actor MusePushToTalk: MuseWatchSide {
         case .pttEvent(let event):
             keepAwake()
             switch event.event {
-            case .start?: begin(event)
+            case .start?:
+                lastTurnSeen = event.turn
+                begin(event)
             case .end?: await end(event)
             case .cancel?: cancel(event)
+            case .pick?: Task { await self.pick(event) }
             case nil: break
             }
         case .pttAudio(let audio):
@@ -258,6 +335,7 @@ public actor MusePushToTalk: MuseWatchSide {
         turn = nil
         // A link opened for it stays for the next question, then closes.
         scheduleIdleClose()
+        Task { await self.deliverPending() }
     }
 
     private func end(_ event: PttEvent) async {
@@ -331,21 +409,146 @@ public actor MusePushToTalk: MuseWatchSide {
         guard turn === current else { return }
         // A reaction and no words: the reaction is the answer.
         if current.answerText.isEmpty, let reaction = current.reaction { current.answerText = reaction }
+        await handOff(current)
         // Whatever the stream held back as unfinished Markdown goes now.
-        sendAnswer(current, rendered: WatchAnswerText.render(current.answerText, final: true))
+        sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: true))
         current.finished = true
         if current.answerText.isEmpty {
-            let error: AssistantError = (current.heard ?? "").isEmpty ? .didNotCatch : .noAnswer
-            log("question \(current.id): no answer (\(done ? "Muse finished" : "timed out"))")
+            let error = noAnswerError(current, done: done)
+            log("question \(current.id): no answer (\(done ? "Muse finished" : error == .stillWorking ? "Muse is still working" : "timed out"))")
             send(turn: current.id, .error, detail: error.rawValue)
             report(current, seconds: level.durationSeconds, missing: missing, level: level, problem: error)
+            remember(current)
         } else {
             log("question \(current.id): answered (\(current.answerText.utf8.count) bytes)\(done ? "" : ", cut off by the deadline")")
-            send(turn: current.id, .done)
             report(current, seconds: level.durationSeconds, missing: missing, level: level, problem: nil)
-            await offerChoices(current)
+            await finish(current)
         }
         scheduleIdleClose()
+        await deliverPending()
+    }
+
+    /// Why a question got no words: nothing heard, Muse still at work (its answer will come as a
+    /// message, to a watch that takes them), or no answer.
+    private func noAnswerError(_ current: Turn, done: Bool) -> AssistantError {
+        if (current.heard ?? "").isEmpty { return .didNotCatch }
+        if !done, listening, watchKeepsConversation { return .stillWorking }
+        return .noAnswer
+    }
+
+    /// What the watch shows of the answer: a watch that keeps the conversation shows Muse's
+    /// options as buttons, so its text leaves them out.
+    private func watchText(_ current: Turn) -> String {
+        var text = current.answerText
+        if watchKeepsConversation, let content = current.content {
+            let apart = MuseWidget.substitute(
+                content.raw, widgets: content.widgets, elsewhere: VoiceTurnFollower.seeInMuse, optionsApart: true)
+            // A reaction and no words: the reaction is the answer.
+            if !(apart.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && content.widgets.isEmpty) { text = apart }
+        }
+        guard let line = current.handoffLine else { return text }
+        // The phone has it now: say so once, where the answer ends.
+        let trimmed = text.replacingOccurrences(of: "\n" + VoiceTurnFollower.seeInMuse, with: "")
+            .replacingOccurrences(of: VoiceTurnFollower.seeInMuse, with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? line : trimmed + "\n\n" + line
+    }
+
+    /// Hands what only the phone can open to it, with a notification there, once the answer is
+    /// complete. The watch then says where it went.
+    private func handOff(_ current: Turn) async {
+        guard let handoff, current.handoffLine == nil else { return }
+        let raw = current.content?.raw ?? current.answerText
+        let widgets = current.content?.widgets ?? []
+        guard !raw.isEmpty || !widgets.isEmpty else { return }
+        let prefs = preferences.current.value
+        let chat = MusePhoneHandoffPlanner.chatURL(watchChatID: prefs.chatPlace == .watchChat ? preferences.watchChatID() : nil)
+        let truncated = WatchAnswerText.render(watchText(current), final: true).utf8.count > Self.watchAnswerBytes
+        guard let plan = MusePhoneHandoffPlanner.plan(raw: raw, widgets: widgets, truncated: truncated, chat: chat) else { return }
+        let posted = await handoff.post(plan)
+        log("question \(current.id): \(plan.title.lowercased()) \(posted ? "went to the phone" : "stays in Muse (no notification)")")
+        if posted { current.handoffLine = plan.watchLine }
+    }
+
+    /// The answer is complete. A watch that keeps the conversation gets its options with it, to
+    /// pick now or later; an older one gets them as a picker after it.
+    private func finish(_ current: Turn) async {
+        guard watchKeepsConversation else {
+            send(turn: current.id, .done)
+            await offerChoices(current)
+            return
+        }
+        if let choice = current.choice {
+            let options = Array(choice.options.prefix(ProtocolConstants.assistantMaxOptions))
+            for (index, option) in options.enumerated() {
+                send(turn: current.id, .option, detail: UInt8(index), text: Self.cut(option.label, bytes: ProtocolConstants.assistantOptionMaxBytes))
+            }
+            current.offered = MuseChoice(question: choice.question, options: options)
+            current.choice = nil
+        }
+        send(turn: current.id, .done)
+        remember(current)
+    }
+
+    /// Keeps a finished exchange for a pick or a late answer.
+    private func remember(_ current: Turn) {
+        recent.removeAll { $0 === current || $0.id == current.id }
+        recent.append(current)
+        if recent.count > Self.recentTurns { recent.removeFirst() }
+    }
+
+    /// The wearer picked one of an answer's options, on the watch or its notification, maybe
+    /// minutes later: it goes to Muse as their reply, and the answer comes on the same turn.
+    private func pick(_ event: PttEvent) async {
+        let index = Int(event.detail)
+        guard let earlier = recent.last(where: { $0.id == event.turn }), let choice = earlier.offered,
+            choice.options.indices.contains(index)
+        else {
+            log("question \(event.turn): a pick for options this phone no longer has")
+            send(turn: event.turn, .error, detail: AssistantError.noAnswer.rawValue)
+            return
+        }
+        let option = choice.options[index]
+        log("question \(event.turn): option \(index + 1) of \(choice.options.count) picked; asking Muse")
+        turn?.finished = true
+        turnSerial += 1
+        let current = Turn(serial: turnSerial, id: event.turn, trigger: .followUp)
+        current.heard = option.label
+        current.sentHeard = true
+        turn = current
+        sendHeard(current)
+        let serial = current.serial
+        let done: Bool
+        do {
+            let conversation = try await readyConversation()
+            done = try await conversation.reply(text: option.reply, timeout: Self.answerTimeout) { [weak self] event in
+                await self?.relay(event, serial: serial)
+            }
+        } catch {
+            log("question \(current.id): the pick didn't reach Muse: \(error)")
+            let broken = conversation
+            conversation = nil
+            await broken?.close()
+            guard turn === current else { return }
+            current.finished = true
+            send(turn: current.id, .error, detail: Self.assistantError(error).rawValue)
+            return
+        }
+        guard turn === current else { return }
+        if current.answerText.isEmpty, let reaction = current.reaction { current.answerText = reaction }
+        await handOff(current)
+        sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: true))
+        current.finished = true
+        if current.answerText.isEmpty {
+            let error = noAnswerError(current, done: done)
+            send(turn: current.id, .error, detail: error.rawValue)
+            remember(current)
+        } else {
+            log("question \(current.id): the pick was answered (\(current.answerText.utf8.count) bytes)")
+            await finish(current)
+        }
+        scheduleIdleClose()
+        await deliverPending()
     }
 
     /// Muse ended its answer on a choice (a widget its app draws as buttons). The watch shows the
@@ -429,9 +632,16 @@ public actor MusePushToTalk: MuseWatchSide {
             send(turn: current.id, .status, text: Self.cut(text, bytes: 63))
         case .answer(let text):
             current.answerText = text
-            sendAnswer(current, rendered: WatchAnswerText.render(text, final: false))
+            sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: false))
         case .choice(let choice):
             current.choice = choice
+        case .asked(let ids):
+            current.askedIDs.formUnion(ids)
+        case .content(let content):
+            current.content = content
+            current.replyIDs.formUnion(content.messageIDs)
+        case .approval:
+            break
         }
     }
 
@@ -474,6 +684,7 @@ public actor MusePushToTalk: MuseWatchSide {
         send(turn: current.id, .error, detail: error.rawValue)
         report(current, seconds: seconds, missing: missing, level: level, problem: error)
         scheduleIdleClose()
+        Task { await self.deliverPending() }
     }
 
     private func report(_ current: Turn, seconds: Double, missing: Int, level: VoiceNoteLevel.Report?, problem: AssistantError?) {
@@ -512,6 +723,8 @@ public actor MusePushToTalk: MuseWatchSide {
 
     private func closeIdle() async {
         if let turn, !turn.finished { return }
+        // Muse's own messages come over this link.
+        if listening { return }
         if commandsInFlight > 0 {
             scheduleIdleClose()
             return
@@ -519,6 +732,141 @@ public actor MusePushToTalk: MuseWatchSide {
         let open = conversation
         conversation = nil
         await open?.close()
+    }
+
+    // MARK: - Muse's own messages
+
+    /// While on, the link to Muse stays open and the watch's chat is followed: a message Muse
+    /// sends by itself, or an answer that comes after its question was over, goes to the watch,
+    /// which shows it, or makes it a notification when Muse isn't open there.
+    public func setListening(_ on: Bool) {
+        guard on != listening else { return }
+        listening = on
+        listener?.cancel()
+        listener = nil
+        if on {
+            log("Muse messages: following the watch's chat")
+            listener = Task { [weak self] in await self?.listen() }
+        } else {
+            log("Muse messages: off")
+            scheduleIdleClose()
+        }
+    }
+
+    private func listen() async {
+        var pause: Duration = .seconds(5)
+        while !Task.isCancelled, listening {
+            do {
+                let conversation = try await readyConversation()
+                pause = .seconds(5)
+                try await conversation.followChat { [weak self] messages, typed in
+                    await self?.received(messages, typedElsewhere: typed)
+                }
+            } catch {
+                log("Muse messages: \(error)")
+            }
+            guard !Task.isCancelled, listening else { return }
+            try? await Task.sleep(for: pause)
+            pause = min(pause * 3, .seconds(300))
+        }
+    }
+
+    /// Messages Muse finished on the watch's chat: the ones no question is showing go to the
+    /// watch. Replies to what someone typed in the Muse app stay there.
+    func received(_ messages: [MuseChatMessage], typedElsewhere typed: Set<String>) async {
+        var late: Turn?
+        var kept: [MuseChatMessage] = []
+        for message in messages {
+            let asked = message.root.flatMap { root in
+                ([turn].compactMap { $0 } + recent.reversed()).first { $0.askedIDs.contains(root) }
+            }
+            if let asked, !asked.finished || asked.replyIDs.contains(message.id) { continue }
+            if asked == nil, let root = message.root, typed.contains(root) { continue }
+            if late == nil { late = asked }
+            kept.append(message)
+        }
+        log("Muse messages: \(messages.count) finished, \(kept.count) for the watch")
+        guard !kept.isEmpty else { return }
+        // Bubbles that came together go together.
+        let content = MuseAnswerContent(
+            raw: kept.map(\.content.raw).filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            widgets: kept.flatMap(\.content.widgets), messageIDs: kept.map(\.id))
+        pendingMessages.append(PendingMessage(
+            content: content, question: late?.heard, replyIDs: Set(kept.map(\.id)), receivedAt: Date()))
+        if let late { late.replyIDs.formUnion(kept.map(\.id)) }
+        if let late, lastQuestion.value?.askedAt == late.startedAt {
+            // The phone's card shows the answer that came after all.
+            let answer = WatchAnswerText.render(
+                MuseWidget.substitute(content.raw, widgets: content.widgets, elsewhere: VoiceTurnFollower.seeInMuse), final: true)
+            lastQuestion.value?.answer = answer
+            lastQuestion.value?.answered = true
+            lastQuestion.value?.problem = nil
+        }
+        await deliverPending()
+    }
+
+    /// Hands the watch what Muse sent, one message at a time, each as a turn of the phone's own.
+    /// A question under way goes first; a watch that is away gets them when it is back.
+    private func deliverPending() async {
+        pendingMessages.removeAll { Date().timeIntervalSince($0.receivedAt) > Self.messageShelfLife }
+        guard !pendingMessages.isEmpty else { return }
+        guard watchKeepsConversation else {
+            log("Muse messages: this watch can't show messages Muse starts; \(pendingMessages.count) left in the Muse app")
+            pendingMessages.removeAll()
+            return
+        }
+        while let next = pendingMessages.first {
+            if let turn, !turn.finished {
+                scheduleMessageRetry()
+                return
+            }
+            let turnID = lastTurnSeen % 255 + 1
+            let question = Self.cut(next.question ?? "", bytes: ProtocolConstants.assistantTextMaxBytes)
+            let detail = (next.question == nil ? AssistantBegin.message : .lateAnswer).rawValue
+            let reply = await link.sendControlRequest { token in
+                AssistantUpdate(requestToken: token, turn: turnID, kind: .begin, detail: detail, text: question).encode()
+            }
+            guard reply == .ok else {
+                log("Muse messages: the watch didn't take one yet (\(reply)); trying again shortly")
+                scheduleMessageRetry()
+                return
+            }
+            pendingMessages.removeFirst()
+            lastTurnSeen = turnID
+            turnSerial += 1
+            let current = Turn(serial: turnSerial, id: turnID, trigger: nil)
+            current.heard = next.question
+            current.sentHeard = true
+            current.content = next.content
+            current.replyIDs = next.replyIDs
+            current.answerText = WatchAnswerText.render(
+                MuseWidget.substitute(next.content.raw, widgets: next.content.widgets, elsewhere: VoiceTurnFollower.seeInMuse),
+                final: true)
+            if let widget = next.content.widgets.last(where: \.isChoice) {
+                let asked = MuseWidget.question(before: widget.id, in: next.content.raw)
+                current.choice = MuseChoice(
+                    question: widget.isOnlyOptionsWidget ? asked : (widget.title ?? asked), options: widget.options)
+            }
+            turn = current
+            await handOff(current)
+            sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: true))
+            current.finished = true
+            await finish(current)
+            log("question \(turnID): \(next.question == nil ? "a message from Muse" : "a late answer") went to the watch (\(current.answerText.utf8.count) bytes)")
+        }
+    }
+
+    private func scheduleMessageRetry() {
+        guard messageRetry == nil else { return }
+        messageRetry = Task { [weak self] in
+            try? await Task.sleep(for: self?.messageRetryDelay ?? .seconds(20))
+            await self?.retryMessages()
+        }
+    }
+
+    private func retryMessages() async {
+        messageRetry = nil
+        await deliverPending()
     }
 
     static func assistantError(_ error: Error) -> AssistantError {
@@ -563,7 +911,7 @@ public actor MusePushToTalk: MuseWatchSide {
                     switch event {
                     case .heard(let text): await heard.setHeard(text)
                     case .answer(let text): await heard.setAnswer(text)
-                    case .status, .choice, .reaction: break
+                    case .status, .choice, .reaction, .asked, .content, .approval: break
                     }
                 }
             } catch {

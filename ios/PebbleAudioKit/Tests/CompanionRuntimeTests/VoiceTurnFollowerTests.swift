@@ -9,7 +9,16 @@ import Testing
 struct VoiceTurnFollowerTests {
     private actor Events {
         var list: [MuseQuestionEvent] = []
-        func add(_ event: MuseQuestionEvent) { list.append(event) }
+        var asked: Set<String> = []
+        var contents: [MuseAnswerContent] = []
+        /// The ids and raw content a question reports are kept apart from what the watch shows.
+        func add(_ event: MuseQuestionEvent) {
+            switch event {
+            case .asked(let ids): asked.formUnion(ids)
+            case .content(let content): contents.append(content)
+            default: list.append(event)
+            }
+        }
     }
 
     private func event(_ json: String) -> MuseJSON { MuseJSON.parse(Data(json.utf8))! }
@@ -42,7 +51,7 @@ struct VoiceTurnFollowerTests {
         #expect(await events.list.isEmpty)
         try await follower.feed(event(one))
         try await follower.feed(event(one))
-        #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK)])
+        #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK), .approval(nil)])
         #expect(await !follower.isComplete())
         // Answered in the app, then Muse finishes: the question can end.
         try await follower.feed(event(none))
@@ -73,7 +82,7 @@ struct VoiceTurnFollowerTests {
         try await follower.feed(event(#"""
             {"type":"event","event":"approvals.snapshot","payload":{"pending_approvals":[{"id":"old","session_id":"elsewhere"},{"approval_id":"connector-1","type":"connector","status":"pending","scope":{"thread_id":"chat-1","session_scope_id":"s"}}]}}
             """#))
-        #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK)])
+        #expect(await events.list == [.status(VoiceTurnFollower.waitingForOK), .approval(nil)])
     }
 
     @Test func aReactionAloneIsAnAnswer() async throws {

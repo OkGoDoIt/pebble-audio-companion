@@ -36,6 +36,7 @@ struct MuseWidgetTests {
         #expect(widget.title == "Coffee near you")
         #expect(widget.options == [MuseWidget.Option("Blue Bottle", reply: "Tell me more about Blue Bottle")])
         #expect(widget.lines == ["Ritual \u{00B7} Open until 6"])
+        #expect(widget.links == [MuseWidget.Link(title: "Ritual", url: "https://example.com")])
         #expect(widget.plainText(elsewhere: "In the Muse app") == "Coffee near you\nRitual \u{00B7} Open until 6\nBlue Bottle\nIn the Muse app")
     }
 
@@ -45,7 +46,9 @@ struct MuseWidgetTests {
               {"kind":"rich_place","place_id":"123","name":"Tartine","category":"Bakery","coordinate":{"latitude":37.76,"longitude":-122.42}},
               {"kind":"marker","coordinate":{"latitude":37.7,"longitude":-122.4}}]}]
             """#))
-        #expect(map == [MuseWidget(id: "m", kind: "map", title: "Bakeries open now", lines: ["Tartine \u{00B7} Bakery"])])
+        #expect(map == [MuseWidget(
+            id: "m", kind: "map", title: "Bakeries open now", lines: ["Tartine \u{00B7} Bakery"],
+            places: [MuseWidget.Place(name: "Tartine", latitude: 37.76, longitude: -122.42)])])
         #expect(MuseWidget.substitute("Here:\n[[hatch_widget:m]]", widgets: map, elsewhere: "In the Muse app")
             == "Here:\nBakeries open now\nTartine \u{00B7} Bakery\nIn the Muse app")
     }

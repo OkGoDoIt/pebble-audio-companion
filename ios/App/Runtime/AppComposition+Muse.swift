@@ -57,6 +57,7 @@ enum MuseComposition {
             preferences: preferences,
             data: AppMuseData(composition: composition),
             eventKit: eventKit,
+            handoff: MuseHandoffNotifier(),
             keepAwake: { awake.renew() },
             log: { AppRuntimeLog.shared.record("muse  \($0)") }
         )
@@ -65,9 +66,13 @@ enum MuseComposition {
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
-            MainActor.assumeIsolated { askForPendingPhoneAccess() }
+            MainActor.assumeIsolated {
+                askForPendingPhoneAccess()
+                MuseHandoffNotifier.askIfPending()
+            }
         }
         askForPendingPhoneAccess()
+        MuseHandoffNotifier.askIfPending()
     }
 
     private static var foregroundObserver: NSObjectProtocol?

@@ -390,7 +390,10 @@ struct SettingsMuseScreen: View {
                 .accessibilityElement(children: .combine)
             }
             HStack(spacing: 6) {
-                StatusDot(color: last.answered ? Tokens.good : Tokens.attention, size: .status)
+                // Still working is not a failure: the answer comes later.
+                StatusDot(
+                    color: last.answered ? Tokens.good : last.problem == .stillWorking ? Tokens.meta : Tokens.attention,
+                    size: .status)
                 Text(last.problem.map(Copy.Muse.lastQuestionProblem) ?? Copy.Muse.answered)
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.secondaryBody)
@@ -540,6 +543,15 @@ struct SettingsMuseScreen: View {
                             set: { model.setChatPlace($0) }),
                         footer: Copy.Muse.chatFooter)
                 }
+                Toggle(isOn: Binding(
+                    get: { model.preferences.messagesOnWatch },
+                    set: { model.setMessagesOnWatch($0) }
+                )) {
+                    Text(Copy.Muse.messagesRow)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                }
+                .tint(Tokens.tint)
                 SettingsPushRow(title: Copy.Muse.levelRow, value: levelLabel(model.preferences.voiceLevel)) {
                     ChoiceScreen(
                         title: Copy.Muse.levelRow,
@@ -553,6 +565,7 @@ struct SettingsMuseScreen: View {
                         footer: levelFooter)
                 }
             }
+            SettingsFooter(text: Copy.Muse.messagesFooter)
         }
     }
 
@@ -982,6 +995,11 @@ final class MuseScreenModel {
     func setChatPlace(_ place: MuseChatPlace) {
         guard !previewing else { preferences.chatPlace = place; return }
         MuseComposition.preferences.update { $0.chatPlace = place }
+    }
+
+    func setMessagesOnWatch(_ on: Bool) {
+        guard !previewing else { preferences.messagesOnWatch = on; return }
+        MuseComposition.preferences.update { $0.messagesOnWatch = on }
     }
 
     enum PhonePermission: Equatable { case granted, notAsked, refused }

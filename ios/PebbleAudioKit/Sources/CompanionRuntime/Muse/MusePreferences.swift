@@ -62,6 +62,9 @@ public struct MusePreferences: Equatable, Sendable {
     /// Sources allowed on the watch while iOS hadn't given the app access yet: the next time the
     /// app comes to the foreground it asks iOS, once.
     public var pendingPhoneAccess: Set<MuseSource> = []
+    /// What Muse sends by itself (a scheduled result, an update, an answer that came late) goes
+    /// to the watch. On by default: Muse is an agent, and this is how it reaches the wrist.
+    public var messagesOnWatch = true
 
     public init(
         voiceLevel: MuseVoiceLevel = .automatic, chatPlace: MuseChatPlace = .watchChat,
@@ -92,6 +95,7 @@ public final class MusePreferencesStore: @unchecked Sendable {
         static let watchChatID = "muse.watchChatID.2"
         static func access(_ source: MuseSource) -> String { "muse.access.\(source.rawValue)" }
         static let pendingPhoneAccess = "muse.pendingPhoneAccess"
+        static let messagesOff = "muse.messagesOff"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -111,6 +115,7 @@ public final class MusePreferencesStore: @unchecked Sendable {
             let off = MuseWatchActionKind.allCases.filter { !value.watchActions.contains($0) }.map(\.rawValue)
             defaults.set(off, forKey: Key.actionsOff)
             defaults.set(value.pendingPhoneAccess.map(\.rawValue).sorted(), forKey: Key.pendingPhoneAccess)
+            defaults.set(!value.messagesOnWatch, forKey: Key.messagesOff)
             for source in MuseSource.allCases {
                 let access = value.access(source)
                 if access == .ask {
@@ -146,6 +151,7 @@ public final class MusePreferencesStore: @unchecked Sendable {
         let off = Set((defaults.stringArray(forKey: Key.actionsOff) ?? []).compactMap(MuseWatchActionKind.init(rawValue:)))
         value.watchActions = Set(MuseWatchActionKind.allCases).subtracting(off)
         value.pendingPhoneAccess = Set((defaults.stringArray(forKey: Key.pendingPhoneAccess) ?? []).compactMap(MuseSource.init(rawValue:)))
+        value.messagesOnWatch = !defaults.bool(forKey: Key.messagesOff)
         for source in MuseSource.allCases {
             if let raw = defaults.string(forKey: Key.access(source)), let access = MuseSourceAccess(rawValue: raw) {
                 value.dataAccess[source] = access

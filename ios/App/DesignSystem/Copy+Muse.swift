@@ -131,6 +131,7 @@ extension Copy {
             case .noAnswer: return "Muse didn't answer"
             case .didNotCatch: return "Too short to ask"
             case .busy: return "Muse was busy"
+            case .stillWorking: return "Muse is still working on it"
             }
         }
 
@@ -172,6 +173,8 @@ extension Copy {
         static let chatWatch = "Their own chat"
         static let chatMain = "Your main chat"
         static let chatFooter = "Where they appear in the Muse app."
+        static let messagesRow = "Muse's own messages"
+        static let messagesFooter = "Updates and results Muse sends without being asked come to your watch."
         static let levelRow = "Voice level"
         static let levelAutomatic = "Automatic"
         static func levelFixed(_ gain: Int) -> String { gain == 0 ? "No boost" : "+\(gain) dB" }

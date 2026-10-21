@@ -304,6 +304,23 @@ struct MusePushToTalkTests {
         #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand])
     }
 
+    @Test func aTimerRepeatedSoonAfterIsNotSetTwice() async throws {
+        // Muse retries a call whose reply it never got; the first timer is already running.
+        let fx = PushToTalkFixture()
+        await fx.start()
+        let first = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600, "label": "Pasta"]) }
+        _ = try #require(await fx.answerNextAction(status: .done))
+        #expect(await first.value["ok"]?.bool == true)
+        let again = await fx.service.runCommand(MuseTools.timerCommand, ["label": "Pasta", "seconds": 600])
+        #expect(again["ok"]?.bool == true)
+        #expect(fx.link.actions().count == 1)
+        // A different timer is set.
+        let other = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 300]) }
+        _ = try #require(await fx.answerNextAction(status: .done))
+        #expect(await other.value["ok"]?.bool == true)
+        #expect(fx.link.actions().count == 2)
+    }
+
     @Test func badParametersAreRefused() async {
         let fx = PushToTalkFixture()
         await fx.start()
@@ -312,6 +329,154 @@ struct MusePushToTalkTests {
         let alarm = await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 25, "minute": 0])
         #expect(alarm["ok"]?.bool == false)
         #expect(fx.link.actions().isEmpty)
+    }
+}
+
+/// A watch that keeps the conversation (capability bit5): options with the answer, picks that
+/// come later, and the messages Muse sends by itself.
+struct MuseConversationTests {
+    static let conversation = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
+        | ProtocolConstants.capabilityFollowUp | ProtocolConstants.capabilityConversation
+
+    private func choiceScript() -> [MuseQuestionEvent] {
+        let widget = MuseWidget(id: "w1", options: [MuseWidget.Option("A: 12"), MuseWidget.Option("B: 14", reply: "I pick 14")])
+        let raw = "What is 2 times 7?\n\n[[hatch_widget:w1]]"
+        return [
+            .heard("quiz me"),
+            .asked(["u1"]),
+            .content(MuseAnswerContent(raw: raw, widgets: [widget], messageIDs: ["a1"])),
+            .answer("What is 2 times 7?\n\nA: 12\nB: 14"),
+            .choice(MuseChoice(question: "What is 2 times 7?", options: widget.options)),
+        ]
+    }
+
+    private func text(_ update: AssistantUpdate) -> String { String(decoding: update.text, as: UTF8.self) }
+
+    @Test func optionsGoWithTheAnswerAndItsTextLeavesThemOut() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = Self.conversation
+        fx.muse.script = choiceScript()
+        await fx.start()
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+        let updates = fx.link.updates()
+        let answer = updates.filter { $0.kind == .answer || $0.kind == .answerRestart }.map(text).joined()
+        #expect(answer == "What is 2 times 7?")
+        let options = updates.filter { $0.kind == .option }
+        #expect(options.map(text) == ["A: 12", "B: 14"])
+        #expect(options.map(\.detail) == [0, 1])
+        // Options come before Done, and no picker pops up after it.
+        let doneAt = try #require(updates.firstIndex { $0.kind == .done })
+        #expect(updates.lastIndex { $0.kind == .option }! < doneAt)
+        #expect(fx.link.actions().isEmpty)
+    }
+
+    @Test func aPickLaterGoesToMuseAsTheReplyOnTheSameTurn() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = Self.conversation
+        fx.muse.script = choiceScript()
+        fx.muse.replyScript = [.answer("Correct!")]
+        await fx.start()
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+        let before = fx.link.updates().count
+
+        fx.pick(turn: 3, index: 1)
+        #expect(await fx.waitUntil { fx.link.updates().dropFirst(before).contains { $0.kind == .done } })
+        #expect(fx.muse.replies == ["I pick 14"])
+        let after = Array(fx.link.updates().dropFirst(before))
+        #expect(after.allSatisfy { $0.turn == 3 })
+        #expect(after.first { $0.kind == .heard }.map(text) == "B: 14")
+        #expect(after.filter { $0.kind == .answer || $0.kind == .answerRestart }.map(text).joined() == "Correct!")
+
+        // A pick for options this phone never sent says so.
+        fx.pick(turn: 9, index: 0)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.turn == 9 && $0.kind == .error } })
+    }
+
+    @Test func aQuestionMuseIsStillWorkingOnSaysSoAndItsAnswerComesLater() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        fx.muse.script = [.heard("book a table"), .asked(["u1"])]
+        fx.muse.done = false
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        try fx.ask(turn: 4, seconds: 1)
+        #expect(await fx.waitUntil {
+            fx.link.updates().contains { $0.turn == 4 && $0.kind == .error && $0.detail == AssistantError.stillWorking.rawValue }
+        })
+
+        // Minutes later Muse answers that question: a late answer, on a turn of the phone's own.
+        fx.muse.post([MuseChatMessage(id: "a9", content: MuseAnswerContent(raw: "Booked for 7.", widgets: []), root: "u1")])
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .begin } })
+        let begin = try #require(fx.link.updates().first { $0.kind == .begin })
+        #expect(begin.turn == 5)
+        #expect(begin.detail == AssistantBegin.lateAnswer.rawValue)
+        #expect(text(begin) == "book a table")
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.turn == 5 && $0.kind == .done } })
+        let words = fx.link.updates().filter { $0.turn == 5 && ($0.kind == .answer || $0.kind == .answerRestart) }
+        #expect(words.map(text).joined() == "Booked for 7.")
+        #expect(fx.service.lastQuestion.value?.answer == "Booked for 7.")
+    }
+
+    @Test func museMessagesReachTheWatchUnlessAQuestionOrThePhoneHasThem() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        fx.muse.script = choiceScript()
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        try fx.ask(turn: 3, seconds: 1)
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+
+        // The question's own answer, seen again by the chat: not sent twice. A reply to something
+        // typed in the Muse app stays there.
+        fx.muse.post([
+            MuseChatMessage(id: "a1", content: MuseAnswerContent(raw: "What is 2 times 7?", widgets: []), root: "u1"),
+            MuseChatMessage(id: "a2", content: MuseAnswerContent(raw: "Typed reply", widgets: []), root: "t1"),
+        ], typedElsewhere: ["t1"])
+        // A scheduled result Muse sends by itself goes to the watch, with no question.
+        fx.muse.post([MuseChatMessage(id: "a3", content: MuseAnswerContent(raw: "Your 3 PM moved to 4.", widgets: []), root: nil)])
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .begin } })
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.turn == 4 && $0.kind == .done } })
+        let begins = fx.link.updates().filter { $0.kind == .begin }
+        #expect(begins.count == 1)
+        #expect(begins.first?.detail == AssistantBegin.message.rawValue)
+        #expect(begins.first?.text.isEmpty == true)
+        let words = fx.link.updates().filter { $0.turn == 4 && ($0.kind == .answer || $0.kind == .answerRestart) }
+        #expect(words.map(text).joined() == "Your 3 PM moved to 4.")
+    }
+
+    @Test func aBusyWatchGetsTheMessageOnceItsQuestionIsOver() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        // The watch says busy the first time (a question of its own is under way).
+        fx.link.scriptReplies([.busy])
+        fx.muse.post([MuseChatMessage(id: "a3", content: MuseAnswerContent(raw: "Done: flights booked.", widgets: []), root: nil)])
+        #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
+        #expect(fx.link.updates().filter { $0.kind == .begin }.count == 1)
+    }
+
+    @Test func anOlderWatchKeepsMuseMessagesInTheMuseApp() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        fx.muse.post([MuseChatMessage(id: "a3", content: MuseAnswerContent(raw: "Hello", widgets: []), root: nil)])
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!fx.link.updates().contains { $0.kind == .begin })
+    }
+
+    @Test func turningMessagesOffStopsFollowingTheChat() async throws {
+        let fx = PushToTalkFixture(listening: true)
+        fx.link.watchCapabilities = Self.conversation
+        await fx.start()
+        #expect(await fx.waitUntil { fx.muse.following > 0 })
+        fx.preferences.update { $0.messagesOnWatch = false }
+        try await Task.sleep(for: .milliseconds(100))
+        fx.muse.post([MuseChatMessage(id: "a3", content: MuseAnswerContent(raw: "Hello", widgets: []), root: nil)])
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!fx.link.updates().contains { $0.kind == .begin })
     }
 }
 
@@ -326,10 +491,18 @@ private final class PushToTalkFixture: @unchecked Sendable {
 
     let data = FakeData()
 
-    init(paired: Bool = true, holdLimit: Duration = .seconds(30)) {
+    /// `listening`: Muse's own messages are followed (off unless a test is about them).
+    init(paired: Bool = true, holdLimit: Duration = .seconds(30), listening: Bool = false) {
         muse = FakeMuse(paired: paired)
+        preferences.update { $0.messagesOnWatch = listening }
         service = MusePushToTalk(
-            link: link, connector: muse, preferences: preferences, data: data, toolHoldLimit: holdLimit)
+            link: link, connector: muse, preferences: preferences, data: data, toolHoldLimit: holdLimit,
+            messageRetryDelay: .milliseconds(50))
+    }
+
+    /// The watch picks option `index` of turn `turn`'s answer.
+    func pick(turn: Int, index: Int) {
+        link.push(.pttEvent(PttEvent(turn: turn, eventRaw: PttEventKind.pick.rawValue, detail: UInt8(index))))
     }
 
     /// Answers the next watch action the way the watch would, once it has been sent.
@@ -459,6 +632,9 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     private var _replies: [String] = []
     private var _opens = 0
     private var _openFailure: MuseQuestionFailure?
+    private var _done = true
+    private var _chat: [([MuseChatMessage], Set<String>)] = []
+    private var _following = 0
 
     init(paired: Bool) { self.paired = paired }
 
@@ -480,6 +656,21 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     }
     var toolResults: [MuseJSON] { lock.withLock { _toolResults } }
     var opens: Int { lock.withLock { _opens } }
+    /// False: the question ends at its deadline with Muse still at work.
+    var done: Bool {
+        get { lock.withLock { _done } }
+        set { lock.withLock { _done = newValue } }
+    }
+    /// How many times the chat has been followed.
+    var following: Int { lock.withLock { _following } }
+    /// Messages Muse finishes on the chat, handed to whoever follows it.
+    func post(_ messages: [MuseChatMessage], typedElsewhere: Set<String> = []) {
+        lock.withLock { _chat.append((messages, typedElsewhere)) }
+    }
+    fileprivate func nextPosted() -> ([MuseChatMessage], Set<String>)? {
+        lock.withLock { _chat.isEmpty ? nil : _chat.removeFirst() }
+    }
+    fileprivate func startedFollowing() { lock.withLock { _following += 1 } }
     var openFailure: MuseQuestionFailure? {
         get { lock.withLock { _openFailure } }
         set { lock.withLock { _openFailure = newValue } }
@@ -529,13 +720,20 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         ) async throws -> Bool {
             await muse.callTool()
             for event in muse.took(wav) { await onEvent(event) }
-            return true
+            return muse.done
         }
         func reply(
             text: String, timeout: Duration, onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
         ) async throws -> Bool {
             for event in muse.took(reply: text) { await onEvent(event) }
             return true
+        }
+        func followChat(onMessages: @escaping @Sendable ([MuseChatMessage], Set<String>) async -> Void) async throws {
+            muse.startedFollowing()
+            while !Task.isCancelled {
+                if let (messages, typed) = muse.nextPosted() { await onMessages(messages, typed) }
+                try await Task.sleep(for: .milliseconds(10))
+            }
         }
     }
 }
