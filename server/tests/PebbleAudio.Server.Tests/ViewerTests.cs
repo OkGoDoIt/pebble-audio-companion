@@ -72,7 +72,7 @@ public sealed partial class ViewerTests(ArchiveServerFactory factory)
 		// The kitchen conversation at 10:26 (t = 1260): the cited band sits on the turn said then.
 		var page = await PageAsync(browser, "/c/conv-kitchen?t=1260");
 		Assert.Contains("Kitchen tiles with Sam", page, StringComparison.Ordinal);
-		Assert.Contains("Roger and Sam", page, StringComparison.Ordinal);
+		Assert.Contains("Alex and Sam", page, StringComparison.Ordinal);
 		Assert.Contains("1 min missing · the watch didn't record it", page, StringComparison.Ordinal);
 		Assert.Contains("Quiet · 2 min", page, StringComparison.Ordinal);
 		Assert.Single(Regex.Matches(page, "The moment this cites"));
