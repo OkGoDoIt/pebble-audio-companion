@@ -151,8 +151,11 @@ public static class OAuthEndpoints
 			return RegistrationError("invalid_redirect_uri", "redirect_uris must be https, or http on localhost or 127.0.0.1");
 		}
 
+		// Public clients only. One that asks for a client secret (Gemini reportedly asks for client_secret_basic) is
+		// registered as a public client and told so in the answer: RFC 7591 §3.2.1 lets the server replace what a client
+		// asked for, and the client then uses what it was given. Other methods (private_key_jwt) are refused.
 		var method = ClientMetadataDocuments.StringProperty(root, "token_endpoint_auth_method");
-		if (method is not null and not "none")
+		if (method is not null and not "none" and not "client_secret_basic" and not "client_secret_post")
 		{
 			return RegistrationError("invalid_client_metadata", "token_endpoint_auth_method must be none (public clients only)");
 		}
@@ -191,10 +194,11 @@ public static class OAuthEndpoints
 		await db.SaveChangesAsync(cancellationToken);
 		await tokens.CleanUpAsync(cancellationToken);
 		logger.LogInformation(
-			"Registered OAuth client {ClientId} ({Name}) for {RedirectHost}.",
+			"Registered OAuth client {ClientId} ({Name}) for {RedirectHost}, asked for {RequestedAuthMethod}, registered as none.",
 			client.ClientId,
 			OAuthClientNames.Display(client.Name, client.RedirectUris[0]),
-			OAuthRedirects.Host(client.RedirectUris[0]));
+			OAuthRedirects.Host(client.RedirectUris[0]),
+			method ?? "none");
 
 		return Results.Json(
 			new RegistrationResponse(

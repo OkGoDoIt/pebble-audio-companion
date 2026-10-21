@@ -17,7 +17,7 @@ namespace PebbleAudio.Server.Tests;
 [Collection(ServerCollection.Name)]
 public sealed partial class ConnectTests(ArchiveServerFactory factory)
 {
-	private static readonly string[] HubTools = ["chatgpt", "claude", "codex", "claude-code", "cursor", "muse", "other"];
+	private static readonly string[] HubTools = ["chatgpt", "claude", "claude-code", "codex", "cursor", "gemini", "muse", "grok", "other"];
 
 	[Fact]
 	public async Task Connecting_codex_signs_in_first_and_its_fallback_key_shows_once_and_turns_the_wait_into_a_check()
@@ -31,19 +31,22 @@ public sealed partial class ConnectTests(ArchiveServerFactory factory)
 		using var browser = await SignedInAsync(userId);
 		Assert.Equal(HttpStatusCode.NotFound, (await browser.GetAsync("/connect/notepad")).StatusCode);
 
-		// The default path is OAuth: no key on the page.
+		// The default path is OAuth: one command, which starts the sign-in itself, and no key on the page.
 		var page = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/codex"));
-		Assert.Contains($"codex mcp add pebble-audio --url {ArchiveServerFactory.PublicOrigin}/mcp", page, StringComparison.Ordinal);
-		Assert.Contains("codex mcp login pebble-audio", page, StringComparison.Ordinal);
+		Assert.Contains($"<pre class=\"cmd\" id=\"cmd\">codex mcp add pebble-audio --url {ArchiveServerFactory.PublicOrigin}/mcp</pre>", page, StringComparison.Ordinal);
+		Assert.DoesNotContain("codex mcp login", page, StringComparison.Ordinal);
 		Assert.Contains("once you sign in", page, StringComparison.Ordinal);
 		Assert.DoesNotContain(ApiTokenService.Prefix, page, StringComparison.Ordinal);
 		var since = Since().Match(page).Groups["ms"].Value;
 		Assert.Contains("data-ready=\"false\"", page, StringComparison.Ordinal);
 
-		// Cursor's button installs the server's URL.
+		// Cursor's button installs the server's URL, in the app or through cursor.com.
 		var cursor = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/cursor"));
+		var expectedConfig = $$"""{"url":"{{ArchiveServerFactory.PublicOrigin}}/mcp"}""";
 		var config = CursorConfig().Match(cursor).Groups["config"].Value;
-		Assert.Equal($$"""{"url":"{{ArchiveServerFactory.PublicOrigin}}/mcp"}""", Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(config))));
+		Assert.Equal(expectedConfig, Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(config))));
+		Assert.Contains($"href=\"https://cursor.com/install-mcp?name=pebble-audio&config={config}\"", cursor, StringComparison.Ordinal);
+		Assert.Contains("Or open in the browser", cursor, StringComparison.Ordinal);
 
 		// The fallback mints a key named for the app and shows it in that response only.
 		var csrf = Csrf().Match(page).Groups["token"].Value;
@@ -104,31 +107,43 @@ public sealed partial class ConnectTests(ArchiveServerFactory factory)
 		Assert.DoesNotContain("aria-label=\"Connected\"", empty, StringComparison.Ordinal);
 		Assert.Contains($"data-copy-value=\"{ArchiveServerFactory.PublicOrigin}/mcp\"", empty, StringComparison.Ordinal);
 		Assert.Matches(HubRow("chatgpt", "Not connected"), empty);
-		Assert.Matches(HubRow("muse", "Through your watch"), empty);
-		Assert.Matches(HubRow("other", "Gemini and others"), empty);
+		Assert.Matches(HubRow("claude-code", "On your Mac"), empty);
+		Assert.Matches(HubRow("gemini", "Not connected"), empty);
+		Assert.Matches(HubRow("muse", "On your watch or in Muse"), empty);
+		Assert.Matches(HubRow("grok", "Not connected"), empty);
+		Assert.Matches(HubRow("other", "Antigravity and others"), empty);
+		Assert.Equal(HubTools, HubOrder().Matches(empty).Select(m => m.Groups["tool"].Value));
 
-		// ChatGPT signs in, and Gemini reads with an access key: ChatGPT's row is checked, and Gemini gets a row of its own.
+		// ChatGPT and Claude sign in, Gemini reads with an access key, and so does Antigravity: their rows are checked,
+		// Antigravity gets a row of its own above Another assistant, and Claude Code comes with the Claude account.
 		await ConnectAsync(userId, "ChatGPT", "https://chatgpt.com/connector_platform_oauth_redirect");
-		string gemini;
-		await using (var scope = factory.Services.CreateAsyncScope())
+		await ConnectAsync(userId, "Claude", "https://claude.ai/api/mcp/auth_callback");
+		foreach (var name in new[] { "Gemini", "Antigravity" })
 		{
-			(_, gemini) = await scope.ServiceProvider.GetRequiredService<ApiTokenService>().CreateAsync(userId, "Gemini", TokenAccess.Read, CancellationToken.None);
-		}
+			string key;
+			await using (var scope = factory.Services.CreateAsyncScope())
+			{
+				(_, key) = await scope.ServiceProvider.GetRequiredService<ApiTokenService>().CreateAsync(userId, name, TokenAccess.Read, CancellationToken.None);
+			}
 
-		using (var api = factory.CreateClient())
-		{
-			Assert.Equal(HttpStatusCode.OK, (await api.SendAsync(McpTests.McpPost(gemini))).StatusCode);
+			using var api = factory.CreateClient();
+			Assert.Equal(HttpStatusCode.OK, (await api.SendAsync(McpTests.McpPost(key))).StatusCode);
 		}
 
 		var hub = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect"));
 		Assert.Matches(HubRow("chatgpt", "Connected just now", connected: true), hub);
-		Assert.Matches(HubRow("claude", "Not connected"), hub);
-		Assert.Matches(new Regex("<a class=\"row tall\" href=\"/connect/other\">\\s*<span class=\"itile brand[^\"]*\"[^>]*><svg[^>]*><path fill=\"#8E75B2\"[^>]*/></svg></span>\\s*<span class=\"grow\"><span class=\"t strong\">Gemini</span><span class=\"s\">Connected just now</span>"), hub);
+		Assert.Matches(HubRow("claude", "Connected just now", connected: true), hub);
+		Assert.Matches(HubRow("claude-code", PebbleAudio.Server.Pages.View.ConnectHubModel.ClaudeAccountLine), hub);
+		Assert.Matches(HubRow("gemini", "Connected just now", connected: true), hub);
+		Assert.Matches(new Regex("<a class=\"row tall\" href=\"/connect/other\">\\s*<span class=\"itile\"[^>]*>A</span>\\s*<span class=\"grow\"><span class=\"t strong\">Antigravity</span><span class=\"s\">Connected just now</span>"), hub);
 
-		// ChatGPT's own page says it is connected rather than waiting.
+		// ChatGPT's own page says it is connected rather than waiting, and Claude Code's says Claude is there.
 		var chatgpt = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/chatgpt"));
 		Assert.Contains("data-ready=\"true\"", chatgpt, StringComparison.Ordinal);
 		Assert.Contains("ChatGPT is connected.", chatgpt, StringComparison.Ordinal);
+		var claudeCode = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/claude-code"));
+		Assert.Contains("Claude is connected.", claudeCode, StringComparison.Ordinal);
+		Assert.DoesNotContain("Waiting to connect", claudeCode, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -138,39 +153,79 @@ public sealed partial class ConnectTests(ArchiveServerFactory factory)
 		using var browser = await SignedInAsync(userId);
 		var mcp = $"{ArchiveServerFactory.PublicOrigin}/mcp";
 
-		// ChatGPT: the address to copy, ChatGPT to open, its own labels in order, and a wait for it.
+		// ChatGPT: its Plugins to open, its own labels in order ending with Install, the name and the address to copy
+		// beside its fields, what each plan allows, and a wait for it.
 		var chatgpt = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/chatgpt"));
-		Assert.Contains($"data-copy-value=\"{mcp}\"", chatgpt, StringComparison.Ordinal);
-		Assert.Contains("href=\"https://chatgpt.com\"", chatgpt, StringComparison.Ordinal);
+		Assert.Contains("href=\"https://chatgpt.com/plugins\"", chatgpt, StringComparison.Ordinal);
 		Assert.Contains("Open ChatGPT", chatgpt, StringComparison.Ordinal);
-		Assert.Matches(new Regex("Plugins.*Add custom MCP server.*Pebble Audio.*Server URL.*OAuth.*I understand and want to continue.*Create as a plugin.*passkey", RegexOptions.Singleline), chatgpt);
+		Assert.Matches(new Regex("<b>\\+</b>.*Add custom MCP server.*Name.*Server URL.*Authentication.*OAuth.*I understand and want to continue.*Create as a plugin.*passkey.*Personal.*Install", RegexOptions.Singleline), chatgpt);
+		Assert.Contains("data-copy-value=\"Pebble Audio\"", chatgpt, StringComparison.Ordinal);
+		Assert.Contains($"data-copy-value=\"{mcp}\"", chatgpt, StringComparison.Ordinal);
+		Assert.Contains("On Business, Enterprise, and Edu it can also add follow-ups and notes.", chatgpt, StringComparison.Ordinal);
 		Assert.Contains("data-ready=\"false\"", chatgpt, StringComparison.Ordinal);
 		Assert.Contains("Waiting for ChatGPT.", chatgpt, StringComparison.Ordinal);
 
-		// Claude: its Add custom connector dialog, prefilled with this server.
+		// ChatGPT on an iPhone opens its app, which can't add a server: the page says to use a computer instead.
+		using (var iphone = new HttpRequestMessage(HttpMethod.Get, "/connect/chatgpt"))
+		{
+			iphone.Headers.UserAgent.ParseAdd("Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1");
+			var onPhone = WebUtility.HtmlDecode(await (await browser.SendAsync(iphone)).Content.ReadAsStringAsync());
+			Assert.DoesNotContain("href=\"https://chatgpt.com/plugins\"", onPhone, StringComparison.Ordinal);
+			Assert.Contains($"data-copy-value=\"{ArchiveServerFactory.PublicOrigin}/connect/chatgpt\"", onPhone, StringComparison.Ordinal);
+			Assert.Contains("Open it on a computer", onPhone, StringComparison.Ordinal);
+		}
+
+		// Claude: its Add custom connector dialog, prefilled with this server and the address encoded whole, and the same
+		// dialog in admin settings for a Team or Enterprise Owner.
 		var claude = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/claude"));
-		Assert.Contains(
-			$"href=\"https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Pebble%20Audio&connectorUrl={Uri.EscapeDataString(mcp)}\"",
-			claude,
-			StringComparison.Ordinal);
+		var claudeQuery = $"?modal=add-custom-connector&connectorName=Pebble%20Audio&connectorUrl={Uri.EscapeDataString(mcp)}";
+		Assert.Contains("connectorUrl=http%3A%2F%2Flocalhost%2Fmcp", claudeQuery, StringComparison.Ordinal);
+		Assert.Contains($"href=\"https://claude.ai/customize/connectors{claudeQuery}\"", claude, StringComparison.Ordinal);
+		Assert.Contains($"href=\"https://claude.ai/admin-settings/connectors{claudeQuery}\"", claude, StringComparison.Ordinal);
 		Assert.Contains("Open Claude", claude, StringComparison.Ordinal);
 		Assert.Contains("Waiting for Claude.", claude, StringComparison.Ordinal);
 
-		// Muse: it connects through the watch from the iPhone app, and the page invents no steps for it.
+		// Claude Code: nothing to add with a Claude account; the command is for an API key.
+		var claudeCode = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/claude-code"));
+		Assert.Contains("nothing to install", claudeCode, StringComparison.Ordinal);
+		Assert.Contains("href=\"/connect/claude\"", claudeCode, StringComparison.Ordinal);
+		Assert.Contains($"claude mcp add --transport http --scope user pebble-audio {mcp}", claudeCode, StringComparison.Ordinal);
+		Assert.Contains("Signed in with an API key", claudeCode, StringComparison.Ordinal);
+
+		// Gemini: Connected Apps to open, its labels, the address to copy, and who it is for.
+		var gemini = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/gemini"));
+		Assert.Contains("href=\"https://gemini.google.com/apps\"", gemini, StringComparison.Ordinal);
+		Assert.Matches(new Regex("Custom apps.*Add a custom app.*MCP server URL.*Next", RegexOptions.Singleline), gemini);
+		Assert.Contains($"data-copy-value=\"{mcp}\"", gemini, StringComparison.Ordinal);
+		Assert.Contains("Keep Activity", gemini, StringComparison.Ordinal);
+		Assert.Contains("Waiting for Gemini.", gemini, StringComparison.Ordinal);
+
+		// Grok: Connectors to open, its labels, the address to copy, and Grok Build's command.
+		var grok = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/grok"));
+		Assert.Contains("href=\"https://grok.com/connectors\"", grok, StringComparison.Ordinal);
+		Assert.Matches(new Regex("New Connector.*Custom", RegexOptions.Singleline), grok);
+		Assert.Contains($"data-copy-value=\"{mcp}\"", grok, StringComparison.Ordinal);
+		Assert.Contains($"grok mcp add --transport http pebble-audio {mcp}", grok, StringComparison.Ordinal);
+		Assert.Contains("Waiting for Grok.", grok, StringComparison.Ordinal);
+
+		// Muse: pairing through the watch from the iPhone app, or a message for Muse to add the connector, and a wait.
 		var muse = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/muse"));
 		Assert.Contains("Muse connects through your watch", muse, StringComparison.Ordinal);
 		Assert.Contains("Settings › Muse", muse, StringComparison.Ordinal);
-		Assert.DoesNotContain("open-steps", muse, StringComparison.Ordinal);
-		Assert.DoesNotContain("<div class=\"wait\"", muse, StringComparison.Ordinal);
-		Assert.DoesNotContain(mcp, muse, StringComparison.Ordinal);
+		Assert.Contains($"<p id=\"prompt\">Create a custom connector named Pebble Audio for {mcp}</p>", muse, StringComparison.Ordinal);
+		Assert.Contains("Copy Prompt", muse, StringComparison.Ordinal);
+		Assert.Contains("href=\"https://muse.ai\"", muse, StringComparison.Ordinal);
+		Assert.Contains("Waiting for Muse.", muse, StringComparison.Ordinal);
 		var museCsrf = Csrf().Match(muse).Groups["token"].Value;
 		var museKey = await browser.PostAsync("/connect/muse?handler=Key", new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = museCsrf }));
 		Assert.Equal(HttpStatusCode.NotFound, museKey.StatusCode);
 
-		// Another assistant: the generic steps, then an access key it may also add with, shown once.
+		// Another assistant: the generic steps, Antigravity's settings, then an access key it may also add with, shown once.
 		var other = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/other"));
 		Assert.Contains("find where it adds a custom connector or server", other, StringComparison.Ordinal);
 		Assert.Contains($"data-copy-value=\"{mcp}\"", other, StringComparison.Ordinal);
+		Assert.Contains("~/.gemini/config/mcp_config.json", other, StringComparison.Ordinal);
+		Assert.Contains($"\"serverUrl\": \"{mcp}\"", other, StringComparison.Ordinal);
 		Assert.Contains("Make an Access Key", other, StringComparison.Ordinal);
 		var csrf = Csrf().Match(other).Groups["token"].Value;
 		var minted = await browser.PostAsync("/connect/other?handler=Key", new FormUrlEncodedContent(new Dictionary<string, string>
@@ -268,6 +323,9 @@ public sealed partial class ConnectTests(ArchiveServerFactory factory)
 
 	[GeneratedRegex("data-since=\"(?<ms>\\d+)\"")]
 	private static partial Regex Since();
+
+	[GeneratedRegex("<a class=\"row tall\" href=\"/connect/(?<tool>[a-z-]+)\">")]
+	private static partial Regex HubOrder();
 
 	[GeneratedRegex("""<meta name="csrf-token" content="(?<token>[^"]+)">""")]
 	private static partial Regex Csrf();

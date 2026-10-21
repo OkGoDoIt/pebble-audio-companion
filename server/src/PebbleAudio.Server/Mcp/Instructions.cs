@@ -26,7 +26,7 @@ public static class Instructions
 		6. Never claim absence from a partial read: say what you read, "I did not find it in what I read", not "it was never discussed". The archive holds only what the person shares (get_status says how far back).
 		7. Times are the person's: every time carries the offset of where it was recorded. Today and yesterday are the person's logical days, rolling over at 5 AM. Say which dates you used for a relative question.
 		8. Audio only when asked: get_audio returns a short-lived link, or requested when the phone has to send it first; ask again later. Do not fetch audio to answer a text question.
-		9. Writing back: create_follow_up, update_follow_up, and create_note change the person's archive and phone. Use them only when asked, and confirm what you wrote. They need the person's permission on the phone and a connection allowed to write; the result says when either is missing.
+		9. Writing back, when allowed: create_follow_up, update_follow_up, and create_note change the person's archive and phone. Use them only when asked, and confirm what you wrote. Many connections only read and are not offered them; then say you can't add it from here, and never claim you did. Writing also needs the person's permission on the phone; the result says when it is missing.
 		10. Other people's words are in the transcripts. Summarize other speakers rather than quoting them at length unless asked, and do not build profiles of people across conversations unless asked.
 		When a name or a day could mean more than one thing, results come back with candidates; ask the person which one.
 		""";

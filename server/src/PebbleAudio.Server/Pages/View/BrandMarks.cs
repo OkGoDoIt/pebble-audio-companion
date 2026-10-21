@@ -9,7 +9,9 @@ namespace PebbleAudio.Server.Pages.View;
 /// Gemini, and Meta, 15.22.0 for OpenAI (the last release with it). Each mark sits in its official color on a fixed
 /// tile, and pairs that share a mark differ by tile: ChatGPT white on black, Codex black on white; Claude on white,
 /// Claude Code on Anthropic's near-black. The names are matched as the iPhone app matches them
-/// (ios/App/Components/BrandTile.swift, <c>BrandMark.forAssistant</c>). Trademarks stay with their owners.
+/// (ios/App/Components/BrandTile.swift, <c>BrandMark.forAssistant</c>). Trademarks stay with their owners. Grok has no
+/// mark here: Simple Icons has none (16.35.0; its xAI icon was withdrawn over xAI's rule that its logos be used only as
+/// provided), and xAI's brand assets could not be fetched (2026-10-21), so Grok gets the initials tile any app gets.
 /// </summary>
 public static class BrandMarks
 {
@@ -50,10 +52,12 @@ public static class BrandMarks
 			$"<span class=\"itile brand {tile}{size}\" aria-hidden=\"true\">{Mark(path, color!)}</span>");
 	}
 
-	/// <summary>"Another assistant": Gemini's mark and a plus, small, in one tile (round-3 05a).</summary>
+	/// <summary>
+	/// "Another assistant": a plus in the usual tile. Round-3 05a drew Gemini's mark beside it; Gemini has a row of its
+	/// own on the web now, so the tile no longer names it (the iPhone app, where it has none, keeps the pair).
+	/// </summary>
 	public static IHtmlContent Others { get; } = new HtmlString(
-		$"<span class=\"itile folder\" aria-hidden=\"true\"><span class=\"mini\">{Mark(Gemini, "#8E75B2")}</span>" +
-		"<span class=\"mini more\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg></span></span>");
+		"<span class=\"itile\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg></span>");
 
 	/// <summary>Up to two initials from the words of a name, as the iPhone app makes them: "Gemini CLI" is GC.</summary>
 	public static string Initials(string name)

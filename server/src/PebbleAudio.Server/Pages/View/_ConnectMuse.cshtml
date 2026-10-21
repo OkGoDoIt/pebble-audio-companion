@@ -1,0 +1,31 @@
+@* Muse, two ways: paired through the watch from the iPhone app, or asked in the Muse app to add a connector, which then
+   signs in here like any other assistant and waits like one. *@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using PebbleAudio.Server.Pages.View
+<p class="lede">Use Muse on your watch, in the Muse app, or both.</p>
+<section class="group" aria-labelledby="watch-h">
+	<h2 class="section-header" id="watch-h">On your watch</h2>
+	<div class="card">
+		<div class="intro">
+			<span class="circle" aria-hidden="true">@SiteIcons.Watch</span>
+			<div>
+				<p class="h">Muse connects through your watch</p>
+				<p>Set it up in Pebble Audio on your iPhone, in <b>Settings › Muse</b>.</p>
+			</div>
+		</div>
+	</div>
+</section>
+<section class="group" aria-labelledby="app-h">
+	<h2 class="section-header" id="app-h">In the Muse app</h2>
+	<div class="card tool-card">
+		<ol class="open-steps">
+			<li><div>Send Muse this message.<div class="goes prompt"><p id="prompt">@Model.MusePrompt</p></div></div></li>
+			<li><span>Sign in to your server with your passkey.</span></li>
+		</ol>
+		<div class="btn-row">
+			<button type="button" class="btn filled inline" data-copy="#prompt">@SiteIcons.Copy<span>Copy Prompt</span></button>
+			<a class="btn bordered inline" href="@ConnectModel.MuseUrl" target="_blank" rel="noopener">@SiteIcons.External<span>Open Muse</span></a>
+		</div>
+		<partial name="_Wait" model="Model" />
+	</div>
+</section>

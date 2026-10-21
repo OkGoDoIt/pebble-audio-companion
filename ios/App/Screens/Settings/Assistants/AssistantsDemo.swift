@@ -239,9 +239,10 @@ enum ConnectCard: Hashable {
     case chatGPT, claude, mac, other
 }
 
-/// The Mac tools, as the Connect card's tabs and the server's `/connect/{tool}` pages.
+/// The Mac tools, as the Connect card's tabs and the server's `/connect/{tool}` pages, in the
+/// server's order: Claude Code first, since a Claude account brings it along.
 enum MacTool: String, CaseIterable, Hashable {
-    case codex, claudeCode = "claude-code", cursor
+    case claudeCode = "claude-code", codex, cursor
 
     var name: String {
         switch self {

@@ -10,7 +10,9 @@
   scope; tool code checks them with `User.HasScope(ArchiveScopes.Write)`.
 - **The 401 challenge on `/mcp`**: the MCP SDK's `AddMcp` handler answers unauthenticated requests (and unknown,
   expired, revoked, or wrong-audience tokens) with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`
-  and serves that metadata document. `Program.cs` also serves it at the root path.
+  and serves that metadata document. `Program.cs` also serves it at the root path. `UseMcpChallengeScope` adds
+  `scope="archive:read archive:write"` to that challenge (the MCP spec says it SHOULD carry one); both are named, as
+  `scopes_supported` lists them, so a client asks for both and the person chooses on the consent page.
 - **CORS** (`BrowserClients`): `/mcp`, both metadata documents, and `/oauth/token`, `/oauth/register`, and
   `/oauth/revoke` answer browser-run clients (the MCP Inspector) from any origin, without credentials, exposing
   `WWW-Authenticate`. Nothing else, the admin area included, sends CORS headers.
@@ -31,7 +33,7 @@ issuer is that origin byte for byte, the resource (token audience) is `<origin>/
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata: S256 only, `none` only (public clients), CIMD and DCR, `iss` on responses, scopes `archive:read`, `archive:write`, `offline_access`. No OpenID Connect, and no `/.well-known/openid-configuration`. |
 | `GET /oauth/authorize` | The Razor Page `Pages/OAuth/Authorize`. Checks the client and redirect URI (a problem there is a page, never a redirect), then response type, PKCE S256, state, resource (`<origin>/mcp` compared in canonical form, so a trailing slash, an upper-case host, or the default port still match; or absent), and scope; sends a signed-out person through the passkey sign-in and back (before any fetch, for an app whose metadata document the server has not seen, so an anonymous request cannot make it fetch a URL); asks Allow or Deny. Every redirect, error or not, carries `iss`. |
 | `POST /oauth/token` | Form-encoded, antiforgery off. `authorization_code` (60-second one-time code bound to client, redirect URI, PKCE challenge, resource, scopes, and user; a second exchange ends what the first started) and `refresh_token` (rotated every time). |
-| `POST /oauth/register` | RFC 7591 for public clients with https or loopback redirect URIs; 20 per address per hour; a registration that never connects is deleted after a week. |
+| `POST /oauth/register` | RFC 7591 for public clients with https or loopback redirect URIs (and Cursor's one private-use redirect); 20 per address per hour; a registration that never connects is deleted after a week. A client that asks for `client_secret_basic` or `client_secret_post` (Gemini, reportedly) is registered as a public client and answered `token_endpoint_auth_method: "none"`, as RFC 7591 §3.2.1 allows; any other method is refused. |
 | `POST /oauth/revoke` | RFC 7009. A refresh token ends its grant; an access token ends itself. |
 
 How apps identify themselves:
@@ -47,7 +49,13 @@ How apps identify themselves:
 - **Redirect URIs** match exactly, except a loopback registration (`http://localhost/…`, `http://127.0.0.1/…`,
   `http://[::1]/…`) matches the same host, path, and query on any port (RFC 8252). Expected:
   `https://chatgpt.com/connector_platform_oauth_redirect`, `https://chatgpt.com/connector/oauth/{id}`,
-  `https://claude.ai/api/mcp/auth_callback`, and Claude Code's `http://localhost:<port>/callback`.
+  `https://claude.ai/api/mcp/auth_callback`, Claude Code's `http://localhost:<port>/callback`, Codex's
+  `http://127.0.0.1:<port>/callback`, Cursor's `http://localhost:8787/callback` and
+  `https://www.cursor.com/agents/mcp/oauth/callback`, and Muse's `https://agent.meta.ai/api/hatch/oauth/callback`.
+  One custom scheme is allowed, by its exact scheme and host with no port: Cursor's
+  `cursor://anysphere.cursor-mcp/oauth/callback` (`OAuthRedirects.IsKnownApp`). Any other custom scheme is refused,
+  since any app on a device can claim one. The consent page calls a loopback or a known app's redirect "An app on
+  this device".
 
 Tokens and grants (`Data/OAuth*.cs`, tables from the `OAuth_AuthorizationServer` migration):
 

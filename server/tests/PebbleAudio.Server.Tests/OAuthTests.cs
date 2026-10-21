@@ -330,7 +330,7 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 
 		// The 401 that starts sign-in: the same challenge for no token, an unknown one, one for another audience,
 		// and an expired one.
-		var expectedChallenge = $"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\"";
+		var expectedChallenge = $"resource_metadata=\"{Origin}/.well-known/oauth-protected-resource/mcp\", scope=\"archive:read archive:write\"";
 		foreach (var token in new string?[] { null, OAuthServer.AccessTokenPrefix + "never-issued" })
 		{
 			var response = await api.SendAsync(McpTests.McpPost(token));
@@ -413,6 +413,88 @@ public sealed partial class OAuthTests(ArchiveServerFactory factory)
 
 		Assert.Equal(HttpStatusCode.Unauthorized, (await api.SendAsync(McpTests.McpPost(renewed.Access))).StatusCode);
 		await AssertTokenErrorAsync(await RefreshAsync(api, ClaudeCodeClientId, renewed.Refresh), HttpStatusCode.BadRequest, "invalid_grant");
+	}
+
+	[Fact]
+	public async Task Gemini_Cursor_Muse_Grok_and_Antigravity_register_the_way_they_ask_and_sign_in_as_public_clients()
+	{
+		var userId = await factory.CreateUserAsync();
+		using var browser = Browser();
+		using var api = factory.CreateClient();
+		await SignInAsync(browser, userId);
+
+		// Gemini reportedly asks for client_secret_basic and returns to Google's redirector: it is registered as a public
+		// client, the answer says none and carries no secret, and it signs in without one, named from where it returns.
+		// client_secret_post is answered the same way.
+		const string geminiRedirect = "https://oauth-redirect.googleusercontent.com/r/gemini-connector-7f3a";
+		var gemini = await RegisterAsync(api, new { redirect_uris = new[] { geminiRedirect }, token_endpoint_auth_method = "client_secret_basic" });
+		var post = await RegisterAsync(api, new { redirect_uris = new[] { geminiRedirect }, token_endpoint_auth_method = "client_secret_post" });
+		Assert.NotEqual(gemini, post);
+		await AssertTokenErrorAsync(
+			await api.PostAsJsonAsync("/oauth/register", new { redirect_uris = new[] { geminiRedirect }, token_endpoint_auth_method = "private_key_jwt" }),
+			HttpStatusCode.BadRequest,
+			"invalid_client_metadata");
+		await SignInAndReadAsync(browser, api, gemini, geminiRedirect, ["Connect Gemini?", "oauth-redirect.googleusercontent.com"]);
+
+		// Cursor's desktop app returns to its own address on some installs: that exact scheme and host, and no other
+		// custom scheme, host, or port.
+		const string cursorRedirect = "cursor://anysphere.cursor-mcp/oauth/callback";
+		var cursor = await RegisterAsync(api, new { client_name = "Cursor", redirect_uris = new[] { cursorRedirect, "http://localhost:8787/callback" }, token_endpoint_auth_method = "none" });
+		foreach (var refused in new[] { "cursor://evil.example/oauth/callback", "vscode://anysphere.cursor-mcp/oauth/callback", "cursor://anysphere.cursor-mcp:8080/oauth/callback" })
+		{
+			await AssertTokenErrorAsync(
+				await api.PostAsJsonAsync("/oauth/register", new { redirect_uris = new[] { refused }, token_endpoint_auth_method = "none" }),
+				HttpStatusCode.BadRequest,
+				"invalid_redirect_uri");
+		}
+
+		var (_, challenge) = Pkce();
+		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(cursor, "cursor://anysphere.cursor-mcp/elsewhere", challenge, "c"))).StatusCode);
+		await SignInAndReadAsync(browser, api, cursor, cursorRedirect, ["Connect Cursor?", "An app on this device"]);
+
+		// Muse (Meta), Grok, and Antigravity return to https addresses, Grok's with its trailing slash. One that gives no
+		// name is named from where it returns to.
+		const string museRedirect = "https://agent.meta.ai/api/hatch/oauth/callback";
+		var muse = await RegisterAsync(api, new { redirect_uris = new[] { museRedirect } });
+		await SignInAndReadAsync(browser, api, muse, museRedirect, ["Connect Muse?", "agent.meta.ai"]);
+		const string grokRedirect = "https://grok.com/connectors-oauth-exchange-code/";
+		var grok = await RegisterAsync(api, new { redirect_uris = new[] { grokRedirect }, token_endpoint_auth_method = "none" });
+		Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync(AuthorizeUrl(grok, grokRedirect.TrimEnd('/'), challenge, "g"))).StatusCode);
+		await SignInAndReadAsync(browser, api, grok, grokRedirect, ["Connect Grok?", "grok.com"]);
+		const string antigravityRedirect = "https://antigravity.google/oauth-callback";
+		var antigravity = await RegisterAsync(api, new { client_name = "Antigravity", redirect_uris = new[] { antigravityRedirect } });
+		await SignInAndReadAsync(browser, api, antigravity, antigravityRedirect, ["Connect Antigravity?", "antigravity.google"]);
+	}
+
+	/// <summary>Registers a client (RFC 7591) and checks it was registered as a public client.</summary>
+	private static async Task<string> RegisterAsync(HttpClient api, object metadata)
+	{
+		var response = await api.PostAsJsonAsync("/oauth/register", metadata);
+		var body = await response.Content.ReadAsStringAsync();
+		Assert.True(response.StatusCode == HttpStatusCode.Created, body);
+		using var registration = JsonDocument.Parse(body);
+		Assert.Equal("none", registration.RootElement.GetProperty("token_endpoint_auth_method").GetString());
+		Assert.False(registration.RootElement.TryGetProperty("client_secret", out _), "A public client gets no secret.");
+		return registration.RootElement.GetProperty("client_id").GetString()!;
+	}
+
+	/// <summary>Signs in through the consent page as a public client, exchanges the code without a secret, and reads.</summary>
+	private async Task SignInAndReadAsync(HttpClient browser, HttpClient api, string clientId, string redirectUri, string[] expect)
+	{
+		var (verifier, challenge) = Pkce();
+		var state = $"state-{Guid.NewGuid():N}";
+		var code = await AllowAsync(browser, AuthorizeUrl(clientId, redirectUri, challenge, state, "archive:read"), redirectUri, state, expect);
+		var tokens = await TokensAsync(await TokenAsync(api, new()
+		{
+			["grant_type"] = "authorization_code",
+			["code"] = code,
+			["redirect_uri"] = redirectUri,
+			["client_id"] = clientId,
+			["code_verifier"] = verifier,
+			["resource"] = Resource,
+		}));
+		Assert.Equal("archive:read", tokens.Scope);
+		Assert.Equal(HttpStatusCode.OK, (await api.SendAsync(McpTests.McpPost(tokens.Access))).StatusCode);
 	}
 
 	[Fact]

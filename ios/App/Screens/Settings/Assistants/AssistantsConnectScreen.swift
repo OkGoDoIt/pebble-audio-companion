@@ -14,6 +14,7 @@ struct AssistantsConnectScreen: View {
     @State private var open: ConnectCard?
     @State private var macTool: MacTool?
     @State private var copied = false
+    @State private var linkCopied = false
     @State private var decidedOpen = false
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -232,15 +233,36 @@ struct AssistantsConnectScreen: View {
 
     // MARK: What to do in each app
 
+    /// ChatGPT adds a server on its website only, and chatgpt.com here opens its app, which
+    /// can't: this hands the server's ChatGPT page to a computer (AirDrop, or Copy Link through
+    /// the shared clipboard). The card still turns into a check once ChatGPT signs in.
     private var chatGPTSteps: some View {
         Group {
-            StepList(steps: Copy.AssistantAccess.chatGPTSteps)
-            fullWidthButton {
-                Button(Copy.AssistantAccess.chatGPTButton) {
-                    copyAddress()
-                    if let url = URL(string: "https://chatgpt.com") { openURL(url) }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Copy.AssistantAccess.chatGPTComputerHeading)
+                    .font(AppFont.rowTitle)
+                    .foregroundStyle(Tokens.label)
+                    .accessibilityAddTraits(.isHeader)
+                Text(Copy.AssistantAccess.chatGPTComputerLine)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let link = chatGPTSetupURL {
+                fullWidthButton {
+                    ShareLink(item: link, preview: SharePreview(Copy.AssistantAccess.chatGPTShareTitle, icon: chatGPTShareIcon)) {
+                        AssistantButtonLabel(title: Copy.AssistantAccess.sendToMac, systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.assistantFilled)
                 }
-                .buttonStyle(.assistantFilled)
+                fullWidthButton {
+                    Button { copyLink(link) } label: {
+                        AssistantButtonLabel(
+                            title: linkCopied ? Copy.AssistantAccess.copied : Copy.AssistantAccess.copyLink,
+                            systemImage: linkCopied ? "checkmark" : "link")
+                    }
+                    .buttonStyle(.assistantBordered)
+                }
             }
         }
     }
@@ -273,24 +295,40 @@ struct AssistantsConnectScreen: View {
                     selection: Binding(get: { tool }, set: { macTool = $0 }), small: true,
                     accessibilityName: Copy.AssistantAccess.appAccessibility)
             }
-            StepList(steps: Copy.AssistantAccess.macSteps(tool.name, cursor: tool == .cursor))
-            fullWidthButton {
-                Button {
-                    if let url = setupURL(tool) { openURL(url) }
-                } label: {
-                    AssistantButtonLabel(title: Copy.AssistantAccess.openSetupInSafari, systemImage: "arrow.up.right.square")
+            if tool == .claudeCode {
+                // With a Claude account there is nothing to add; the setup page is for an API key.
+                StepList(steps: Copy.AssistantAccess.claudeCodeSteps(claudeConnected: access(for: .claude) != nil))
+                fullWidthButton {
+                    Button {
+                        if let url = setupURL(tool) { openURL(url) }
+                    } label: {
+                        AssistantButtonLabel(title: Copy.AssistantAccess.openSetupInSafari, systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.assistantBordered)
                 }
-                .buttonStyle(.assistantFilled)
-            }
-            fullWidthButton {
-                Text(Copy.AssistantAccess.macAlt(source.host ?? ""))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.tertiary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .fixedSize(horizontal: false, vertical: true)
+                fullWidthButton { centeredNote(Copy.AssistantAccess.claudeCodeAlt) }
+            } else {
+                StepList(steps: Copy.AssistantAccess.macSteps(tool.name, cursor: tool == .cursor))
+                fullWidthButton {
+                    Button {
+                        if let url = setupURL(tool) { openURL(url) }
+                    } label: {
+                        AssistantButtonLabel(title: Copy.AssistantAccess.openSetupInSafari, systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.assistantFilled)
+                }
+                fullWidthButton { centeredNote(Copy.AssistantAccess.macAlt(source.host ?? "")) }
             }
         }
+    }
+
+    private func centeredNote(_ text: String) -> some View {
+        Text(text)
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.tertiary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var otherSteps: some View {
@@ -316,22 +354,34 @@ struct AssistantsConnectScreen: View {
 
     private var origin: URL? { source.sync.origin.flatMap(URL.init(string:)) }
 
-    /// `https://claude.ai/customize/connectors?…` with the server filled in (connect-commands.md).
-    var claudeURL: URL? {
-        guard let connector = source.connectorURL else { return nil }
-        var components = URLComponents(string: "https://claude.ai/customize/connectors")
-        components?.queryItems = [
-            .init(name: "modal", value: "add-custom-connector"),
-            .init(name: "connectorName", value: "Pebble Audio"),
-            .init(name: "connectorUrl", value: connector),
-        ]
-        return components?.url
-    }
+    /// Claude's Add custom connector dialog with the server filled in. Opened with `openURL`, so
+    /// the Claude app takes it when it is installed, and Safari when it isn't.
+    var claudeURL: URL? { source.connectorURL.flatMap(AssistantLinks.claude(connector:)) }
 
     /// The server's own setup page for one Mac tool, opened in Safari.
     func setupURL(_ tool: MacTool) -> URL? {
         guard let origin else { return nil }
         return ArchiveEndpoint.url(origin, "/connect/\(tool.rawValue)")
+    }
+
+    /// The server's ChatGPT page, to open on a computer.
+    var chatGPTSetupURL: URL? { origin.map { ArchiveEndpoint.url($0, "/connect/chatgpt") } }
+
+    /// ChatGPT's tile, drawn as the share sheet's icon (the mark alone is a template image and
+    /// would draw blank there).
+    private var chatGPTShareIcon: Image {
+        let renderer = ImageRenderer(content: BrandTile(mark: .chatgpt, size: .header))
+        renderer.scale = 3
+        return renderer.uiImage.map { Image(uiImage: $0) } ?? Image(systemName: "link")
+    }
+
+    private func copyLink(_ link: URL) {
+        UIPasteboard.general.url = link
+        linkCopied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            linkCopied = false
+        }
     }
 
     private func copyAddress() {
@@ -342,6 +392,22 @@ struct AssistantsConnectScreen: View {
             try? await Task.sleep(for: .seconds(2))
             copied = false
         }
+    }
+}
+
+/// The links the Connect step opens (server/docs/connect-commands.md).
+enum AssistantLinks {
+    /// What a query value may keep unencoded (RFC 3986 unreserved): `:` and `/` are encoded too.
+    private static let unreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    /// `https://claude.ai/customize/connectors?…` with the server filled in, each value encoded
+    /// whole as Claude's own example writes it (`https%3A%2F%2F…`). `URLComponents` leaves `://`
+    /// and `/` bare in a query, which that link is not documented to accept.
+    static func claude(connector: String) -> URL? {
+        func encoded(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? value }
+        return URL(string: "https://claude.ai/customize/connectors?modal=add-custom-connector"
+            + "&connectorName=\(encoded("Pebble Audio"))&connectorUrl=\(encoded(connector))")
     }
 }
 

@@ -1,0 +1,92 @@
+@* An assistant added on its own website (05a, 05b): its steps in its own words, the values to type with Copy beside them,
+   the button that opens the right place, one line on what its plan allows, and the wait. *@
+@model PebbleAudio.Server.Pages.View.ConnectModel
+@using PebbleAudio.Server.Pages.View
+@{
+	var tool = Model.Tool;
+	var server = new CopyValue("Server URL", Model.McpUrl, "your server address");
+}
+<p class="lede">@tool.Name signs in with your passkey, so it can read your conversations.</p>
+@switch (tool.Key)
+{
+	case "chatgpt":
+		<div class="card tool-card">
+			<ol class="open-steps">
+				@if (Model.OnIPhone)
+				{
+					<li><span>On a computer, open ChatGPT's <b>Plugins</b>, then click <b>+</b> and <b>Add custom MCP server</b>.</span></li>
+				}
+				else
+				{
+					<li><span>Click <b>Open ChatGPT</b>, then <b>+</b> and <b>Add custom MCP server</b>.</span></li>
+				}
+				<li><span>Fill in <b>Name</b> and <b>Server URL</b>.<partial name="_CopyValue" model="@(new CopyValue("Name", ConnectModel.ConnectorName, "the name"))" /><partial name="_CopyValue" model="server" /></span></li>
+				<li><span>Under <b>Authentication</b>, choose <b>OAuth</b>, tick <b>I understand and want to continue</b>, and click <b>Create as a plugin</b>.</span></li>
+				<li><span>Sign in to your server with your passkey.</span></li>
+				<li><span>Under <b>Personal</b>, click <b>Install</b> on Pebble Audio. It then works in the ChatGPT app too.</span></li>
+			</ol>
+			@if (Model.OnIPhone)
+			{
+				<button type="button" class="btn filled" data-copy-value="@Model.Origin/connect/chatgpt">@SiteIcons.Copy<span>Copy Link</span><span class="visually-hidden"> to this page</span></button>
+				<p class="alt">Open it on a computer: ChatGPT adds it there. Then it works in the ChatGPT app on this iPhone.</p>
+			}
+			else
+			{
+				<a class="btn filled" href="@ConnectModel.ChatGptUrl" target="_blank" rel="noopener">@SiteIcons.External<span>Open ChatGPT</span></a>
+			}
+			<p class="alt">@ConnectModel.ChatGptPlans</p>
+			<partial name="_Wait" model="Model" />
+		</div>
+		break;
+
+	case "claude":
+		<partial name="_Address" model="(Model.Host, Model.McpUrl)" />
+		<div class="card tool-card">
+			<ol class="open-steps">
+				<li><span>Click <b>Open Claude</b>. Your server is already filled in.</span></li>
+				<li><span>Click <b>Connect</b>.</span></li>
+				<li><span>Sign in to your server with your passkey.</span></li>
+			</ol>
+			<a class="btn filled" href="@Model.ClaudeUrl" target="_blank" rel="noopener">@SiteIcons.External<span>Open Claude</span></a>
+			<p class="alt">Or in Claude, open <b>Settings › Connectors</b>, click <b>Add custom connector</b>, and paste your server address.</p>
+			<p class="alt">Free has room for one custom connector. On Team and Enterprise, an Owner can <a href="@Model.ClaudeAdminUrl" target="_blank" rel="noopener">add it for everyone</a>.</p>
+			<partial name="_Wait" model="Model" />
+		</div>
+		break;
+
+	case "gemini":
+		<div class="card tool-card">
+			<ol class="open-steps">
+				<li><span>Click <b>Open Gemini</b>, then under <b>Custom apps</b>, click <b>Add a custom app</b>.</span></li>
+				<li><span>Under <b>MCP server URL</b>, paste your server address and click <b>Next</b>.<partial name="_CopyValue" model="@(server with { Label = "MCP server URL" })" /></span></li>
+				<li><span>Sign in to your server with your passkey.</span></li>
+			</ol>
+			<a class="btn filled" href="@ConnectModel.GeminiUrl" target="_blank" rel="noopener">@SiteIcons.External<span>Open Gemini</span></a>
+			<p class="alt">@ConnectModel.GeminiPlans</p>
+			<partial name="_Wait" model="Model" />
+		</div>
+		break;
+
+	default:
+		<div class="card tool-card">
+			<ol class="open-steps">
+				<li><span>Click <b>Open Grok</b>, then <b>New Connector</b> and <b>Custom</b>.</span></li>
+				<li><span>Paste your server address.<partial name="_CopyValue" model="@(server with { Label = "Your server address" })" /></span></li>
+				<li><span>Sign in to your server with your passkey.</span></li>
+			</ol>
+			<a class="btn filled" href="@ConnectModel.GrokUrl" target="_blank" rel="noopener">@SiteIcons.External<span>Open Grok</span></a>
+			<p class="alt">@ConnectModel.GrokPlans</p>
+			<partial name="_Wait" model="Model" />
+		</div>
+		<section class="group" aria-labelledby="build-h">
+			<h2 class="section-header" id="build-h">Grok Build</h2>
+			<div class="card tool-card">
+				<ol class="open-steps">
+					<li><div>Run this in Terminal on your computer.<pre class="cmd flat" id="cmd">@Model.GrokBuildCommand</pre></div></li>
+					<li><span>Sign in to your server with your passkey when your browser opens.</span></li>
+				</ol>
+				<button type="button" class="btn bordered inline" data-copy="#cmd">@SiteIcons.Copy<span>Copy Command</span></button>
+			</div>
+		</section>
+		break;
+}

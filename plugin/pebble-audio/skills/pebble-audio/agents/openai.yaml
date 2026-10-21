@@ -1,14 +1,13 @@
 interface:
   display_name: "Pebble Audio"
-  short_description: "Ask about anything you said, heard, or agreed to."
+  short_description: "Ask about your conversations"
   default_prompt: "What did I agree to yesterday?"
 policy:
-  products: ["CHAT", "CODEX"]
   allow_implicit_invocation: true
 dependencies:
   tools:
     - type: "mcp"
       value: "pebble-audio"
       description: "The Pebble Audio archive server"
-      transport: "streamable-http"
+      transport: "streamable_http"
       url: "https://pebbleaudio.okgodoit.com/mcp"
