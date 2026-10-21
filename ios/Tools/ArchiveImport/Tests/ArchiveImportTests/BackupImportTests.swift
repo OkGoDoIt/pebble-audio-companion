@@ -284,6 +284,22 @@ struct SyntheticBackup {
     }
 
     #expect(ContractCheck.check(item: try item()) == nil)
+
+    // A conversation the backup caught recording goes as finished, ending where its last piece ends, so it never
+    // stays live on the server; a closed one goes exactly as the phone built it.
+    #expect(ImportRun.settled(good) == nil)
+    var live = try #require(try JSONSerialization.jsonObject(with: good) as? [String: Any])
+    live["state"] = "live"
+    live["provisional"] = true
+    live["endedAt"] = NSNull()
+    let settled = try #require(ImportRun.settled(try JSONSerialization.data(withJSONObject: live)))
+    let finished = try #require(try JSONSerialization.jsonObject(with: settled) as? [String: Any])
+    #expect(finished["state"] as? String == "closed")
+    #expect(finished["provisional"] as? Bool == false)
+    let lastPieceEnd = try #require((live["pieces"] as? [[String: Any]])?.last?["endedAt"] as? String)
+    #expect(finished["endedAt"] as? String == lastPieceEnd)
+    #expect(ContractCheck.check(item: try item(from: settled)) == nil)
+
     #expect(ContractCheck.check(item: try item { $0["pieces"] = NSNull() }) == "payload: pieces missing")
     #expect(ContractCheck.check(item: try item { $0["pieces"] = nil })
         == "payload: pieces left out (the contract sends null)")

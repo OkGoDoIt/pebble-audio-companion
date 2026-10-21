@@ -84,7 +84,10 @@ of a candidate depends on the tool and is given with it.
 The phone decides which conversations the server may hold (`all`, `since` a time, or the `lastDays` N days;
 sync-protocol.md §5). No tool ever returns anything outside it, even between the nightly deletions:
 conversations by `startedAt`, recaps and coverage by day, briefs by `endDay`, follow-ups by their source
-time (else creation), notes by their conversation. Counts and lists are counted inside the scope.
+time (else creation), notes by their conversation. Counts and lists are counted inside the scope. On the day
+the window opens partway through, `list_days` and `get_day` count that day's recorded, quiet, and lost minutes
+from its conversations inside the window (the phone's totals are for the whole day), `get_day` cuts its coverage
+spans at the window's start, and its `summary` says from when it counts.
 
 ## Shared objects
 

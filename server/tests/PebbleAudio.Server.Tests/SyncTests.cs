@@ -47,7 +47,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		await using (var scope = factory.Services.CreateAsyncScope())
 		{
 			var device = await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().Devices.AsNoTracking().SingleAsync(d => d.Id == phone.DeviceId);
-			Assert.Equal("Roger's iPhone", device.Name);
+			Assert.Equal("Alex's iPhone", device.Name);
 			Assert.Equal(("1.4", "812"), (device.AppVersion, device.AppBuild));
 			Assert.Equal(SyncAuth.Hash(token), device.TokenHash);
 		}
@@ -84,7 +84,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 			Wire.Item("brief", "week:2026-10-11", V + 3, payload: Wire.Brief()),
 			Wire.Item("followUp", $"fu-{conversationId}", V + 4, payload: Wire.FollowUp("Check the AMS playback rate", conversationId)),
 			Wire.Item("note", $"note-{conversationId}", V + 5, payload: Wire.Note(conversationId, "Rate 1.0 while paused.")),
-			Wire.Item("person", "person-roger", V + 6, payload: Wire.Person("Roger")),
+			Wire.Item("person", "person-alex", V + 6, payload: Wire.Person("Alex")),
 			Wire.Item("coverage", "2026-10-14", V + 7, payload: Wire.Coverage()),
 			Wire.Item("conversation", "conv-broken", V, payload: broken),
 			Wire.Item("gadget", "g-1", V, payload: new JsonObject()),
@@ -123,7 +123,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 			Assert.Equal(ContentOrigin.User, (await db.Notes.AsNoTracking().SingleAsync(n => n.UserId == userId)).Origin);
 			Assert.Equal([conversationId], (await db.Recaps.AsNoTracking().SingleAsync(r => r.UserId == userId)).ConversationIds);
 			Assert.Equal(BriefKind.Week, (await db.Briefs.AsNoTracking().SingleAsync(b => b.UserId == userId)).Kind);
-			Assert.Equal("Roger", (await db.People.AsNoTracking().SingleAsync(p => p.UserId == userId)).Name);
+			Assert.Equal("Alex", (await db.People.AsNoTracking().SingleAsync(p => p.UserId == userId)).Name);
 			Assert.Equal(
 				[CoverageKind.Recorded, CoverageKind.Paused, CoverageKind.Off],
 				(await db.CoverageDays.AsNoTracking().SingleAsync(c => c.UserId == userId)).Spans.Select(s => s.Kind));
@@ -349,7 +349,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 			Wire.Item("conversation", id, V, payload: Wire.Conversation("Moving apartments")),
 			Wire.Item("transcript", id, V, payload: Wire.Transcript(id, "The movers come on Thursday.")),
 			Wire.Item("followUp", "fu-movers", V, payload: Wire.FollowUp("Confirm the movers", id)),
-			Wire.Item("person", "person-roger", V, payload: Wire.Person("Roger")),
+			Wire.Item("person", "person-alex", V, payload: Wire.Person("Alex")),
 		];
 		await phone.BatchAsync(items);
 		await other.BatchAsync(items);

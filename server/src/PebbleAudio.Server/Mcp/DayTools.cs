@@ -305,12 +305,14 @@ public sealed class DayTools
 			.ToListAsync(cancellationToken);
 		var cards = await archive.CardsAsync(call, conversations, cancellationToken);
 		var zone = coverage is null ? call.Zone : LogicalDays.Zone(coverage.TimeZone);
+		var opens = OpensWindow(call, day);
+		var totals = Totals(coverage, conversations, opens);
 		var coverageOut = coverage is null
 			? null
 			: new CoverageOut(
-				Days.Minutes(coverage.RecordedMs),
-				Days.Minutes(coverage.QuietMs),
-				Days.Minutes(coverage.MissingMs),
+				totals.Recorded,
+				totals.Quiet,
+				totals.Lost,
 				// On the day the sharing window opens, nothing before its start is shown: spans are cut at it.
 				[
 					.. coverage.Spans
@@ -324,12 +326,13 @@ public sealed class DayTools
 			: new RecapOut(ArchiveReader.Blank(recap.Headline), ArchiveReader.Blank(recap.LineSummary), Speak.Cap(ArchiveReader.Blank(recap.Text), call.Settings.ToolMaxCharacters / 3));
 		var followUpsOut = await archive.FollowUpsAsync(call, followUps, cancellationToken);
 
-		var recorded = coverage is not null ? Days.Minutes(coverage.RecordedMs) : Days.Minutes(conversations.Sum(c => c.RecordedMs));
+		var recorded = totals.Recorded;
 		var talk = conversations.Count(c => c.ContentKind == ContentKind.Conversation);
 		var gist = ArchiveReader.Blank(recap?.Headline) ?? ArchiveReader.Blank(recap?.LineSummary);
 		var summary = $"On {spoken} you had {Speak.Count(talk, "conversation", "conversations")}" +
 			(recorded > 0 ? $" over {Speak.Duration(recorded)} of recording" : "") +
-			(gist is null ? "." : $": {Speak.Clause(gist)}.");
+			(gist is null ? "." : $": {Speak.Clause(gist)}.") +
+			(opens ? $" Counted from {Speak.Clock(Days.Local(call.From, zone))}, when what you share begins." : "");
 
 		// Within the answer's length: conversations are kept in time order and the rest is said to be cut.
 		var shown = cards.Take(call.Settings.ToolMaxResults).ToList();
@@ -368,6 +371,7 @@ public sealed class DayTools
 				recaps.TryGetValue(day, out var recap);
 				coverage.TryGetValue(day, out var covered);
 				var list = conversations[day].ToList();
+				var totals = Totals(covered, list, OpensWindow(call, day));
 				return new DayOut(
 					day,
 					day.DayOfWeek.ToString(),
@@ -375,13 +379,31 @@ public sealed class DayTools
 					ArchiveReader.Blank(recap?.Headline),
 					Speak.Cap(ArchiveReader.Blank(recap?.LineSummary), ArchiveReader.ListOverviewLength),
 					list.Count(c => c.ContentKind == ContentKind.Conversation),
-					covered is not null ? Days.Minutes(covered.RecordedMs) : Days.Minutes(list.Sum(c => c.RecordedMs)),
-					covered is not null ? Days.Minutes(covered.QuietMs) : Math.Round(list.Sum(c => ArchiveReader.GapMinutes(c, GapKind.Quiet)), 1),
-					covered is not null ? Days.Minutes(covered.MissingMs) : Math.Round(list.Sum(c => ArchiveReader.GapMinutes(c, GapKind.Lost)), 1),
+					totals.Recorded,
+					totals.Quiet,
+					totals.Lost,
 					recap is not null);
 			}),
 		];
 	}
+
+	/// <summary>
+	/// True for the day the sharing window opens partway through. The phone's totals for it count the whole day, so
+	/// that day is counted from its conversations inside the window instead.
+	/// </summary>
+	private static bool OpensWindow(ToolCall call, DateOnly day) =>
+		call.Scope.From is { } from && day == call.FromDay && from > LogicalDays.Start(day, call.Zone);
+
+	/// <summary>
+	/// A day's recorded, quiet, and lost minutes: the phone's coverage when it sent one, else (and on the day the window
+	/// opens) what the conversations shown hold.
+	/// </summary>
+	private static (double Recorded, double Quiet, double Lost) Totals(CoverageDay? coverage, IReadOnlyCollection<Conversation> conversations, bool opensWindow) =>
+		coverage is not null && !opensWindow
+			? (Days.Minutes(coverage.RecordedMs), Days.Minutes(coverage.QuietMs), Days.Minutes(coverage.MissingMs))
+			: (Days.Minutes(conversations.Sum(c => c.RecordedMs)),
+				Math.Round(conversations.Sum(c => ArchiveReader.GapMinutes(c, GapKind.Quiet)), 1),
+				Math.Round(conversations.Sum(c => ArchiveReader.GapMinutes(c, GapKind.Lost)), 1));
 
 	private static async Task<List<DayCandidate>> CandidatesAsync(ArchiveReader archive, ToolCall call, IReadOnlyList<DateOnly> days, CancellationToken cancellationToken)
 	{

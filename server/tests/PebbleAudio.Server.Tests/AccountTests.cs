@@ -179,9 +179,16 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 			["timeZone"] = ArchiveFixture.Zone,
 		};
 		Assert.Single(Phone.Ids(await phone.BatchAsync(ArchiveFixture.Item("coverage", ArchiveFixture.Key(firstDay), firstCoverage)), "accepted"));
-		var spans = (await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(firstDay) })).GetProperty("coverage").GetProperty("spans");
+		var firstDayAnswer = await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(firstDay) });
+		var spans = firstDayAnswer.GetProperty("coverage").GetProperty("spans");
 		var span = Assert.Single(spans.EnumerateArray());
 		Assert.Equal((Wire.T(since), 60.0), (Wire.T(span.GetProperty("startedAt").GetDateTimeOffset()), span.GetProperty("minutes").GetDouble()));
+		// Its totals are not the phone's whole-day 120 minutes but the 30 minutes of the conversation inside the window,
+		// in get_day and in list_days, and the summary says where the counting starts.
+		Assert.Equal(30.0, firstDayAnswer.GetProperty("coverage").GetProperty("recordedMinutes").GetDouble());
+		Assert.EndsWith("Counted from 6:00 AM, when what you share begins.", firstDayAnswer.GetProperty("summary").GetString());
+		var firstDayListed = (await ArchiveFixture.CallAsync(mcp, "list_days", new() { ["from"] = ArchiveFixture.Key(firstDay), ["to"] = ArchiveFixture.Key(firstDay) })).GetProperty("days")[0];
+		Assert.Equal(30.0, firstDayListed.GetProperty("recordedMinutes").GetDouble());
 		Assert.Equal(HttpStatusCode.OK, (await phone.SendAsync(HttpMethod.Put, "/sync/preferences", Phone.Json(new JsonObject { ["scope"] = new JsonObject { ["kind"] = "all" } }))).StatusCode);
 		Assert.Single((await ArchiveFixture.CallAsync(mcp, "list_conversations")).GetProperty("conversations").EnumerateArray());
 		var kitchen = fx.Items().Single(i => i["kind"]!.GetValue<string>() == "conversation" && i["id"]!.GetValue<string>() == "conv-kitchen");
@@ -198,7 +205,7 @@ public sealed class AccountTests(ArchiveServerFactory factory)
 	{
 		var (phone, fx) = await ArchiveFixture.SeedAsync(factory, clips: true, edits: true);
 		using var linked = phone;
-		using var otherPhone = await Phone.LinkAsync(factory, phone.UserId, "Roger's iPad");
+		using var otherPhone = await Phone.LinkAsync(factory, phone.UserId, "Alex's iPad");
 		var userId = phone.UserId;
 		string personal, oauthAccess;
 		await using (var scope = factory.Services.CreateAsyncScope())

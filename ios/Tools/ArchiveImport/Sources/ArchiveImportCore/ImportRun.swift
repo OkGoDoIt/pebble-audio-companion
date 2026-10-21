@@ -168,8 +168,13 @@ public struct ImportRun {
             let item: ArchiveBatchItem
             switch built {
             case .payload(let data, let hash, let pieceKey):
+                var payload = data
+                if row.kind == .conversation, let closed = Self.settled(data) {
+                    payload = closed
+                    tally.settled += 1
+                }
                 item = ArchiveBatchItem(
-                    key: key, op: .upsert, changedAtMs: row.changedAtMs, payload: data, hash: hash,
+                    key: key, op: .upsert, changedAtMs: row.changedAtMs, payload: payload, hash: hash,
                     pieceKey: pieceKey)
             case .unchanged:
                 // Only an outbox row with a sent hash is unchanged; the import's rows have none.
@@ -217,6 +222,25 @@ public struct ImportRun {
         Output.line("")
         tally.printTable(dryRun: options.dryRun)
         return tally.isClean ? 0 : 1
+    }
+
+    /// A conversation the backup caught while it was recording, sent as finished: the import only
+    /// sends what the phone no longer has, so no phone will ever send it again to close it, and it
+    /// would stay "live" on the server for good. It ends where its last piece ends (else with no
+    /// end time, which the server reads as its start plus its recorded audio). Nil for one already
+    /// closed, which goes exactly as the phone built it.
+    static func settled(_ payload: Data) -> Data? {
+        guard var object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+            object["state"] as? String == "live"
+        else { return nil }
+        object["state"] = "closed"
+        object["provisional"] = false
+        if object["endedAt"] == nil || object["endedAt"] is NSNull {
+            let ends = (object["pieces"] as? [[String: Any]] ?? []).compactMap { $0["endedAt"] as? String }
+            let last = ends.compactMap { end in ArchiveTime.ms(end).map { (end, $0) } }.max { $0.1 < $1.1 }
+            object["endedAt"] = last?.0 ?? NSNull()
+        }
+        return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
     // MARK: - Linking
@@ -381,6 +405,8 @@ struct Tally {
     var phoneHas = 0
     /// Dated before the archive was last deleted.
     var deletedBefore = 0
+    /// Conversations still recording in the backup, sent as finished.
+    var settled = 0
     var firstFailure: (ArchiveEntityKind, String, String, Data)?
 
     subscript(kind: ArchiveEntityKind) -> Kind {
@@ -463,6 +489,10 @@ struct Tally {
         if deletedBefore > 0 {
             Output.line("")
             Output.line("Not sent again, from before the archive was deleted: \(deletedBefore.formatted()) items.")
+        }
+        if settled > 0 {
+            Output.line("")
+            Output.line("Sent as finished, since the backup caught them recording: \(settled.formatted()) conversations.")
         }
         if overLimit > 0 {
             Output.line("")
