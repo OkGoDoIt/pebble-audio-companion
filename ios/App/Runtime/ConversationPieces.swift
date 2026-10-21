@@ -5,6 +5,8 @@ import LiveAudio
 import SegmentStore
 import Transcription
 
+import func SearchKit.pieceWallWindow
+
 // A conversation is an ordered list of PIECES — a range of each member segment's stored audio
 // (`AppDB/ConversationUnits.swift`) — and one segment routinely holds the end of one
 // conversation and the start of the next. Every reader in the app that used to walk "the
@@ -59,20 +61,9 @@ struct PieceSpan: Equatable, Sendable {
         let upper = min(Int64(frames.upperBound) * frameMs, spanMs)
         mediaMs = lower..<max(upper, lower)
 
-        if member.isWhole {
-            wallMs = nil
-        } else {
-            // The same rule as everywhere else a media offset becomes a wall one
-            // (`ConversationRunPlanner.Member.wall(ofMedia:)`, `TranscriptItems`, Ask's
-            // stretches): through the gap records where they add up, and left alone where they
-            // do not — a proportional guess moves turns by hours on the segments it applies to.
-            func wall(_ mediaMs: Int64) -> Int64 {
-                clock.isExact ? clock.wall(fromMedia: mediaMs) : mediaMs
-            }
-            let wallLower = member.startMediaMs.map(wall) ?? Int64.min
-            let wallUpper = member.endMediaMs.map(wall) ?? Int64.max
-            wallMs = wallLower..<max(wallUpper, wallLower)
-        }
+        // The kit's rule, so this window and the one the transcript rows are cut by
+        // (`SearchKit.pieceTimeline`) are the same window.
+        wallMs = pieceWallWindow(member, clock: clock)
     }
 
     /// How far into the PIECE a moment of the segment's stored audio is. A moment outside the
