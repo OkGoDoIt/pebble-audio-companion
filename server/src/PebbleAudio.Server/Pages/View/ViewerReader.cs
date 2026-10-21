@@ -59,7 +59,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 				var list = conversations[day].ToList();
 				var talk = list.Where(c => c.ContentKind == ContentKind.Conversation).ToList();
 				var recordedMs = covered?.RecordedMs ?? list.Sum(c => c.RecordedMs);
-				var lostSeconds = covered is not null ? covered.MissingMs / 1000.0 : list.Sum(c => GapSeconds(c, GapKind.Lost));
+				var lostSeconds = covered is not null ? covered.MissingMs / 1000.0 : list.Sum(GapRows.MissingSeconds);
 				var headline = ArchiveReader.Blank(recap?.Headline);
 				var line = ArchiveReader.Blank(recap?.LineSummary);
 				if (headline is null)
@@ -108,11 +108,13 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 		var duration = Math.Max(1, (int)Math.Round((endAt - c.StartedAt).TotalSeconds));
 		var moment = t is { } seconds ? Math.Clamp(seconds, 0, duration) : (int?)null;
 
-		var items = transcript?.Items.OrderBy(i => i.At).ToList() ?? [];
+		// The words, with the quiet and interrupted rows the phone's transcript shows between them (GapRows: one reading
+		// for every phone, the app's).
+		var items = transcript is null ? [] : GapRows.Interleave(transcript.Items, c);
 		var speakers = Speakers(c, items);
 		var (lanes, laneOf) = Lanes(speakers);
 		var marks = Marks(c, items, duration);
-		var rows = Rows(c, items, zone, duration, laneOf, speakers, marks);
+		var rows = Rows(c, items, zone, duration, laneOf, speakers);
 		int? cited = moment is { } m && rows.Count > 0 ? Math.Max(0, rows.FindLastIndex(r => r.S <= m)) : null;
 
 		var turns = new List<(int Lane, int S, int E)>();
@@ -134,7 +136,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			? null
 			: new NeighborView(ArchiveReader.Blank(title) ?? ViewText.NotSummarized, archive.Links.Conversation(nid), ViewText.Clock(Days.Local(at, LogicalDays.Zone(tz))));
 
-		var lostSeconds = GapSeconds(c, GapKind.Lost);
+		var lostSeconds = GapRows.MissingSeconds(c);
 		// People in the order the phone lists them (as the app does), then anyone only the transcript names.
 		var listed = c.People.Select(p => p.Label).ToList();
 		var named = speakers.Where(s => s.Named)
@@ -167,6 +169,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			lanes,
 			turns,
 			marks,
+			Holes(c, duration),
 			rows,
 			cited,
 			moment,
@@ -275,24 +278,33 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 		return (lanes, laneOf);
 	}
 
-	/// <summary>Quiet, paused, lost, and masked stretches, drawn to scale and never mixed up.</summary>
+	/// <summary>
+	/// The conversation's rows on its strip, never mixed up: quiet, paused, and masked over their stretch; every
+	/// interruption, the brief ones too, as its loss where it starts (see <see cref="MarkView"/>). Its label is the row's
+	/// own words.
+	/// </summary>
 	private static List<MarkView> Marks(Conversation c, IReadOnlyList<TranscriptItem> items, int duration)
 	{
 		var marks = new List<MarkView>();
-		foreach (var gap in c.Gaps.OrderBy(g => g.StartedAt))
+		foreach (var row in GapRows.Of(c))
 		{
-			var (s, e) = (Clamp(gap.StartedAt, c, duration), Clamp(gap.EndedAt, c, duration));
+			var s = Clamp(row.StartedAt, c, duration);
+			// A hole is drawn to scale. Brief drops spread over a stretch are the app's tick where the row starts (a mark
+			// the strip draws at its narrowest): painted across the stretch they would read as minutes of missing audio
+			// over words that are all there.
+			var e = row.Kind == GapRowKind.Lost && GapRows.IsSpread(row)
+				? Math.Min(duration, s + 1)
+				: Math.Max(Clamp(row.EndedAt, c, duration), Math.Min(duration, s + 1));
 			if (e <= s)
 			{
 				continue;
 			}
 
-			var seconds = (gap.EndedAt - gap.StartedAt).TotalSeconds;
-			marks.Add(gap.Kind switch
+			marks.Add(row.Kind switch
 			{
-				GapKind.Quiet when gap.Reason == "watchPause" => new MarkView("paused", s, e, $"Paused · {ViewText.Duration(seconds, seconds: true)} · {ViewText.WatchSavingPower}"),
-				GapKind.Quiet => new MarkView("quiet", s, e, $"Quiet · {ViewText.Duration(seconds, seconds: true)}"),
-				GapKind.Lost => new MarkView("lost", s, e, string.Join(" · ", new[] { ViewText.Missing(seconds), ViewText.LossCause(gap.Origin) }.OfType<string>())),
+				GapRowKind.Paused => new MarkView("paused", s, e, PausedText(row.Seconds)),
+				GapRowKind.Quiet => new MarkView("quiet", s, e, row.Label),
+				GapRowKind.Lost => new MarkView("lost", s, e, row.Label),
 			});
 		}
 
@@ -308,16 +320,37 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 		return [.. marks.OrderBy(m => m.S)];
 	}
 
+	/// <summary>The viewer's line for the watch's power-save pause: <c>Paused · 2 min · watch was saving power</c>.</summary>
+	private static string PausedText(double seconds) => $"Paused · {ViewText.Duration(seconds, seconds: true)} · {GapRows.WatchSavingPower}";
+
+	/// <summary>
+	/// Where an older phone's conversation has no stored audio, for the player to map a clip's audio onto the wall clock:
+	/// the records it sent, as it always used them. A phone with the gap change sends rows, not holes, and its clips say
+	/// themselves what they skipped (<c>X-Clip-Gaps</c>), so it needs none.
+	/// </summary>
+	private static List<MarkView> Holes(Conversation c, int duration) => GapRows.AreRows(c)
+		? []
+		:
+		[
+			.. c.Gaps
+				.Select(g => new MarkView(
+					g.Kind == GapKind.Lost ? "lost" : g.Reason == "watchPause" ? "paused" : "quiet",
+					Clamp(g.StartedAt, c, duration),
+					Clamp(g.EndedAt, c, duration),
+					""))
+				.Where(h => h.E > h.S),
+		];
+
 	private static List<RowView> Rows(
 		Conversation c,
 		IReadOnlyList<TranscriptItem> items,
 		TimeZoneInfo zone,
 		int duration,
 		IReadOnlyDictionary<string, int> laneOf,
-		IReadOnlyList<Speaker> speakers,
-		IReadOnlyList<MarkView> marks)
+		IReadOnlyList<Speaker> speakers)
 	{
 		var whoOf = speakers.ToDictionary(s => s.Label, s => s.Name);
+		var namedLabels = speakers.Where(s => s.Named).Select(s => s.Label).ToHashSet(StringComparer.Ordinal);
 		var rows = new List<RowView>();
 		string? lastMinute = null;
 		RowView Row(RowKind kind, DateTimeOffset at, int s, int e, IReadOnlyList<BitView> bits, string? text, string? detail)
@@ -353,21 +386,14 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 				case TranscriptItemKind.Quiet or TranscriptItemKind.Lost or TranscriptItemKind.Masked:
 				{
 					var e = item.EndAt is { } end ? Clamp(end, c, duration) : s;
-					// The conversation's own gaps know why (the watch's power-save pause, where a loss happened).
-					var mark = marks.Where(m => m.S < Math.Max(e, s + 1) && m.E > s)
-						.OrderByDescending(m => Math.Min(m.E, e) - Math.Max(m.S, s))
-						.FirstOrDefault(m => item.Kind switch
-						{
-							TranscriptItemKind.Quiet => m.Kind is "quiet" or "paused",
-							TranscriptItemKind.Lost => m.Kind == "lost",
-							_ => m.Kind == "masked",
-						});
 					var seconds = item.EndAt is { } stop ? (stop - item.At).TotalSeconds : 0;
+					// Quiet and interrupted rows read exactly as the phone's transcript words them (GapRows): "quiet for
+					// 3 min", "audio interrupted for 1 min over 14 min (watch buffer filled while disconnected)".
 					var (kind, text) = item.Kind switch
 					{
-						TranscriptItemKind.Quiet when mark?.Kind == "paused" => (RowKind.Paused, mark.Label),
-						TranscriptItemKind.Quiet => (RowKind.Quiet, $"Quiet · {ViewText.Duration(seconds, seconds: true)}"),
-						TranscriptItemKind.Lost => (RowKind.Lost, string.Join(" · ", new[] { ViewText.Missing(seconds), ViewText.LossCause(ArchiveReader.Blank(item.Origin) ?? MarkOrigin(c, item)) }.OfType<string>())),
+						TranscriptItemKind.Quiet when item.Reason == "watchPause" => (RowKind.Paused, PausedText(seconds)),
+						TranscriptItemKind.Quiet => (RowKind.Quiet, item.Label ?? $"quiet for {GapRows.AppDuration(seconds)}"),
+						TranscriptItemKind.Lost => (RowKind.Lost, item.Cause is { } cause ? $"{item.Label} ({cause})" : item.Label ?? GapRows.InterruptionWords(seconds, seconds)),
 						_ => (RowKind.Masked, $"{ViewText.Capitalized(ArchiveReader.Blank(item.Descriptor) ?? "music")} · {ViewText.Duration(seconds, seconds: true)}"),
 					};
 					rows.Add(Row(kind, item.At, s, Math.Max(e, s), [], text, null));
@@ -390,14 +416,11 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 				turn.Text?.Trim() ?? "",
 				s,
 				e,
-				turn.Confidence is < 0.6);
+				turn.Confidence is < 0.6,
+				ArchiveReader.Blank(turn.Name) is null && !namedLabels.Contains(label));
 		}
 	}
 
-	private static string? MarkOrigin(Conversation c, TranscriptItem item) =>
-		c.Gaps.Where(g => g.Kind == GapKind.Lost && g.StartedAt < (item.EndAt ?? item.At.AddSeconds(1)) && g.EndedAt > item.At)
-			.Select(g => g.Origin)
-			.FirstOrDefault();
 
 	private static bool IsShort(TranscriptItem item) =>
 		item.Kind == TranscriptItemKind.Turn && (item.Text?.Trim().Length ?? 0) is > 0 and <= RunInLength;
@@ -417,8 +440,6 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 
 	private static int Clamp(DateTimeOffset at, Conversation c, int duration) => Math.Clamp(Days.Offset(at, c.StartedAt), 0, duration);
 
-	private static double GapSeconds(Conversation c, GapKind kind) =>
-		c.Gaps.Where(g => g.Kind == kind).Sum(g => Math.Max(0, (g.EndedAt - g.StartedAt).TotalSeconds));
 
 	// Clips
 
@@ -535,9 +556,12 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			T(r.EndAt) ?? to,
 			T(r.CoveredStartAt),
 			T(r.CoveredEndAt),
-			[.. r.Gaps.Select(g => new[] { Days.Offset(g.StartedAt, c.StartedAt), Days.Offset(g.EndedAt, c.StartedAt) })],
+			[.. r.Gaps.Where(g => g.IsLost).Select(g => new[] { Days.Offset(g.StartedAt, c.StartedAt), Days.Offset(g.EndedAt, c.StartedAt) })],
 			r.DurationMs,
-			r.WaitingUntil);
+			r.WaitingUntil)
+		{
+			Quiet = [.. r.Gaps.Where(g => !g.IsLost).Select(g => new[] { Days.Offset(g.StartedAt, c.StartedAt), Days.Offset(g.EndedAt, c.StartedAt) })],
+		};
 	}
 
 	// A day
@@ -632,7 +656,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 		var start = Days.Local(c.StartedAt, zone);
 		var end = Days.Local(End(c, call), zone);
 		var seconds = (end - start).TotalSeconds;
-		var lost = GapSeconds(c, GapKind.Lost);
+		var lost = GapRows.MissingSeconds(c);
 		var title = ArchiveReader.Blank(c.Title);
 		var noConversation = c.ContentKind == ContentKind.NoConversation;
 		var shownTitle = title ?? (noConversation ? ViewText.Capitalized(ArchiveReader.Blank(c.ContentDescriptor) ?? "No conversation") : ViewText.NotSummarized);
@@ -802,8 +826,8 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 	{
 		double Sum(CoverageKind kind) => spans.Where(s => s.Kind == kind).Sum(s => (s.EndedAt - s.StartedAt).TotalSeconds);
 		var talk = conversations.Where(c => c.ContentKind == ContentKind.Conversation).Sum(c => (End(c, call) - c.StartedAt).TotalSeconds);
-		var quiet = coverage is not null ? coverage.QuietMs / 1000.0 : conversations.Sum(c => GapSeconds(c, GapKind.Quiet));
-		var lost = coverage is not null ? coverage.MissingMs / 1000.0 : conversations.Sum(c => GapSeconds(c, GapKind.Lost));
+		var quiet = coverage is not null ? coverage.QuietMs / 1000.0 : conversations.Sum(GapRows.QuietSeconds);
+		var lost = coverage is not null ? coverage.MissingMs / 1000.0 : conversations.Sum(GapRows.MissingSeconds);
 		var totals = new List<TotalView>();
 		void Add(string kind, string name, double seconds)
 		{

@@ -143,14 +143,14 @@
 						@if (r.Kind == RowKind.Turn)
 						{
 							var bit = r.Bits[0];
-							<p class="say @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane)">@bit.Who</span>@bit.Text</p>
+							<p class="say @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane) @(bit.Unnamed ? "unnamed" : null)">@bit.Who</span>@bit.Text</p>
 						}
 						else if (r.Kind == RowKind.Run)
 						{
 							<p class="say run-text">
 								@foreach (var bit in r.Bits)
 								{
-									<span class="bit @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane)">@bit.Who</span>@bit.Text</span>
+									<span class="bit @(bit.LowConfidence ? "low" : null)"><span class="who @Lane(bit.Lane) @(bit.Unnamed ? "unnamed" : null)">@bit.Who</span>@bit.Text</span>
 								}
 							</p>
 						}

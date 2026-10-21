@@ -152,8 +152,8 @@ public sealed class ArchiveReader(
 			c.Provisional,
 			hasTranscript,
 			c.ExpiredOnPhoneAt is not null,
-			GapMinutes(c, GapKind.Quiet),
-			GapMinutes(c, GapKind.Lost));
+			Days.Minutes(TimeSpan.FromSeconds(GapRows.QuietSeconds(c))),
+			Days.Minutes(TimeSpan.FromSeconds(GapRows.MissingSeconds(c))));
 	}
 
 	/// <summary>
@@ -163,17 +163,21 @@ public sealed class ArchiveReader(
 	public static DateTimeOffset End(Conversation c, DateTimeOffset now) =>
 		c.EndedAt ?? (c.State == ConversationState.Live ? now : c.StartedAt + TimeSpan.FromMilliseconds(c.RecordedMs));
 
-	public GapOut Gap(Conversation c, ConversationGap g)
+	/// <summary>One of the conversation's rows (<see cref="GapRows"/>), as tools return it.</summary>
+	public GapOut Gap(Conversation c, GapRow row)
 	{
 		var zone = LogicalDays.Zone(c.TimeZone);
+		var lost = row.Kind == GapRowKind.Lost;
 		return new GapOut(
-			g.Kind.ToWire(),
-			Days.Local(g.StartedAt, zone),
-			Days.Local(g.EndedAt, zone),
-			Days.Offset(g.StartedAt, c.StartedAt),
-			Days.Minutes(g.EndedAt - g.StartedAt),
-			g.Kind == GapKind.Lost ? Blank(g.Origin) ?? "unknown" : null,
-			g.Kind == GapKind.Quiet ? Blank(g.Reason) : null);
+			lost ? GapKind.Lost.ToWire() : GapKind.Quiet.ToWire(),
+			Days.Local(row.StartedAt, zone),
+			Days.Local(row.EndedAt, zone),
+			Days.Offset(row.StartedAt, c.StartedAt),
+			Days.Minutes(row.EndedAt - row.StartedAt),
+			lost ? Days.Minutes(TimeSpan.FromSeconds(row.MissingSeconds)) : null,
+			lost ? row.Origin ?? "unknown" : null,
+			row.Kind == GapRowKind.Paused ? "watchPause" : null,
+			row.Label);
 	}
 
 	public TranscriptItemOut Item(Conversation c, TimeZoneInfo zone, TranscriptItem i) => i.Kind switch
@@ -201,7 +205,11 @@ public sealed class ArchiveReader(
 			null,
 			null,
 			i.Kind == TranscriptItemKind.Lost ? Blank(i.Origin) ?? "unknown" : null,
-			i.Kind == TranscriptItemKind.Masked ? Blank(i.Descriptor) ?? "music" : null),
+			i.Kind == TranscriptItemKind.Masked ? Blank(i.Descriptor) ?? "music" : null)
+		{
+			Label = i.Kind == TranscriptItemKind.Masked ? null : ArchiveText.MarkerWords(i),
+			MissingMinutes = i.MissingMs is { } ms ? Days.Minutes(TimeSpan.FromMilliseconds(ms)) : null,
+		},
 	};
 
 	/// <summary>
@@ -287,8 +295,10 @@ public sealed class ArchiveReader(
 		: f.SnoozedUntil > now ? "snoozed"
 		: "open";
 
+	/// <summary>A conversation's lost or quiet minutes, read the app's way (<see cref="GapRows"/>): what is genuinely
+	/// missing, not the stretches its interruptions cover; and its quiet rows.</summary>
 	public static double GapMinutes(Conversation c, GapKind kind) =>
-		Days.Minutes(TimeSpan.FromTicks(c.Gaps.Where(g => g.Kind == kind).Sum(g => Math.Max(0, (g.EndedAt - g.StartedAt).Ticks))));
+		Days.Minutes(TimeSpan.FromSeconds(kind == GapKind.Lost ? GapRows.MissingSeconds(c) : GapRows.QuietSeconds(c)));
 
 	/// <summary>The zone's id as the phone sent it, or UTC.</summary>
 	public static string ZoneName(string? zone) => string.IsNullOrWhiteSpace(zone) ? "UTC" : zone;

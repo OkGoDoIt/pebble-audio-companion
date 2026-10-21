@@ -91,7 +91,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		var kitchen = cards[0];
 		Assert.Equal($"{ArchiveFixture.Key(fx.Day)}T10:05:00+07:00", kitchen.GetProperty("startedAt").GetString());
 		Assert.Equal(36.0, kitchen.GetProperty("minutes").GetDouble());
-		Assert.Equal((1.0, 2.3), (kitchen.GetProperty("lostMinutes").GetDouble(), kitchen.GetProperty("quietMinutes").GetDouble()));
+		Assert.Equal((1.0, 2.0), (kitchen.GetProperty("lostMinutes").GetDouble(), kitchen.GetProperty("quietMinutes").GetDouble()));
 		Assert.Equal(["Alex", "Sam"], kitchen.GetProperty("people").EnumerateArray().Select(p => p.GetProperty("name").GetString()));
 		Assert.True(kitchen.GetProperty("hasTranscript").GetBoolean());
 		Assert.Equal(("noConversation", "music"), (cards[3].GetProperty("kind").GetString(), cards[3].GetProperty("descriptor").GetString()));
@@ -140,7 +140,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.True(summary.GetProperty("found").GetBoolean());
 		Assert.StartsWith("Sam and you compare three tile samples", summary.GetProperty("overview").GetString());
 		Assert.False(summary.TryGetProperty("transcript", out _));
-		// The 20-second quiet stretch counts in quietMinutes but is not listed on its own.
+		// Read the app's way (GapRows): the 20-second quiet stretch is not a row, so it is neither listed nor counted.
 		Assert.Equal([("lost", 240, "watch"), ("quiet", 540, null)], summary.GetProperty("gaps").EnumerateArray().Select(g => (
 			g.GetProperty("kind").GetString(), g.GetProperty("t").GetInt32(), g.TryGetProperty("origin", out var o) ? o.GetString() : null)));
 		Assert.Equal("fu-tiles", summary.GetProperty("followUps")[0].GetProperty("id").GetString());
@@ -162,7 +162,10 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		var both = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-launch", ["include"] = "both" });
 		Assert.Equal("Launch checklist", both.GetProperty("notes")[0].GetProperty("title").GetString());
 		Assert.Equal($"{Origin}/c/conv-launch?t=720", both.GetProperty("notes")[0].GetProperty("citations")[0].GetProperty("url").GetString());
-		Assert.Equal(3, both.GetProperty("transcript").GetProperty("shownCount").GetInt32());
+		// Three turns and the watch's power-save pause, which the phone's transcript shows as a row of its own.
+		var launchItems = both.GetProperty("transcript").GetProperty("items").EnumerateArray().ToList();
+		Assert.Equal(["turn", "turn", "turn", "quiet"], launchItems.Select(i => i.GetProperty("kind").GetString()));
+		Assert.Equal("paused for 2 min (watch was saving power)", launchItems[3].GetProperty("label").GetString());
 		var unknown = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "kitchen tiles" });
 		Assert.False(unknown.GetProperty("found").GetBoolean());
 		Assert.Equal("conv-kitchen", unknown.GetProperty("candidates")[0].GetProperty("id").GetString());
@@ -191,7 +194,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Equal(["conversation://{id}", "day://{date}"], templates.Select(t => t.UriTemplate).Order());
 		var resource = Assert.IsType<TextResourceContents>(Assert.Single((await mcp.ReadResourceAsync("conversation://conv-kitchen")).Contents));
 		Assert.Contains("# Kitchen tiles with Sam", resource.Text);
-		Assert.Contains("(lost audio, watch)", resource.Text);
+		Assert.Contains("(audio interrupted for 1 min)", resource.Text);
 		var dayResource = Assert.IsType<TextResourceContents>(Assert.Single((await mcp.ReadResourceAsync($"day://{day}")).Contents));
 		Assert.Contains($"[Kitchen tiles with Sam]({Origin}/c/conv-kitchen)", dayResource.Text);
 		var prompts = await mcp.ListPromptsAsync();
@@ -250,8 +253,8 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Equal(($"{Origin}/c/conv-kitchen", "Kitchen tiles with Sam"), (fetched.GetProperty("url").GetString(), fetched.GetProperty("title").GetString()));
 		var text = fetched.GetProperty("text").GetString()!;
 		Assert.Contains("[10:05:12] Sam: The matte tiles hide water spots", text);
-		Assert.Contains("[10:09–10:10] (lost audio, watch)", text);
-		Assert.Contains("[10:14–10:16] (quiet)", text);
+		Assert.Contains("[10:09–10:10] (audio interrupted for 1 min)", text);
+		Assert.Contains("[10:14–10:16] (quiet for 2 min)", text);
 		Assert.Contains("mumble budget something (low confidence)", text);
 		Assert.Contains("(music)", text);
 		Assert.False(fetched.GetProperty("metadata").GetProperty("truncated").GetBoolean());
@@ -293,11 +296,12 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 			batch.Add(ArchiveFixture.Item("conversation", $"conv-short-{i}", ArchiveFixture.Conversation(day, ArchiveFixture.At(day, 9, 0), ArchiveFixture.At(day, 9, 10), $"Launch standup {i}", "A short launch standup.", ["product launch"], [], [], 10)));
 		}
 
-		// A conversation the watch kept dropping out of: 600 lost seconds.
+		// A conversation the watch kept dropping out of: 600 interruptions of 12 seconds, 8 seconds apart, so each is a
+		// row of its own the way the app reads them.
 		var gappyDay = fx.Day.AddDays(-14);
 		var gappyStart = ArchiveFixture.At(gappyDay, 9, 0);
-		var lostGaps = Enumerable.Range(0, 600).Select(i => ArchiveFixture.Gap(gappyStart.AddSeconds(i * 10), gappyStart.AddSeconds(i * 10 + 1), "lost", "watch")).ToArray();
-		batch.Add(ArchiveFixture.Item("conversation", "conv-gappy", ArchiveFixture.Conversation(gappyDay, gappyStart, gappyStart.AddMinutes(100), "Watch reconnects all morning", "The watch kept dropping out.", ["watch"], [], lostGaps, 90)));
+		var lostGaps = Enumerable.Range(0, 600).Select(i => ArchiveFixture.Gap(gappyStart.AddSeconds(i * 20), gappyStart.AddSeconds(i * 20 + 12), "lost", "watch")).ToArray();
+		batch.Add(ArchiveFixture.Item("conversation", "conv-gappy", ArchiveFixture.Conversation(gappyDay, gappyStart, gappyStart.AddMinutes(200), "Watch reconnects all morning", "The watch kept dropping out.", ["watch"], [], lostGaps, 80)));
 		batch.Add(ArchiveFixture.Item("transcript", "conv-gappy", ArchiveFixture.Transcript("conv-gappy", [.. Enumerable.Range(0, 50).Select(i => ArchiveFixture.Turn(gappyStart.AddSeconds(i * 10 + 2), "1", "Alex", $"Turn {i}: it dropped again.", 0.9))])));
 
 		Assert.Equal(0, (await phone.BatchAsync([.. batch])).GetProperty("rejected").GetArrayLength());

@@ -12,8 +12,8 @@ public static class Instructions
 	public const string Lead =
 		"Pebble Audio is the person's private archive of all-day watch recordings, transcribed into conversations, " +
 		"with day recaps and week and month briefs. Orient first (get_day, list_days, get_brief), search before " +
-		"reading, and open transcripts only as needed. Cite each claim with its url. Quiet is silence skipped on " +
-		"purpose; lost is missing audio where something may have been said. Never claim absence from a partial read. " +
+		"reading, and open transcripts only as needed. Cite each claim with its url. Quiet is a stretch where nothing " +
+		"was said; lost is missing audio where something may have been said. Never claim absence from a partial read. " +
 		"Days roll over at 5 AM.";
 
 	public const string Details = """
@@ -22,7 +22,7 @@ public static class Instructions
 		2. Search before you open transcripts. search covers titles, overviews, tags, transcripts, recaps, briefs, follow-ups, and notes, and returns snippets with ids for fetch. Try several phrasings (names, places, products) when the first search is thin.
 		3. Open conversations deliberately: get_conversation with include summary first, transcript only for the conversations that matter. A day of transcripts is about 200,000 characters; a recap plus two conversations usually answers. A result that was cut says truncated and gives next, the exact call that reads on.
 		4. Cite every claim with the url after it; a moment's link is the conversation's url with ?t= and the turn's t. Quote exact words only when the person asks what was said.
-		5. Be honest about coverage. quiet means the watch skipped silence: nothing was said. lost means audio is missing: something may have been said. A provisional conversation may still change. Turns with low confidence (below 0.6) and speaker names can be wrong. Never present an inference as something someone said.
+		5. Be honest about coverage. quiet means nothing was said. lost means audio is missing: something may have been said. A lost gap can cover minutes of brief drops with the words between them intact; its missingMinutes is how much is really gone, and its label says it the way the app does. A provisional conversation may still change. Turns with low confidence (below 0.6) and speaker names can be wrong. Never present an inference as something someone said.
 		6. Never claim absence from a partial read: say what you read, "I did not find it in what I read", not "it was never discussed". The archive holds only what the person shares (get_status says how far back).
 		7. Times are the person's: every time carries the offset of where it was recorded. Today and yesterday are the person's logical days, rolling over at 5 AM. Say which dates you used for a relative question.
 		8. Audio only when asked: get_audio returns a short-lived link, or requested when the phone has to send it first; ask again later. Do not fetch audio to answer a text question.

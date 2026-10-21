@@ -4,8 +4,13 @@
 // lights the turn being spoken. Missing audio is skipped and said so; quiet the audio still holds can be
 // skipped with one tap. The viewer page and the clip-player widget both use it.
 //
-//   player.model  = { startMs, tz, dur, span: [a, b], t, lanes: [{ name, cls }], turns: [[lane, s, e]], gaps: [{ k, s, e }] }
-//   player.source = { url, covered: [c0, c1], lost: [[s, e]], durationMs }   (seconds from the conversation's start)
+//   player.model  = { startMs, tz, dur, span: [a, b], t, lanes: [{ name, cls }], turns: [[lane, s, e]], gaps: [{ k, s, e }], holes?: [{ k, s, e }] }
+//   player.source = { url, covered: [c0, c1], lost: [[s, e]], quiet?: [[s, e]], durationMs }   (seconds from the conversation's start)
+//
+// `gaps` are what the scrubber draws: the rows the phone's transcript shows, which are for reading — an interruption
+// row covers minutes of brief drops with the audio between them intact, and a quiet row can hold stored silence. They
+// never place audio on the clock. What does is where the audio really has none: the clip's own `lost` and `quiet`
+// (X-Clip-Gaps), and for an older phone's conversation `holes`, its gap records as they were sent.
 //   player.setState({ head, line, action, busy })   when there is no audio to play; null clears it
 //   player.cueAt(t, play)
 // Events: `pa-time` { t, playing, turn } as it plays or moves; `pa-action` when the state's button is pressed.
@@ -19,6 +24,8 @@ const PL_ICON = {
   fwd: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M20 4.5v3.5h-3.5"/><text x="12" y="15.6" text-anchor="middle" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" font-family="-apple-system,system-ui,sans-serif">10</text></svg>',
 };
 const SVG_NS = 'http://www.w3.org/2000/svg';
+// The phone's thresholds for a transcript row: an interruption from 10 s, quiet from 30 s.
+const NOTE_LOST_SECONDS = 10, NOTE_QUIET_SECONDS = 30;
 const clampTo = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** Merges intervals [[s, e, kind]] that touch or overlap, keeping the first kind. */
@@ -178,8 +185,9 @@ class PaPlayer extends HTMLElement {
   mapFor(audioSeconds) {
     const m = this._m;
     const holes = [];
-    for (const g of m.gaps) if (g.k === 'lost' || g.k === 'quiet' || g.k === 'paused') holes.push([Math.max(g.s, this._c0), Math.min(g.e, this._c1), g.k]);
+    for (const g of m.holes ?? []) if (g.k === 'lost' || g.k === 'quiet' || g.k === 'paused') holes.push([Math.max(g.s, this._c0), Math.min(g.e, this._c1), g.k]);
     for (const [s, e] of this._src?.lost ?? []) holes.push([Math.max(s, this._c0), Math.min(e, this._c1), 'lost']);
+    for (const [s, e] of this._src?.quiet ?? []) holes.push([Math.max(s, this._c0), Math.min(e, this._c1), 'quiet']);
     this._holes = mergeHoles(holes);
     const span = this._c1 - this._c0;
     const lost = this._holes.filter((h) => h[2] === 'lost').reduce((x, h) => x + h[1] - h[0], 0);
@@ -455,13 +463,16 @@ class PaPlayer extends HTMLElement {
     const audio = this.$.audio;
     let w = this.wallAt(audio.currentTime);
     const before = this._last ?? w;
+    // Only what the phone's transcript would give a row is said out loud: a drop under 10 s is skipped without a word
+    // (the watch can drop a fraction of a second every two seconds), and quiet under 30 s is not worth a button.
+    const said = (h) => h[1] - h[0] >= (h[2] === 'lost' ? NOTE_LOST_SECONDS : NOTE_QUIET_SECONDS);
     if (this._mode === 'linear') {
       const hole = this.holeAt(w);
       if (hole?.[2] === 'lost') {
         audio.currentTime = this.audioAt(hole[1]);
         w = hole[1];
-        this.note(`Skipped ${duration(hole[1] - hole[0], { seconds: true })} of missing audio`, 'missing', 3600);
-      } else if (hole && this._quiet !== hole) {
+        if (said(hole)) this.note(`Skipped ${duration(hole[1] - hole[0], { seconds: true })} of missing audio`, 'missing', 3600);
+      } else if (hole && this._quiet !== hole && said(hole)) {
         this._quiet = hole;
         this.offerSkip(hole);
       } else if (!hole && this._quiet) {
@@ -470,7 +481,7 @@ class PaPlayer extends HTMLElement {
       }
     } else {
       for (const h of this._holes || []) {
-        if (before < h[1] && w >= h[1] && before <= h[0] + 0.5 && (this._mode === 'cutAll' || h[2] === 'lost')) {
+        if (before < h[1] && w >= h[1] && before <= h[0] + 0.5 && (this._mode === 'cutAll' || h[2] === 'lost') && said(h)) {
           this.note(h[2] === 'lost'
             ? `Skipped ${duration(h[1] - h[0], { seconds: true })} of missing audio`
             : `Skipped ${duration(h[1] - h[0], { seconds: true })} of quiet`, h[2] === 'lost' ? 'missing' : '', 3600);

@@ -86,8 +86,11 @@ async function render({ structuredContent: r, _meta: meta }) {
   const player = root.querySelector('pa-player');
   const len = Math.max(1, (b - a) / 1000);
   const rel = (text) => (instant(text) - a) / 1000;
+  // Where the clip's audio has none: what place it on the clock. The scrubber draws the conversation's rows instead
+  // (loadTurns), as the phone's transcript shows them, so brief drops are one mark and not a hundred.
   const lost = (r.lost || []).map((g) => [rel(g.startedAt), rel(g.endedAt)]);
-  const model = { startMs: a, tz: zone, dur: len, span: [0, len], t: 0, lanes: [], turns: [], gaps: lost.map(([s, e]) => ({ k: 'lost', s, e })) };
+  const quiet = (r.quiet || []).map((g) => [rel(g.startedAt), rel(g.endedAt)]);
+  const model = { startMs: a, tz: zone, dur: len, span: [0, len], t: 0, lanes: [], turns: [], gaps: [] };
   player.model = model;
   const state = states(r);
   if (r.status === 'ready' && audio?.url) {
@@ -95,6 +98,7 @@ async function render({ structuredContent: r, _meta: meta }) {
       url: audio.url,
       covered: [r.coveredFrom ? rel(r.coveredFrom) : 0, r.coveredTo ? rel(r.coveredTo) : len],
       lost,
+      quiet,
       durationMs: null,
     };
   } else if (state) {
@@ -168,9 +172,12 @@ async function loadTurns(r, player, model, a, b) {
     return [laneOf.get(t.speaker || '?') ?? 0, s, Math.max(s + 1, Math.min(next - 0.3, s + 30))];
   });
   for (const g of c.gaps || []) {
-    const s = rel(g.startedAt), e = rel(g.endedAt);
+    const s = rel(g.startedAt), lost = g.kind === 'lost';
+    // A hole is drawn to scale; brief drops spread over a stretch are the app's tick where they start.
+    const spread = lost && g.missingMinutes != null && g.minutes >= g.missingMinutes * 2;
+    const e = spread ? s + 1 : rel(g.endedAt);
     if (e <= 0 || s >= model.dur) continue;
-    model.gaps.push({ k: g.kind === 'lost' ? 'lost' : g.reason === 'watchPause' ? 'paused' : 'quiet', s: Math.max(0, s), e: Math.min(model.dur, e) });
+    model.gaps.push({ k: lost ? 'lost' : g.reason === 'watchPause' ? 'paused' : 'quiet', s: Math.max(0, s), e: Math.min(model.dur, e), label: g.label });
   }
   const src = player._src;
   player.model = model;
@@ -184,7 +191,10 @@ async function loadTurns(r, player, model, a, b) {
       return `<li><button type="button" class="cp-turn" data-t="${s.toFixed(2)}"><span class="cp-who ${lane.cls}">${esc(item.name || `Speaker ${item.speaker}`)}<small>${esc(clock(instant(item.at), model.tz, { seconds: true }))}</small></span><p class="cp-say">${esc(item.text)}</p></button></li>`;
     }
     const minutes = item.minutes ?? (instant(item.endAt) - instant(item.at)) / 60000;
-    const words = item.kind === 'lost' ? `${duration(minutes * 60, { seconds: true })} missing` : item.kind === 'masked' ? `${(item.descriptor || 'music')[0].toUpperCase()}${(item.descriptor || 'music').slice(1)} · ${duration(minutes * 60, { seconds: true })}` : `Quiet · ${duration(minutes * 60, { seconds: true })}`;
+    // Quiet and interrupted rows in the phone's own words ("audio interrupted for 1 min over 14 min (…)").
+    const words = item.kind === 'masked'
+      ? `${(item.descriptor || 'music')[0].toUpperCase()}${(item.descriptor || 'music').slice(1)} · ${duration(minutes * 60, { seconds: true })}`
+      : item.label || (item.kind === 'lost' ? `${duration((item.missingMinutes ?? minutes) * 60, { seconds: true })} missing` : `Quiet · ${duration(minutes * 60, { seconds: true })}`);
     return `<li class="cp-gap ${item.kind}">${esc(words)}</li>`;
   }).join('');
   list.hidden = false;

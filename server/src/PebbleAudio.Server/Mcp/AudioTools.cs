@@ -84,7 +84,11 @@ public sealed class AudioTools
 		var spanEnd = Days.Local(clip.EndAt, zone);
 		var url = clip.StartAt is { } at ? archive.Links.Moment(id, Days.Offset(at, conversation.StartedAt)) : archive.Links.Conversation(id);
 		var span = spanStart is { } s && spanEnd is { } e2 ? $" from {Speak.Clock(s)} to {Speak.Clock(e2)}" : "";
-		var lost = clip.Gaps.Select(g => new LostSpanOut(Days.Local(g.StartedAt, zone), Days.Local(g.EndedAt, zone), Days.Minutes(g.EndedAt - g.StartedAt))).ToList();
+		LostSpanOut Span(Data.ClipGap g) => new(Days.Local(g.StartedAt, zone), Days.Local(g.EndedAt, zone), Days.Minutes(g.EndedAt - g.StartedAt));
+		var lost = clip.Gaps.Where(g => g.IsLost).Select(Span).ToList();
+		// What the clip skipped on purpose (the watch's silence, its power-save pause): not lost, but not in the file
+		// either, so a player can place the audio on the clock.
+		var quiet = clip.Gaps.Where(g => !g.IsLost).Select(Span).ToList();
 
 		AudioResult result;
 		JsonObject? meta = null;
@@ -107,7 +111,7 @@ public sealed class AudioTools
 					clip.DurationMs is { } ms ? Days.Minutes(ms) : clip.CoveredStartAt is { } cs && clip.CoveredEndAt is { } ce ? Days.Minutes(ce - cs) : null,
 					lost,
 					clip.RequestId,
-					null);
+					null) { Quiet = quiet };
 				meta = new JsonObject
 				{
 					[MetaKey] = new JsonObject
