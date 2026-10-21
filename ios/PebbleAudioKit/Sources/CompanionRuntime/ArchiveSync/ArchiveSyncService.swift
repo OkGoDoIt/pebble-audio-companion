@@ -168,6 +168,12 @@ public actor ArchiveSyncService {
         /// `GET /sync/status` as last answered, shown while the server cannot be reached.
         var serverCache: ArchiveServerStatus?
         var serverCacheAtMs: Int64?
+        /// The `ArchiveExport.transcriptExportVersion` every transcript has been marked to be
+        /// sent under; nil for state saved before there was one. Optional, as every field added
+        /// after the first release must be, so that state still decodes.
+        var transcriptExportMarked: String?
+        /// How far a re-export has marked (a conversation id), while one is under way.
+        var transcriptExportCursor: String?
     }
 
     public nonisolated let status = StateSubject(ArchiveSyncStatus())
@@ -233,7 +239,10 @@ public actor ArchiveSyncService {
         guard linked != active else { return }
         do {
             try await deps.outbox.setActive(linked)
-            if linked { try await deps.outbox.markEverything() }
+            if linked {
+                try await deps.outbox.markEverything()
+                markedEveryTranscript()
+            }
         } catch {
             deps.log.failure("archive sync recording", error)
         }
@@ -344,6 +353,7 @@ public actor ArchiveSyncService {
             try await deps.outbox.setActive(false)
             try await deps.outbox.setActive(true)
             let marked = try await deps.outbox.markEverything()
+            markedEveryTranscript()
             deps.log.write("archive sync: linked; \(marked) items to send")
         } catch {
             deps.log.failure("archive sync link", error)
@@ -481,6 +491,7 @@ public actor ArchiveSyncService {
         do {
             try await deps.outbox.setActive(true)
             try await deps.outbox.markEverything()
+            markedEveryTranscript()
         } catch {
             deps.log.failure("archive sync wipe", error)
         }
@@ -541,6 +552,7 @@ public actor ArchiveSyncService {
             clearInFlight(inFlight)
         }
 
+        await markNextTranscriptsForExport()
         let foreground = deps.isForeground()
         let maxBatches = foreground || deps.isCharging() ? 50 : 2
         var sent = 0
@@ -987,5 +999,45 @@ public actor ArchiveSyncService {
     private func save() {
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: stateURL, options: .atomic)
+    }
+
+    // MARK: - Re-exporting transcripts
+
+    /// A full mark (a link, a wipe) has just marked every transcript under today's export.
+    private func markedEveryTranscript() {
+        state.transcriptExportMarked = ArchiveExport.transcriptExportVersion
+        state.transcriptExportCursor = nil
+        save()
+    }
+
+    /// When the export's meaning changes (`ArchiveExport.transcriptExportVersion`), every
+    /// transcript the server holds is sent again once — and at the pace of ordinary changes,
+    /// not as the whole library at once: each pass marks one batch's worth more
+    /// (`ArchiveSyncProtocol.maxItemsPerBatch`), oldest conversation id first, and the version is
+    /// recorded once the last page is marked. A phone linked before the version existed has none
+    /// recorded, and re-exports too.
+    private func markNextTranscriptsForExport() async {
+        let version = ArchiveExport.transcriptExportVersion
+        guard state.transcriptExportMarked != version else { return }
+        let page = ArchiveSyncProtocol.maxItemsPerBatch
+        do {
+            // Only once the last page has gone: a server that is not answering must not have
+            // the whole library piled up behind it, and real changes go first.
+            guard try await deps.outbox.counts().pending < page else { return }
+            guard
+                let marked = try await deps.outbox.markTranscripts(
+                    after: state.transcriptExportCursor, limit: page)
+            else { return }
+            if marked.count < page {
+                state.transcriptExportMarked = version
+                state.transcriptExportCursor = nil
+                deps.log.write("archive sync: transcripts re-marked for \(version)")
+            } else {
+                state.transcriptExportCursor = marked.last
+            }
+            save()
+        } catch {
+            deps.log.failure("archive sync re-export", error)
+        }
     }
 }

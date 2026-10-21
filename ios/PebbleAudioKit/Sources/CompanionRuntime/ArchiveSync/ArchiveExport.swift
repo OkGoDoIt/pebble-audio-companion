@@ -14,8 +14,10 @@ import Transcription
 // `ArchiveTranscriptExportTests` without a database or a store.
 
 public enum ArchiveExport {
-    /// Bumped when the export's meaning changes, so every transcript is sent again.
-    public static let transcriptExportVersion = "transcript-export-1"
+    /// Bumped when the export's meaning changes, so every transcript is sent again (paced by
+    /// `ArchiveSyncService`). 2: words Soniox spaced apart no longer run together, and a name
+    /// reaches only the recording it was given in.
+    public static let transcriptExportVersion = "transcript-export-2"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.

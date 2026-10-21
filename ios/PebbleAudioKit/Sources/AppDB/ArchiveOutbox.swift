@@ -602,6 +602,20 @@ public struct ArchiveOutbox: Sendable {
         }
     }
 
+    /// The transcripts of the next `limit` conversations after `cursor` (by id), marked to be
+    /// sent again: one page of a re-export (`ArchiveSyncService`). Returns the ids it marked, in
+    /// order, or nil when nothing is being recorded.
+    public func markTranscripts(after cursor: String?, limit: Int) async throws -> [String]? {
+        try await db.writer.write { d in
+            guard try Self.isActive(d) else { return nil }
+            let ids = try String.fetchAll(
+                d, sql: "SELECT id FROM conversations WHERE id > ? ORDER BY id LIMIT ?",
+                arguments: [cursor ?? "", limit])
+            for id in ids { try Self.enqueue(d, kind: .transcript, id: id, op: .upsert) }
+            return ids
+        }
+    }
+
     /// "Delete all": the server is wiped by its own endpoint, so nothing recorded about the
     /// deleted library may be sent after it.
     public func clearAll() async throws {
