@@ -1,3 +1,4 @@
+import CompanionRuntime
 import Receiver
 import StatusUI
 import SwiftUI
@@ -19,6 +20,9 @@ struct SettingsScreen: View {
     /// off. The pause still happened; only the reminder did not, and the row says which.
     @State private var pauseReminderUnavailable = false
 
+    /// Where reminders are kept, for the Reminders row's value.
+    @State private var reminderHome: ReminderHome = .app
+
     var body: some View {
         SettingsScroll {
             titleRow
@@ -36,6 +40,11 @@ struct SettingsScreen: View {
         .navigationTitle(Copy.Settings.Root.title)
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
+        }
+        .task {
+            for await preferences in ReminderHomeSources.current.preferenceUpdates() {
+                if reminderHome != preferences.home { reminderHome = preferences.home }
+            }
         }
     }
 
@@ -245,6 +254,12 @@ struct SettingsScreen: View {
             MuseSettingsRow()
             AssistantsSettingsRow()
             SettingsNavRow(
+                title: Copy.Reminders.title,
+                value: reminderHome == .apple
+                    ? Copy.Reminders.appleReminders : Copy.Reminders.pebbleAudio,
+                route: .settings(.reminders)
+            )
+            SettingsNavRow(
                 title: Copy.Settings.Root.storage,
                 value: storagePreview,
                 route: .settings(.storage)
@@ -308,6 +323,7 @@ struct SettingsScreen: View {
         case .settings(.privacy): SettingsPrivacyScreen()
         case .settings(.aboutyou): SettingsAboutYouScreen()
         case .settings(.diagnostics): SettingsDiagnosticsScreen()
+        case .settings(.reminders): SettingsRemindersScreen()
         case .settings(.server): SettingsServerScreen()
         default: EmptyView()  // non-settings routes never land on the settings stack
         }
