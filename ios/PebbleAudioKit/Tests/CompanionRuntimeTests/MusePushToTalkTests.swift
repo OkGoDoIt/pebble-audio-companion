@@ -10,6 +10,92 @@ import WireProtocol
 /// Questions asked on the watch (protocol Sections 4.4 and 4.5), against a fake watch that
 /// records every request and a fake Muse that answers from a script.
 struct MusePushToTalkTests {
+    @Test func disconnectedAnswerReplaysAllFourOptionsAfterAuthorization() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityConversation | ProtocolConstants.capabilityAnswerRestart
+        await fx.start()
+        let options = ["11:48 AM", "11:08 AM", "11:18 AM", "11:58 AM"].map { MuseWidget.Option($0) }
+        let raw = "That time came through unclear. Did you mean one of these?\n[[hatch_widget:times]]"
+        let widget = MuseWidget(id: "times", options: options)
+        fx.muse.script = [.heard("Set a smart alarm for approximately 11.8 AM"),
+                          .content(MuseAnswerContent(raw: raw, widgets: [widget])),
+                          .answer(raw), .choice(MuseChoice(question: nil, options: options))]
+        // A prior fragment got through, then the reconnecting link rejects a write during auth.
+        fx.link.scriptReplies([.ok, .badState, .notSent, .badState, .ok])
+        try fx.ask(turn: 4, seconds: 1.5)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
+        let updates = fx.link.updates()
+        let begin = try #require(updates.lastIndex { $0.kind == .begin })
+        let replay = updates[begin...]
+        #expect(replay.filter { $0.kind == .option }.map { String(decoding: $0.text, as: UTF8.self) } == options.map(\.label))
+        #expect(String(decoding: replay.filter { $0.kind == .answer }.flatMap(\.text), as: UTF8.self).contains("Did you mean"))
+        fx.muse.script = [.answer("Alarm set.")]
+        fx.pick(turn: 4, index: 2)
+        #expect(await fx.waitUntil { fx.muse.replies.contains("11:18 AM") })
+    }
+
+    @Test func aNewQuestionSupersedesAnInterruptedReplay() async throws {
+        let fx = PushToTalkFixture()
+        fx.link.watchCapabilities = ProtocolConstants.capabilityConversation | ProtocolConstants.capabilityAnswerRestart
+        await fx.start()
+        fx.link.scriptReplies(Array(repeating: .badState, count: 30))
+        fx.muse.script = [.heard("Old question"), .answer("Old answer")]
+        try fx.ask(turn: 5, seconds: 1.5)
+        #expect(await fx.waitUntil { fx.service.lastQuestion.value?.answered == true })
+        fx.link.scriptReplies([])
+        fx.muse.script = [.heard("New question"), .answer("New answer")]
+        try fx.ask(turn: 6, seconds: 1.5)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done && fx.link.updates().last?.turn == 6 })
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(fx.link.updates().last?.turn == 6)
+        #expect(!fx.link.updates().contains { $0.turn == 5 && $0.kind == .begin })
+    }
+
+    @Test func alarmToolRejectsAmbiguousFieldsAndNeverDowngradesSmartWake() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        for params: MuseJSON in [["hour": .number(11.8), "minute": 0], ["hour": 11, "minute": 8, "smart": "yes"]] {
+            #expect(await fx.service.runCommand(MuseTools.alarmCommand, params)["ok"]?.bool == false)
+        }
+        #expect(await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "delete", "id": .number(1.5)])["ok"]?.bool == false)
+        #expect(fx.link.actions().isEmpty)
+        let smart = Task { await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 11, "minute": 18, "smart": true]) }
+        _ = try #require(await fx.answerNextAction(status: .unsupported))
+        #expect(await smart.value["ok"]?.bool == false)
+        #expect(fx.link.actions().count == 1)
+    }
+
+    @Test func smartAlarmCreationAndEditsReachTheWatch() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        let create = Task { await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 11, "minute": 18, "smart": true]) }
+        let action = try #require(await fx.answerNextAction(status: .done, value: 3))
+        #expect(WatchActionRequest.parse(action.payload) == .alarms(.create, hour: 11, minute: 18, smart: 1, enabled: 1))
+        #expect(await create.value["payload"]?["smart"]?.bool == true)
+        #expect(await create.value["payload"]?["id"]?.number == 3)
+        let update = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "update", "id": 3, "minute": 30]) }
+        let changed = try #require(await fx.answerNextAction(status: .done))
+        #expect(WatchActionRequest.parse(changed.payload) == .alarms(.update, id: 3, minute: 30))
+        #expect(await update.value["ok"]?.bool == true)
+        let delete = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "delete", "id": 3]) }
+        let deleted = try #require(await fx.answerNextAction(status: .done))
+        #expect(WatchActionRequest.parse(deleted.payload) == .alarms(.delete, id: 3))
+        #expect(await delete.value["ok"]?.bool == true)
+    }
+
+    @Test func alarmListDecodesSmartAndRecurringAlarms() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        let list = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "list"]) }
+        _ = try #require(await fx.answerNextAction(status: .done, text: "0073011300\n118450047F\n"))
+        let rows = await list.value["payload"]?["alarms"]?.array
+        #expect(rows?.count == 2)
+        #expect(rows?[0]["smart"]?.bool == true)
+        #expect(rows?[0]["repeat"]?.string == "once")
+        #expect(rows?[1]["enabled"]?.bool == false)
+        #expect(rows?[1]["days_sunday_bit0"]?.number == 127)
+    }
+
     @Test func aQuestionGoesToMuseAndItsAnswerToTheWatch() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
@@ -1157,7 +1243,7 @@ struct MuseToolsTests {
 
     @Test func everyCommandIsOfferedOnlyWhileItsSwitchAllows() {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
-        #expect(all.count == 12)
+        #expect(all.count == 13)
         let none = MuseTools.commands(
             for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]

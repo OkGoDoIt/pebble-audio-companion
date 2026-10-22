@@ -369,7 +369,7 @@ public actor MuseLinkSession {
                             }
                             guard byte == 0x0A else { continue }
                             if let event = Self.chatEvent(line) {
-                                if event["event"]?.string == "client.invoke" { await self.answerClientInvoke(event) }
+                                if event["event"]?.string == "client.invoke" { self.answerClientInvoke(event) }
                                 continuation.yield(event)
                             }
                             line.removeAll(keepingCapacity: true)

@@ -788,3 +788,18 @@ class WatchActionResult(
 
     override fun toString(): String = "WatchActionResult(id=$actionId, status=$statusRaw, value=$value, ${text.size} text bytes)"
 }
+
+/** Native alarm management (WATCH_ACTION kind 10). 255 preserves an update field. */
+data class WatchAlarms(
+    val operation: Int, val id: Int = 0, val hour: Int = 255, val minute: Int = 255,
+    val smart: Int = 255, val enabled: Int = 255,
+) {
+    fun payload(): ByteArray {
+        require(operation in 0..3 && id in 0..9)
+        require(hour in 0..23 || hour == 255)
+        require(minute in 0..59 || minute == 255)
+        require(smart in listOf(0, 1, 255) && enabled in listOf(0, 1, 255))
+        require(operation != 1 || (hour != 255 && minute != 255 && smart != 255 && enabled == 1))
+        return byteArrayOf(10, operation.toByte(), id.toByte(), hour.toByte(), minute.toByte(), smart.toByte(), enabled.toByte())
+    }
+}

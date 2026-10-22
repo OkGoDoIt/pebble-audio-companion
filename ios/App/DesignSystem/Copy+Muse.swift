@@ -122,7 +122,7 @@ extension Copy {
             case "conversations": return "Your conversations"
             case "followups": return "Follow-ups"
             case "watch.set_timer": return "Timer"
-            case "watch.set_alarm": return "Alarm"
+            case "watch.set_alarm", "watch.alarms": return "Alarms"
             case "watch.music": return "Music"
             case "watch.quiet_time": return "Quiet Time"
             case "watch.open_app": return "Open a watch app"

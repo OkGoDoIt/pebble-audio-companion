@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Native regular/smart alarm management: delete",
+  "expect": "parse",
+  "fields": {
+    "action_id": 8,
+    "flags": 0,
+    "payload_hex": "0a0303ffffffff",
+    "request_token": 82
+  },
+  "name": "watch_action_alarms_delete",
+  "size": 12
+}

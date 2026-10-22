@@ -6,6 +6,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class WireTest {
+    @Test
+    fun smartAlarmWireContract() {
+        assertContentEquals(byteArrayOf(10, 1, 0, 11, 18, 1, 1),
+            WatchAlarms(1, hour = 11, minute = 18, smart = 1, enabled = 1).payload())
+        assertContentEquals(byteArrayOf(10, 2, 3, -1, 30, -1, -1),
+            WatchAlarms(2, id = 3, minute = 30).payload())
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            WatchAlarms(1, hour = 24, minute = 18, smart = 1, enabled = 1).payload()
+        }
+    }
+
 
     @Test
     fun u64LittleEndianByteOrder() {

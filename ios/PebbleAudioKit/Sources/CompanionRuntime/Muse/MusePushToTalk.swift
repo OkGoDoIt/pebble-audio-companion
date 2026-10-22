@@ -127,6 +127,7 @@ public actor MusePushToTalk: MuseWatchSide {
         var frameCount: Int?
         var opening: Task<any MuseVoiceConversation, Error>?
         var finished = false
+        var needsReplay = false
         var sentAnswer = ""
         var answerText = ""
         var heard: String?
@@ -321,6 +322,7 @@ public actor MusePushToTalk: MuseWatchSide {
         lastAskedAt = Date()
         log("question \(event.turn): listening (\(event.detail == PttTrigger.quickLaunch.rawValue ? "Quick Launch" : "in the app"))")
         turn?.finished = true
+        outbox.removeAll()
         turnSerial += 1
         let current = Turn(serial: turnSerial, id: event.turn, trigger: PttTrigger(rawValue: event.detail))
         turn = current
@@ -561,6 +563,7 @@ public actor MusePushToTalk: MuseWatchSide {
         lastAskedAt = Date()
         log("question \(event.turn): option \(index + 1) of \(choice.options.count) picked; asking Muse")
         turn?.finished = true
+        outbox.removeAll()
         turnSerial += 1
         let current = Turn(serial: turnSerial, id: event.turn, trigger: .followUp)
         current.heard = option.label
@@ -875,6 +878,7 @@ public actor MusePushToTalk: MuseWatchSide {
             return
         }
         while let next = pendingMessages.first {
+            if sending || turn?.needsReplay == true { scheduleMessageRetry(); return }
             if let turn, !turn.finished {
                 scheduleMessageRetry()
                 return
@@ -925,6 +929,7 @@ public actor MusePushToTalk: MuseWatchSide {
 
     private func retryMessages() async {
         messageRetry = nil
+        await replayInterruptedAnswer()
         await deliverPending()
     }
 
@@ -983,6 +988,29 @@ public actor MusePushToTalk: MuseWatchSide {
         levelCheck.value?.phase = .done
     }
 
+    /// Replay a full snapshot: a failed ACK may mean a fragment arrived without its ACK.
+    /// Only the current exchange may replace the screen; newer questions supersede old ones.
+    private func replayInterruptedAnswer() async {
+        guard let current = turn, current.needsReplay else { return }
+        guard Date().timeIntervalSince(current.startedAt) < Self.messageShelfLife else { return }
+        guard current.finished else { scheduleMessageRetry(); return }
+        guard !current.answerText.isEmpty, watchKeepsConversation else { return }
+        let heard = Self.cut(current.heard ?? "", bytes: ProtocolConstants.assistantTextMaxBytes)
+        let id = current.id
+        let reply = await link.sendControlRequest { token in
+            AssistantUpdate(requestToken: token, turn: id, kind: .begin,
+                            detail: AssistantBegin.lateAnswer.rawValue, text: heard).encode()
+        }
+        guard turn === current else { return }
+        guard reply == .ok else { scheduleMessageRetry(); return }
+        current.needsReplay = false
+        current.sentAnswer = ""
+        current.choice = current.offered ?? current.choice
+        sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: true))
+        await finish(current)
+        log("question \(current.id): replaying the complete answer and its options")
+    }
+
     // MARK: - To the watch
 
     private func send(turn: Int, _ kind: AssistantUpdateKind, detail: UInt8 = 0, text: [UInt8] = []) {
@@ -990,6 +1018,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func enqueue(_ item: Outgoing) {
+        if case .update(let id, _, _, _) = item, turn?.id == id, turn?.needsReplay == true { return }
         outbox.append(item)
         guard !sending else { return }
         sending = true
@@ -1003,13 +1032,18 @@ public actor MusePushToTalk: MuseWatchSide {
             if case .update(_, .answer, _, _) = outbox[0] {
                 try? await Task.sleep(for: .milliseconds(150))
             }
+            guard !outbox.isEmpty else { break }
             let item = coalesce()
             guard case .update(let turnID, let kind, let detail, let text) = item else { continue }
-            let delivered = await deliver { token in
+            let delivered = await deliver(retryUnanswered: false) { token in
                 AssistantUpdate(requestToken: token, turn: turnID, kind: kind, detail: detail, text: text).encode()
             }
             if !delivered {
-                log("question \(turnID): the watch didn't take an update; dropping the rest")
+                log("question \(turnID): reply interrupted; retaining the whole answer and options for replay")
+                if turn?.id == turnID {
+                    turn?.needsReplay = true
+                    scheduleMessageRetry()
+                }
                 outbox.removeAll { if case .update(turnID, _, _, _) = $0 { return true } else { return false } }
             }
         }
@@ -1031,7 +1065,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     /// Sends one request, asking again while the watch is busy.
-    private func deliver(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> Bool {
+    private func deliver(retryUnanswered: Bool = true, _ build: @escaping @Sendable (Int) -> [UInt8]) async -> Bool {
         var unanswered = 0
         for _ in 0..<40 {
             switch await link.sendControlRequest(build) {
@@ -1040,6 +1074,7 @@ public actor MusePushToTalk: MuseWatchSide {
             case .busy:
                 try? await Task.sleep(for: .milliseconds(50))
             case .notSent, .noAnswer:
+                guard retryUnanswered else { return false }
                 unanswered += 1
                 if unanswered >= 3 { return false }
                 try? await Task.sleep(for: .milliseconds(200))
@@ -1131,6 +1166,7 @@ public actor MusePushToTalk: MuseWatchSide {
         switch request {
         case .timer: return "timer"
         case .alarm: return "alarm"
+        case .alarms: return "alarms"
         case .choose(_, let options, _): return "choice of \(options.count)"
         case .music(let command): return "music \(command)"
         case .quietTime(let on, _): return "Quiet Time \(on ? "on" : "off")"
