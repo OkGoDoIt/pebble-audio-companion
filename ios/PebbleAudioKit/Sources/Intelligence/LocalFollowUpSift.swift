@@ -102,6 +102,9 @@ public enum LocalFollowUpSift {
             return !trimmed.isEmpty && !trimmed.hasPrefix("---")
                 && !trimmed.hasPrefix("Recorded:") && !trimmed.hasPrefix("Conversation:")
                 && !trimmed.hasPrefix("Summary so far:")
+                // The list of spoken requests above the transcript: the same sentences are
+                // read where they were said, with the turns around them.
+                && !trimmed.hasPrefix("Asked out loud") && !trimmed.hasPrefix("- \"")
         }
         var out: [Candidate] = []
         var seen = Set<String>()
@@ -129,6 +132,9 @@ public enum LocalFollowUpSift {
         guard words(sentence).count >= minimumCandidateWords else { return false }
         // A question is somebody asking, not somebody undertaking.
         guard !sentence.contains("?") else { return false }
+        // "Please help me remember to…" opens like a request of somebody else, and is the
+        // person asking for exactly this.
+        if FollowUpRequestDetector.mentionsRequest(sentence) { return true }
         guard !matches(requestPattern, sentence) else { return false }
         return matches(cuePattern, sentence)
     }

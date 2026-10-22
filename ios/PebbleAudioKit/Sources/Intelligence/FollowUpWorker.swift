@@ -43,6 +43,10 @@ public struct FollowUpExtractionState: Equatable, Sendable {
     public var nextAttemptAtMs: Int64?
     /// Consecutive failures that were not the input's fault; drives their backoff.
     public var transientFailures: Int
+    /// Read by a prompt that knew where the person asked out loud for a follow-up
+    /// (`FollowUpRequestDetector`), or checked since for such a request. A conversation settled
+    /// before that, with nothing found and a request in it, is read once more.
+    public var requestsChecked: Bool
 
     public init(
         conversationId: String,
@@ -53,7 +57,8 @@ public struct FollowUpExtractionState: Equatable, Sendable {
         lastError: String? = nil,
         updatedAtMs: Int64 = 0,
         nextAttemptAtMs: Int64? = nil,
-        transientFailures: Int = 0
+        transientFailures: Int = 0,
+        requestsChecked: Bool = true
     ) {
         self.conversationId = conversationId
         self.sourceCharCount = sourceCharCount
@@ -64,6 +69,7 @@ public struct FollowUpExtractionState: Equatable, Sendable {
         self.updatedAtMs = updatedAtMs
         self.nextAttemptAtMs = nextAttemptAtMs
         self.transientFailures = transientFailures
+        self.requestsChecked = requestsChecked
     }
 }
 
@@ -94,6 +100,7 @@ public struct FollowUpExtractionStore: Sendable {
             let additions: [(name: String, definition: String)] = [
                 ("nextAttemptAtMs", "INTEGER"),
                 ("transientFailures", "INTEGER NOT NULL DEFAULT 0"),
+                ("requestsChecked", "BOOLEAN NOT NULL DEFAULT 0"),
             ]
             for column in additions where !existing.contains(column.name) {
                 try db.execute(
@@ -127,20 +134,22 @@ public struct FollowUpExtractionStore: Sendable {
                 sql: """
                     INSERT INTO follow_up_extractions
                         (conversationId, sourceCharCount, settled, itemCount, attempts,
-                         lastError, updatedAtMs, nextAttemptAtMs, transientFailures)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         lastError, updatedAtMs, nextAttemptAtMs, transientFailures,
+                         requestsChecked)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(conversationId) DO UPDATE SET
                         sourceCharCount = excluded.sourceCharCount,
                         settled = excluded.settled, itemCount = excluded.itemCount,
                         attempts = excluded.attempts, lastError = excluded.lastError,
                         updatedAtMs = excluded.updatedAtMs,
                         nextAttemptAtMs = excluded.nextAttemptAtMs,
-                        transientFailures = excluded.transientFailures
+                        transientFailures = excluded.transientFailures,
+                        requestsChecked = excluded.requestsChecked
                     """,
                 arguments: [
                     state.conversationId, state.sourceCharCount, state.settled, state.itemCount,
                     state.attempts, state.lastError, state.updatedAtMs, state.nextAttemptAtMs,
-                    state.transientFailures,
+                    state.transientFailures, state.requestsChecked,
                 ])
         }
     }
@@ -194,7 +203,8 @@ public struct FollowUpExtractionStore: Sendable {
             lastError: row["lastError"],
             updatedAtMs: row["updatedAtMs"],
             nextAttemptAtMs: row["nextAttemptAtMs"],
-            transientFailures: row["transientFailures"] ?? 0
+            transientFailures: row["transientFailures"] ?? 0,
+            requestsChecked: row["requestsChecked"] ?? false
         )
     }
 }
@@ -225,6 +235,11 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// Conversations actually sent to the provider per pass. Newest-first ordering means a
     /// conversation that just finished is never stuck behind a migrated backlog.
     public static let maxPerPass = 3
+
+    /// Conversations settled before the prompt knew about spoken requests whose transcripts
+    /// are opened per pass to look for one (`FollowUpExtractionState.requestsChecked`). Once
+    /// per conversation, ever, and only those inside `freshnessWindowMs` that found nothing.
+    static let maxRequestChecksPerPass = 25
 
     /// Below this much combined text there is nothing an extraction could honestly find, so the
     /// conversation settles at zero items without costing a call.
@@ -343,6 +358,7 @@ public final class FollowUpWorker: @unchecked Sendable {
 
         var proposed = 0
         var calls = 0
+        var requestChecks = 0
         for conversation in ordered {
             try Task.checkCancellation()
             if calls >= Self.maxPerPass { break }
@@ -358,6 +374,27 @@ public final class FollowUpWorker: @unchecked Sendable {
                 }
                 continue
             }
+            // Read before the prompt knew where the person asked out loud for a follow-up, and
+            // nothing found: if there is such a request in it, it is read once more.
+            var rereadForRequests = false
+            if let existing, existing.settled, !existing.requestsChecked {
+                let recent = conversation.members.last.map {
+                    now - $0.startWallMs <= Self.freshnessWindowMs
+                } ?? false
+                if existing.itemCount == 0, recent {
+                    if requestChecks >= Self.maxRequestChecksPerPass { continue }
+                    requestChecks += 1
+                    let parts = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
+                    rereadForRequests =
+                        parts.map { !FollowUpRequestDetector.requests(in: $0).isEmpty } ?? false
+                }
+                if !rereadForRequests {
+                    var checked = existing
+                    checked.requestsChecked = true
+                    try await state.save(checked)
+                    continue
+                }
+            }
             // Same inputs as last time, and a state that says nothing to do: answer without
             // opening a single transcript. This is the steady state of every finished
             // conversation in the library, on every pass.
@@ -367,7 +404,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                 let last = measured.value(conversation.conversationId), last.key == key,
                 last.combined == existing.sourceCharCount
             {
-                if existing.settled { continue }
+                if existing.settled && !rereadForRequests { continue }
                 if let next = existing.nextAttemptAtMs, now < next { continue }
                 if existing.attempts >= Self.maxAttempts,
                     now - existing.updatedAtMs < Self.retryAfterMs
@@ -383,7 +420,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                     conversation.conversationId, key: Measured(key: key, combined: combined))
             }
             // A different transcript length is a different question: start the budget over.
-            let fresh = existing.map { $0.sourceCharCount != combined } ?? true
+            let fresh = rereadForRequests || (existing.map { $0.sourceCharCount != combined } ?? true)
             if let existing, !fresh {
                 if existing.settled { continue }
                 // Waiting out a backoff: a failure or a provisional answer set it.
@@ -530,6 +567,7 @@ public final class FollowUpWorker: @unchecked Sendable {
         let pieceChars = min(
             Self.maxTranscriptChars - Self.pieceMarginChars,
             await router.firstStructuredCallInputChars() ?? Int.max)
+        let requests = FollowUpRequestDetector.requests(in: parts)
         let bodies = FollowUpTranscriptRenderer.renderChunks(
             parts: parts,
             title: context?.title,
@@ -537,7 +575,8 @@ public final class FollowUpWorker: @unchecked Sendable {
             recordedAt: Date(
                 timeIntervalSince1970: Double(parts[0].startedAtMs) / 1000),
             timeZone: zone,
-            maxChars: pieceChars)
+            maxChars: pieceChars,
+            requests: requests)
         var calls = 0
         do {
             var written = 0
@@ -564,8 +603,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                         "Follow-up extraction did not return the agreed JSON", underlying: nil)
                 }
                 written += try await persist(
-                    parsed, conversation: conversation, parts: parts, timeZone: zone, now: now,
-                    model: result.modelUsed)
+                    parsed, conversation: conversation, parts: parts, requests: requests,
+                    timeZone: zone, now: now, model: result.modelUsed)
                 if result.isProvisional { provisionalBy = result.providerId }
             }
             // A fallback that read only part of a piece found what was in that part — its
@@ -625,6 +664,7 @@ public final class FollowUpWorker: @unchecked Sendable {
         _ items: [ExtractedFollowUp],
         conversation: EnrichmentConversation,
         parts: [FollowUpSourcePart],
+        requests: [FollowUpRequest],
         timeZone: TimeZone,
         now: Int64,
         model: String?
@@ -659,7 +699,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                     // relative to. `createdAtMs` is when this pass got round to reading it.
                     recordedAtMs: parts.first?.startedAtMs,
                     model: model,
-                    sourceWall: wall))
+                    sourceWall: wall,
+                    askedFor: FollowUpRequestDetector.isAskedFor(location, requests: requests)))
             written += 1
         }
         return written

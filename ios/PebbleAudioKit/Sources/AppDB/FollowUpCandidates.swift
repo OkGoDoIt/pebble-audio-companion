@@ -75,6 +75,9 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
     /// `startMs..endMs` on the wall clock, computed through the segment's clock when the quote
     /// was located, and carried onto the follow-up curation keeps (`FollowUp.sourceWall`).
     public var sourceWall: SegmentWallRange?
+    /// Drawn from beside a sentence in which the person asked, out loud, for a reminder or a
+    /// follow-up. Curation keeps it unless it repeats something already on the list.
+    public var askedFor: Bool
 
     public init(
         id: String,
@@ -94,7 +97,8 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         decidedAtMs: Int64? = nil,
         reason: String? = nil,
         model: String? = nil,
-        sourceWall: SegmentWallRange? = nil
+        sourceWall: SegmentWallRange? = nil,
+        askedFor: Bool = false
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -114,6 +118,7 @@ public struct FollowUpCandidate: Equatable, Sendable, Identifiable {
         self.reason = reason
         self.model = model
         self.sourceWall = sourceWall
+        self.askedFor = askedFor
     }
 }
 
@@ -140,7 +145,8 @@ public struct FollowUpCandidateStore: Sendable {
             decidedAtMs: row["decidedAtMs"],
             reason: row["reason"],
             model: row["model"],
-            sourceWall: SegmentWallRange.sourceWall(from: row))
+            sourceWall: SegmentWallRange.sourceWall(from: row),
+            askedFor: row["askedFor"] ?? false)
     }
 
     /// Upsert by id. Ids are content-addressed by the extractor, so re-reading a conversation
@@ -154,8 +160,8 @@ public struct FollowUpCandidateStore: Sendable {
                         (id, conversationId, segmentId, task, quote, why, confidence,
                          dueAtMs, startMs, endMs, createdAtMs, recordedAtMs, state, attempts,
                          decidedAtMs, reason, model, sourceWallStartMs, sourceWallEndMs,
-                         sourceWallApproximate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         sourceWallApproximate, askedFor)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task = excluded.task, quote = excluded.quote, why = excluded.why,
                         confidence = excluded.confidence, dueAtMs = excluded.dueAtMs,
@@ -164,7 +170,8 @@ public struct FollowUpCandidateStore: Sendable {
                         model = COALESCE(excluded.model, follow_up_candidates.model),
                         sourceWallStartMs = excluded.sourceWallStartMs,
                         sourceWallEndMs = excluded.sourceWallEndMs,
-                        sourceWallApproximate = excluded.sourceWallApproximate
+                        sourceWallApproximate = excluded.sourceWallApproximate,
+                        askedFor = excluded.askedFor
                     """,
                 arguments: [
                     candidate.id, candidate.conversationId, candidate.segmentId, candidate.task,
@@ -173,7 +180,7 @@ public struct FollowUpCandidateStore: Sendable {
                     candidate.recordedAtMs, candidate.state.rawValue, candidate.attempts,
                     candidate.decidedAtMs, candidate.reason, candidate.model,
                     candidate.sourceWall?.startMs, candidate.sourceWall?.endMs,
-                    candidate.sourceWall?.isApproximate,
+                    candidate.sourceWall?.isApproximate, candidate.askedFor,
                 ])
         }
     }

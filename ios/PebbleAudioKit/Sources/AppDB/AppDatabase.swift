@@ -821,6 +821,16 @@ public struct AppDatabase: Sendable {
             guard try db.tableExists("recaps") else { return }
             try db.execute(sql: "DELETE FROM recaps WHERE dateKey < '2020-01-01'")
         }
+        // A candidate drawn from beside a sentence in which the person asked, out loud, for a
+        // reminder or a follow-up (`FollowUpRequestDetector`). Curation keeps those unless they
+        // repeat something already on the list.
+        migrator.registerMigration("follow-up-candidates-asked-for-v1") { db in
+            guard try db.tableExists("follow_up_candidates") else { return }
+            let columns = Set(try db.columns(in: "follow_up_candidates").map(\.name))
+            guard !columns.contains("askedFor") else { return }
+            try db.execute(
+                sql: "ALTER TABLE follow_up_candidates ADD COLUMN askedFor BOOLEAN NOT NULL DEFAULT 0")
+        }
         try migrator.migrate(writer)
     }
 }
