@@ -1,9 +1,8 @@
 import Foundation
 import MuseLink
-import WireProtocol
 
 /// Muse's reminders tool, the parts that decide without the phone: which list a name means, what
-/// a call asks for, what the watch asks before a change, and what goes back to Muse.
+/// a call asks for, and what goes back to Muse.
 ///
 /// A named list that isn't found is an error that says which lists there are. It never falls
 /// back to the default list: on 2026-10-22 "add Small spatula to my Grocery list" landed in the
@@ -230,80 +229,6 @@ enum MuseReminders {
         case 2: return "\(quoted[0]) and \(quoted[1])"
         default: return quoted.dropLast().joined(separator: ", ") + ", and " + quoted[quoted.count - 1]
         }
-    }
-
-    // MARK: - What the watch asks
-
-    /// What a change does, for the question on the watch.
-    enum Change: Equatable {
-        case add
-        case delete
-        case complete
-        case reopen
-        case move(to: String)
-        case rename(to: String)
-        /// Its due date or notes, or several things at once.
-        case change
-    }
-
-    /// What `request` does to `existing` (edit and delete), moving it to `target` when it names a
-    /// list.
-    static func change(_ request: Request, existing: Reminder?, target: ReminderList?) -> Change {
-        switch request.action {
-        case .add: return .add
-        case .delete: return .delete
-        default: break
-        }
-        let moving = target.map { $0.id != existing?.listID } ?? (request.list != nil)
-        let asked = [request.title != nil, request.due != nil, request.notes != nil, moving, request.completed != nil]
-        guard asked.filter({ $0 }).count == 1 else { return .change }
-        if let completed = request.completed { return completed ? .complete : .reopen }
-        if moving, let name = target?.name ?? request.list { return .move(to: name) }
-        if let title = request.title { return .rename(to: title) }
-        return .change
-    }
-
-    /// The question the watch asks before a change, under Ask first: the action and the item,
-    /// like `Let Muse delete "Small spatula" from Groceries?` (docs/privacy-model.md, section 4).
-    /// `title` and `list` are nil when they aren't known yet (iOS hasn't given access).
-    static func question(_ change: Change, title: String?, list: String?) -> String {
-        let list = list.map { cut($0, 30) }
-        func make(_ limit: Int) -> String {
-            let item = title.map { "\u{201C}\(cut($0, limit))\u{201D}" }
-            switch change {
-            case .add:
-                return "Let Muse add \(item ?? "a reminder") to \(list ?? "your reminders")?"
-            case .delete:
-                guard let item else { return "Let Muse delete one of your reminders?" }
-                return list.map { "Let Muse delete \(item) from \($0)?" } ?? "Let Muse delete \(item)?"
-            case .complete:
-                return "Let Muse mark \(item ?? "one of your reminders") as done?"
-            case .reopen:
-                return "Let Muse mark \(item ?? "one of your reminders") as not done?"
-            case .move(let to):
-                return "Let Muse move \(item ?? "one of your reminders") to \(cut(to, 30))?"
-            case .rename(let to):
-                guard let item else { return "Let Muse rename one of your reminders?" }
-                return "Let Muse rename \(item) to \u{201C}\(cut(to, limit))\u{201D}?"
-            case .change:
-                guard let item else { return "Let Muse change one of your reminders?" }
-                return list.map { "Let Muse change \(item) in \($0)?" } ?? "Let Muse change \(item)?"
-            }
-        }
-        // The watch shows up to 120 bytes: long titles are shortened to fit.
-        var limit = max(title?.count ?? 0, 1)
-        var text = make(limit)
-        while text.utf8.count > ProtocolConstants.watchActionQuestionMaxBytes, limit > 4 {
-            limit -= 1
-            text = make(limit)
-        }
-        return text
-    }
-
-    /// `text`, at most `limit` characters, ending in "…" when shortened.
-    static func cut(_ text: String, _ limit: Int) -> String {
-        guard text.count > limit else { return text }
-        return String(text.prefix(max(limit - 1, 1))).trimmingCharacters(in: .whitespaces) + "…"
     }
 
     // MARK: - What goes back
