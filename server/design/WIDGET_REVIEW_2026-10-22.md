@@ -43,7 +43,7 @@ session's original snapshot is `/tmp/pebble-widget-review-before/wwwroot`.
 
 ## Validation and limits
 
-- Server tests: 43 passed in the isolated worktree.
+- Server tests: 44 passed in the isolated worktree.
 - All three composed inline modules pass `node --check`; `git diff --check` passes.
 - Browser inspection: compact and expanded layouts at phone (375), tablet (768), and desktop
   (1100) widths; light and dark samples. Expanded content uses the same layouts checked before
@@ -61,3 +61,14 @@ session's original snapshot is `/tmp/pebble-widget-review-before/wwwroot`.
 - Final review additionally covered 320 px width. Empty days with no timeline data render safely;
   repeated tool output on theme/size updates no longer resets expansion or audio playback.
 - Deployment outcome is recorded in the workspace implementation progress log.
+
+## Live verification follow-up
+
+The first live day read exposed a pre-existing response-budget bug: tens of thousands of
+sub-second coverage transitions took several megabytes, while the result fitter removed every
+conversation trying to meet the limit. Detailed spans now have at most one quarter of the answer
+budget. Above that limit, exact recorded/quiet/lost totals remain, `spansOmitted` explicitly says
+that the detailed spans are absent, and the expanded widget points to the full day view. No spans
+are fabricated or silently relabeled. Partial conversation lists say “shown.” A regression test
+with 4,000 alternating recorded/missing spans checks that all four fixture conversations survive,
+the result fits, and all three coverage totals are preserved.

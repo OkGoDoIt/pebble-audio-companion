@@ -58,7 +58,7 @@ iframe{border:0;display:block;margin:0 auto;min-height:150px}#status{font-size:1
 <nav><label>Widget<select id="widget"><option value="conversation-card">Conversation</option><option value="day-timeline">Day timeline</option><option value="clip-player">Clip player</option></select></label>
 <label>Width<select id="width"><option>375</option><option selected>768</option><option>1100</option><option>320</option></select></label>
 <label>Theme<select id="theme"><option>light</option><option>dark</option></select></label>
-<label>Content<select id="scenario"><option value="normal">Typical</option><option value="long">Long summary</option><option value="days">Several days</option><option value="empty">Empty</option><option value="error">Tool unavailable</option><option value="ready">Ready clip (silent sample)</option></select></label>
+<label>Content<select id="scenario"><option value="normal">Typical</option><option value="long">Long summary</option><option value="days">Several days</option><option value="dense">Dense day coverage</option><option value="empty">Empty</option><option value="error">Tool unavailable</option><option value="ready">Ready clip (silent sample)</option></select></label>
 <label>Version<select id="version"><option value="current">Proposed</option><option value="before">Before</option></select></label></nav><div id="status" role="status">Ready</div></header><main><iframe title="Widget preview"></iframe></main>
 <script>
 const frame=document.querySelector('iframe');
@@ -90,8 +90,9 @@ class Handler(BaseHTTPRequestHandler):
                 meta={'pebbleaudio/audio':{'url':'http://localhost:'+str(args.port)+'/sample.wav'}}
             if scenario=='long': data['overview']=LONG
             if scenario=='days' and name=='day-timeline': data=DAYS
+            if scenario=='dense' and name=='day-timeline': data=dict(DAY, coverage=dict(DAY['coverage'], spans=[], spansOmitted=True), truncated=True)
             if scenario=='empty': data=dict(found=False, status='unavailable', reason='notFound', summary='No conversation was found.', day=C['day'])
-            if scenario=='empty' and name=='day-timeline': data=dict(DAY, conversations=[], coverage={'spans':[]})
+            if scenario=='empty' and name=='day-timeline': data=dict(DAY, recap=None, conversations=[], coverage={'spans':[]})
             boot='''<script>
 window.addEventListener('error',e=>parent.postMessage({previewError:e.message},'*'));
 window.addEventListener('unhandledrejection',e=>parent.postMessage({previewError:String(e.reason)},'*'));
