@@ -80,6 +80,28 @@ struct ArchiveOutboxTests {
         #expect(try await outbox.row(kind: .followUp, id: item.id)?.sentHash == "h1")
     }
 
+    @Test func aReviewsAnswerIsSentAndEveryFollowUpGoesOnceMoreWithItsStage() async throws {
+        let (db, outbox) = try await linked()
+        let followUps = FollowUpStore(db: db)
+        let item = try await followUps.add(text: "Send Priya the press kit")
+        func sendAndClear() async throws {
+            let row = try #require(try await outbox.row(kind: .followUp, id: item.id))
+            let key = ArchiveItemKey(kind: .followUp, entityId: item.id, version: row.version)
+            try await outbox.markInFlight([ArchiveSentItem(key: key, hash: "h", pieceKey: nil)])
+            #expect(try await outbox.acknowledge([key]) == 1)
+        }
+        try await sendAndClear()
+
+        // Skipping changes only `stage` (and when it was decided): the outbox still records it.
+        try await followUps.setStage(id: item.id, .skipped)
+        #expect(try await outbox.row(kind: .followUp, id: item.id)?.pending == true)
+        try await sendAndClear()
+
+        // The migration that put the stage on the wire sends every follow-up once more.
+        try await db.writer.write { try ArchiveOutbox.installFollowUpStage($0) }
+        #expect(try await outbox.row(kind: .followUp, id: item.id)?.pending == true)
+    }
+
     @Test func aRejectedItemParksAfterItsAttemptsAndANewChangeStartsItOver() async throws {
         let (db, outbox) = try await linked()
         let followUps = FollowUpStore(db: db)

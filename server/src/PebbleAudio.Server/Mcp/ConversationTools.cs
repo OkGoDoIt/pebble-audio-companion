@@ -228,8 +228,8 @@ public sealed class ConversationTools
 	// The clip player reads the turns of the span it plays.
 	[McpMeta("openai/widgetAccessible", true)]
 	[Description(
-		"One conversation: title, times, the app's overview, tags, people, quiet and lost gaps, follow-ups said in it, " +
-		"notes, and with include=transcript or both its speaker turns in time order, each with t (seconds from the " +
+		"One conversation: title, times, the app's overview, tags, people, quiet and lost gaps, the reminders and " +
+		"follow-ups from it (each with its stage: a follow-up to review is not a commitment), notes, and with include=transcript or both its speaker turns in time order, each with t (seconds from the " +
 		"start, for the link ?t=) and the transcriber's confidence, plus quiet, lost, and masked markers. Long " +
 		"transcripts are cut to max_chars and say how to read on with from_time.")]
 	public static async Task<CallToolResult> GetConversation(
@@ -348,7 +348,7 @@ public sealed class ConversationTools
 			card.TimeZone,
 			card.Minutes,
 			card.RecordedMinutes,
-			withSummary ? card.Overview : null,
+			card.Overview,
 			card.Tags,
 			card.People,
 			card.Kind,

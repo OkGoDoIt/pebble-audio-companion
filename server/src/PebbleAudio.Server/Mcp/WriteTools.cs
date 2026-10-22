@@ -8,7 +8,7 @@ using PebbleAudio.Server.Sync;
 namespace PebbleAudio.Server.Mcp;
 
 /// <summary>
-/// The write tools: <c>create_follow_up</c>, <c>update_follow_up</c>, and <c>create_note</c>. They need the
+/// The write tools: <c>create_follow_up</c> (which adds a reminder), <c>update_follow_up</c>, and <c>create_note</c>. They need the
 /// <c>archive:write</c> scope (<see cref="Auth.McpScopeFilters"/> hides and refuses them without it) and the person's
 /// permission on the phone (<c>edits</c>); a write is stored here at once and travels to the phone, which stays the
 /// system of record.
@@ -21,20 +21,23 @@ public sealed class WriteTools
 
 	private const string OnItsWay = "It reaches your phone on its next sync.";
 
+	private const string NotFoundSummary = "I could not find that reminder or follow-up in what you share.";
+
 	[McpServerTool(
 		Name = "create_follow_up",
-		Title = "Add a follow-up",
+		Title = "Add a reminder",
 		ReadOnly = false,
 		Destructive = false,
 		Idempotent = false,
 		OpenWorld = false,
 		UseStructuredContent = true,
 		OutputSchemaType = typeof(FollowUpWriteResult))]
-	[McpMeta("openai/toolInvocation/invoking", "Adding the follow-up…")]
-	[McpMeta("openai/toolInvocation/invoked", "Added the follow-up")]
+	[McpMeta("openai/toolInvocation/invoking", "Adding the reminder…")]
+	[McpMeta("openai/toolInvocation/invoked", "Added the reminder")]
 	[Description(
-		"Adds a follow-up to the person's archive and their phone. Only when the person asks for it; confirm what you " +
-		"added. Link it to where it was said with source_conversation_id and source_at when there is such a moment.")]
+		"Adds a reminder to the person's list, in their archive and on their phone. Only when the person asks for it; " +
+		"confirm what you added. Link it to where it was said with source_conversation_id and source_at when there " +
+		"is such a moment.")]
 	public static async Task<CallToolResult> CreateFollowUp(
 		RequestContext<CallToolRequestParams> context,
 		ArchiveReader archive,
@@ -51,7 +54,7 @@ public sealed class WriteTools
 		var call = await archive.BeginAsync(context.User, cancellationToken);
 		if (string.IsNullOrWhiteSpace(text))
 		{
-			return ToolResults.Error("A follow-up needs text.");
+			return ToolResults.Error("A reminder needs text.");
 		}
 
 		DateTimeOffset? due = null;
@@ -112,7 +115,7 @@ public sealed class WriteTools
 		{
 			case PhoneWriteOutcome.Queued:
 				var followUp = await Shape(archive, call, written.Item!, cancellationToken);
-				result = new FollowUpWriteResult($"Added a follow-up: {Speak.Clause(followUp.Text)}. {OnItsWay}", "added", followUp, written.RequestId);
+				result = new FollowUpWriteResult($"Added a reminder: {Speak.Clause(followUp.Text)}. {OnItsWay}", "added", followUp, written.RequestId);
 				break;
 			case PhoneWriteOutcome.NotAllowed:
 				result = new FollowUpWriteResult(NotAllowedSummary, "notAllowed", null, null);
@@ -127,7 +130,7 @@ public sealed class WriteTools
 
 	[McpServerTool(
 		Name = "update_follow_up",
-		Title = "Change a follow-up",
+		Title = "Change a reminder",
 		ReadOnly = false,
 		// It replaces the text, due date, and snooze and can archive: not an additive change, so hosts ask first.
 		Destructive = true,
@@ -135,27 +138,42 @@ public sealed class WriteTools
 		OpenWorld = false,
 		UseStructuredContent = true,
 		OutputSchemaType = typeof(FollowUpWriteResult))]
-	[McpMeta("openai/toolInvocation/invoking", "Updating the follow-up…")]
-	[McpMeta("openai/toolInvocation/invoked", "Updated the follow-up")]
+	[McpMeta("openai/toolInvocation/invoking", "Updating the reminder…")]
+	[McpMeta("openai/toolInvocation/invoked", "Updated the reminder")]
 	[Description(
-		"Marks a follow-up done or not done, edits its text, sets or clears its due date or snooze, or archives it. Only " +
-		"when the person asks for it; confirm what changed. A field left out stays as it is.")]
+		"Marks a reminder done or not done, edits its text, sets or clears its due date or snooze, or archives it. For " +
+		"a follow-up waiting for review, stage reminder adds it to the person's reminders and stage skipped skips it: " +
+		"only when the person says so, never on your own judgment. Only when the person asks for it; confirm what " +
+		"changed. A field left out stays as it is.")]
 	public static async Task<CallToolResult> UpdateFollowUp(
 		RequestContext<CallToolRequestParams> context,
 		ArchiveReader archive,
 		PhoneRequestService requests,
-		[Description("The follow-up's id, as list_follow_ups gives it.")] string id,
+		[Description("The reminder's or follow-up's id, as list_follow_ups gives it.")] string id,
 		[Description("True to mark it done, false to reopen it.")] bool? done = null,
 		[Description("New text.")] string? text = null,
 		[Description("A new due time (RFC 3339), or none to clear it.")] string? due_at = null,
 		[Description("Snooze until this time (RFC 3339), or none to wake it.")] string? snoozed_until = null,
 		[Description("True to archive it, false to bring it back.")] bool? archived = null,
+		[Description("reminder (the person said yes to it) or skipped (they said no).")] string? stage = null,
 		CancellationToken cancellationToken = default)
 	{
 		var call = await archive.BeginAsync(context.User, cancellationToken);
 		if (!TryOptionalTime(due_at, call, out var due) || !TryOptionalTime(snoozed_until, call, out var snooze))
 		{
 			return ToolResults.Error("due_at and snoozed_until are RFC 3339 times, or none to clear them.");
+		}
+
+		FollowUpStage? newStage = stage?.Trim().ToLowerInvariant() switch
+		{
+			null or "" => null,
+			"reminder" => FollowUpStage.Reminder,
+			"skipped" or "skip" => FollowUpStage.Skipped,
+			_ => FollowUpStage.Suggested,
+		};
+		if (newStage == FollowUpStage.Suggested)
+		{
+			return ToolResults.Error("stage is reminder or skipped.");
 		}
 
 		if (!(await requests.GetPreferencesAsync(call.UserId, cancellationToken)).Edits)
@@ -166,7 +184,7 @@ public sealed class WriteTools
 		var followUpId = id.Trim();
 		if (!await archive.FollowUps(call).AnyAsync(f => f.Id == followUpId, cancellationToken))
 		{
-			return await AnswerAsync(archive, call, "update_follow_up", new FollowUpWriteResult("I could not find that follow-up in what you share.", "notFound", null, null), [], cancellationToken);
+			return await AnswerAsync(archive, call, "update_follow_up", new FollowUpWriteResult(NotFoundSummary, "notFound", null, null), [], cancellationToken);
 		}
 
 		var change = new FollowUpChange
@@ -181,6 +199,7 @@ public sealed class WriteTools
 				false => new Settable<DateTimeOffset?>(null),
 				null => null,
 			},
+			Stage = newStage,
 		};
 		var written = await requests.UpdateFollowUpAsync(call.UserId, followUpId, change, cancellationToken);
 		FollowUpWriteResult result;
@@ -193,14 +212,16 @@ public sealed class WriteTools
 				var summary = written.Outcome == PhoneWriteOutcome.Unchanged ? $"Nothing changed: {what}."
 					: done == true ? $"Marked done: {what}. {OnItsWay}"
 					: archived == true ? $"Archived: {what}. {OnItsWay}"
-					: $"Updated the follow-up: {what}. {OnItsWay}";
+					: newStage == FollowUpStage.Reminder ? $"Added to your reminders: {what}. {OnItsWay}"
+					: newStage == FollowUpStage.Skipped ? $"Skipped: {what}. {OnItsWay}"
+					: $"Updated the reminder: {what}. {OnItsWay}";
 				result = new FollowUpWriteResult(summary, written.Outcome == PhoneWriteOutcome.Unchanged ? "unchanged" : "updated", followUp, written.RequestId);
 				break;
 			case PhoneWriteOutcome.NotAllowed:
 				result = new FollowUpWriteResult(NotAllowedSummary, "notAllowed", null, null);
 				break;
 			default:
-				result = new FollowUpWriteResult("I could not find that follow-up in what you share.", "notFound", null, null);
+				result = new FollowUpWriteResult(NotFoundSummary, "notFound", null, null);
 				break;
 		}
 

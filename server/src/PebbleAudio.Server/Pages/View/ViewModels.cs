@@ -132,7 +132,7 @@ public sealed record CardView(
 	IReadOnlyList<string> Tags,
 	IReadOnlyList<string> People,
 	bool Compact,
-	IReadOnlyList<(string Text, bool Done)> FollowUps);
+	IReadOnlyList<(string Text, bool Done)> Reminders);
 
 /// <summary>A calm line between two conversations: what the time between them was.</summary>
 /// <param name="Bar">The shape on the axis: <c>paused</c>, <c>missing</c>, <c>off</c>, <c>background</c>, or <c>quiet</c> (the bare axis).</param>
@@ -170,8 +170,8 @@ public sealed record DayView(
 	DayStripView? Strip,
 	IReadOnlyList<TotalView> Totals,
 	IReadOnlyList<TimelineItem> Items,
-	int FollowUpTotal,
-	int FollowUpOpen,
+	int ReminderTotal,
+	int ReminderOpen,
 	DateOnly? Previous,
 	DateOnly? Next,
 	string WeekUrl,

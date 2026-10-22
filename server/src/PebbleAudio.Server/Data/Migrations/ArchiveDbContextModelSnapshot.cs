@@ -887,6 +887,10 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.Property<DateTimeOffset?>("SourceEndAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Stage")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Text")
                         .IsRequired()
                         .HasColumnType("text");

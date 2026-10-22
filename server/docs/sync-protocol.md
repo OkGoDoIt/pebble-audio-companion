@@ -198,11 +198,20 @@ as `at`/`endAt`.
 ### 2.5 `followUp`
 
 ```json
-{ "text": "…", "quote": "…", "why": "…", "dueAt": null, "priority": 1, "done": false, "completedAt": null, "archivedAt": null, "snoozedUntil": null, "origin": "ai", "sourceConversationId": "conv-…", "sourceAt": "…", "sourceEndAt": "…", "sourceApproximate": false, "createdAt": "…", "editedAt": null }
+{ "text": "…", "quote": "…", "why": "…", "dueAt": null, "priority": 1, "done": false, "completedAt": null, "archivedAt": null, "snoozedUntil": null, "origin": "ai", "stage": "suggested", "sourceConversationId": "conv-…", "sourceAt": "…", "sourceEndAt": "…", "sourceApproximate": false, "createdAt": "…", "editedAt": null }
 ```
 
 `origin` is `ai`, `user` or `assistant` (created through an MCP write tool, see §4).
 `priority` is `0` (low), `1` (normal) or `2` (high).
+
+`stage` (`docs/reminders.md`) is `suggested` (something the app noticed that the person might act
+on, waiting for their review: not a commitment), `reminder` (they said yes to it or asked for it),
+or `skipped` (they said no; kept and findable, on no list). A phone from before stages sends no
+`stage`, and the server reads that as `reminder`, as it does every row it stored before stages.
+Any other value rejects the item (`payload: stage 'x' is not known`). The phone's outbox records a
+stage change like any other edit, so the server always has the current stage. Once both halves
+know stages, the phone sends every follow-up again (one migration) so the server learns each
+one's stage; until then a suggested or skipped follow-up reads as a reminder.
 
 ### 2.6 `note`
 
@@ -280,8 +289,8 @@ Payload keys come back in Postgres `jsonb` order, not the order they were writte
 | kind | payload | the phone does |
 | --- | --- | --- |
 | `clip` | `{ "conversationId": "conv-…", "startAt": "…", "endAt": "…", "maxMs": 1200000 }` | resolves wall → media across the conversation's pieces, remuxes the span to Ogg Speex (no decoding), and uploads it |
-| `followUp.create` | a §2.5 payload with `origin: "assistant"` and a server-assigned `id` | inserts it into the local store (which then syncs it back as an `upsert`, closing the loop) |
-| `followUp.update` | `{ "id": "…", "done": true, "completedAt": "…" }` or edits to `text`, `dueAt`, `snoozedUntil`, `archivedAt`; a key left out is left alone, `null` clears it | applies the change |
+| `followUp.create` | a §2.5 payload with `origin: "assistant"`, `stage: "reminder"`, and a server-assigned `id` | inserts it into the local store as a reminder (which then syncs it back as an `upsert`, closing the loop) |
+| `followUp.update` | `{ "id": "…", "done": true, "completedAt": "…" }` or edits to `text`, `dueAt`, `snoozedUntil`, `archivedAt`, `stage` (`reminder` or `skipped`, only when the person said so); a key left out is left alone, `null` clears it | applies the change; a new `stage` is the person's answer, as on the phone: it is stamped as decided and brings the item back out of the archive |
 | `note.create` | a §2.6 payload with `origin: "assistant"` and a server-assigned `id` | inserts it |
 
 Results:

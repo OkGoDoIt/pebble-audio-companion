@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using PebbleAudio.Server.Auth;
@@ -184,6 +186,23 @@ public sealed class EventsTests(ArchiveServerFactory factory)
 		}
 
 		Assert.False(await runner.RunNextAsync(CancellationToken.None));
+
+		// A follow-up the phone's AI noticed waits for review and wakes no one; once the person says yes, it is news.
+		using (var phone = await Phone.LinkAsync(factory, userId))
+		{
+			var version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+			var noticed = Wire.FollowUp("Call the roofer back about the quote", null);
+			noticed["createdAt"] = Wire.T(DateTimeOffset.UtcNow);
+			noticed["stage"] = "suggested";
+			await phone.BatchAsync(Wire.Item("followUp", "fu-roofer", version, payload: (JsonObject)noticed.DeepClone()));
+			Assert.False(await runner.RunNextAsync(CancellationToken.None));
+			noticed["stage"] = "reminder";
+			await phone.BatchAsync(Wire.Item("followUp", "fu-roofer", version + 1, payload: noticed));
+			Assert.True(await runner.RunNextAsync(CancellationToken.None));
+			Assert.Equal(5, deliveries.Count);
+			Assert.Contains("fu-roofer", Encoding.UTF8.GetString(deliveries[4].Body));
+		}
+
 		var unsubscribed = await McpRpc.ResultAsync(await api.SendAsync(McpRpc.Request(
 			token,
 			"events/unsubscribe",

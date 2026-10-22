@@ -236,6 +236,7 @@ public sealed class ArchiveReader(
 		return new FollowUpOut(
 			f.Id,
 			f.Text,
+			f.Stage.ToWire(),
 			url,
 			Blank(f.Quote),
 			Blank(f.Why),
@@ -289,11 +290,31 @@ public sealed class ArchiveReader(
 			n.Origin == ContentOrigin.Assistant && n.Version == 0);
 	}
 
+	/// <summary>
+	/// Where a follow-up stands, in one word: <c>open</c>, <c>done</c>, and <c>snoozed</c> are reminders;
+	/// <c>to_review</c> is a follow-up the app noticed that waits for the person's answer; <c>skipped</c> is one they
+	/// said no to; <c>archived</c> was filed away. Only an open reminder is on the person's list.
+	/// </summary>
 	public static string FollowUpStatus(FollowUp f, DateTimeOffset now) =>
-		f.ArchivedAt is not null ? "archived"
-		: f.Done ? "done"
-		: f.SnoozedUntil > now ? "snoozed"
-		: "open";
+		f.Stage == FollowUpStage.Skipped ? FollowUpStatuses.Skipped
+		: f.ArchivedAt is not null ? FollowUpStatuses.Archived
+		: f.Done ? FollowUpStatuses.Done
+		: f.Stage == FollowUpStage.Suggested ? FollowUpStatuses.ToReview
+		: f.SnoozedUntil > now ? FollowUpStatuses.Snoozed
+		: FollowUpStatuses.Open;
+
+	/// <summary>The follow-ups with <paramref name="status"/> (one of <see cref="FollowUpStatuses"/>), as
+	/// <see cref="FollowUpStatus"/> reads each one; <c>all</c> is every one.</summary>
+	public static IQueryable<FollowUp> WithStatus(IQueryable<FollowUp> query, string status, DateTimeOffset now) => status switch
+	{
+		FollowUpStatuses.Open => query.Where(f => f.Stage == FollowUpStage.Reminder && !f.Done && f.ArchivedAt == null && (f.SnoozedUntil == null || f.SnoozedUntil <= now)),
+		FollowUpStatuses.ToReview => query.Where(f => f.Stage == FollowUpStage.Suggested && !f.Done && f.ArchivedAt == null),
+		FollowUpStatuses.Done => query.Where(f => f.Stage != FollowUpStage.Skipped && f.Done && f.ArchivedAt == null),
+		FollowUpStatuses.Snoozed => query.Where(f => f.Stage == FollowUpStage.Reminder && !f.Done && f.ArchivedAt == null && f.SnoozedUntil > now),
+		FollowUpStatuses.Archived => query.Where(f => f.Stage != FollowUpStage.Skipped && f.ArchivedAt != null),
+		FollowUpStatuses.Skipped => query.Where(f => f.Stage == FollowUpStage.Skipped),
+		_ => query,
+	};
 
 	/// <summary>A conversation's lost or quiet minutes, read the app's way (<see cref="GapRows"/>): what is genuinely
 	/// missing, not the stretches its interruptions cover; and its quiet rows.</summary>

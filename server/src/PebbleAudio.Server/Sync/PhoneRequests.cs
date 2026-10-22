@@ -250,6 +250,7 @@ public sealed class PhoneRequestService(
 			followUp.ArchivedAt,
 			followUp.SnoozedUntil,
 			ContentOrigin.Assistant.ToWire(),
+			followUp.Stage.ToWire(),
 			followUp.SourceConversationId,
 			followUp.SourceAt,
 			followUp.SourceEndAt,
@@ -263,7 +264,10 @@ public sealed class PhoneRequestService(
 		return new(PhoneWriteOutcome.Queued, followUp, request.Id);
 	}
 
-	/// <summary>Changes a follow-up (mark done, edit, snooze, archive) and asks the phone to make the same change.</summary>
+	/// <summary>
+	/// Changes a follow-up (mark done, edit, snooze, archive, make it a reminder or skip it) and asks the phone to make
+	/// the same change.
+	/// </summary>
 	public async Task<PhoneWriteResult<FollowUp>> UpdateFollowUpAsync(
 		Guid userId,
 		string followUpId,
@@ -308,6 +312,14 @@ public sealed class PhoneRequestService(
 		{
 			followUp.SnoozedUntil = snoozedUntil.Value?.ToUniversalTime();
 			payload["snoozedUntil"] = Instant(followUp.SnoozedUntil);
+		}
+
+		// As the person's own answer on the phone does, a new stage brings it back out of the archive.
+		if (change.Stage is { } stage && stage != followUp.Stage)
+		{
+			followUp.Stage = stage;
+			followUp.ArchivedAt = null;
+			payload["stage"] = stage.ToWire();
 		}
 
 		if (change.ArchivedAt is { } archivedAt)
@@ -626,6 +638,7 @@ public sealed class PhoneRequestService(
 		DateTimeOffset? ArchivedAt,
 		DateTimeOffset? SnoozedUntil,
 		string Origin,
+		string Stage,
 		string? SourceConversationId,
 		DateTimeOffset? SourceAt,
 		DateTimeOffset? SourceEndAt,
@@ -756,6 +769,9 @@ public sealed record FollowUpChange
 	public Settable<DateTimeOffset?>? SnoozedUntil { get; init; }
 
 	public Settable<DateTimeOffset?>? ArchivedAt { get; init; }
+
+	/// <summary>A reminder (the person said yes) or skipped (they said no). Never back to suggested.</summary>
+	public FollowUpStage? Stage { get; init; }
 }
 
 /// <summary>A value to set, including null, as distinct from leaving a field alone.</summary>

@@ -88,9 +88,9 @@
 							<div class="brief-text"><p>@v.Line</p></div>
 						}
 					}
-					@if (v.FollowUpTotal > 0)
+					@if (v.ReminderTotal > 0)
 					{
-						<p class="brief-foot">@ViewText.Count(v.FollowUpTotal, "follow-up", "follow-ups")@(v.FollowUpOpen == 0 ? (v.FollowUpTotal == 1 ? " · done" : " · all done") : v.FollowUpTotal == 1 ? " · open" : $" · {v.FollowUpOpen} open")</p>
+						<p class="brief-foot">@ViewText.Count(v.ReminderTotal, "reminder", "reminders")@(v.ReminderOpen == 0 ? (v.ReminderTotal == 1 ? " · done" : " · all done") : v.ReminderTotal == 1 ? " · open" : $" · {v.ReminderOpen} open")</p>
 					}
 				</section>
 
@@ -157,10 +157,10 @@
 										}
 									</ul>
 								}
-								@if (card.FollowUps.Count > 0)
+								@if (card.Reminders.Count > 0)
 								{
 									<ul class="fu">
-										@foreach (var f in card.FollowUps)
+										@foreach (var f in card.Reminders)
 										{
 											<li class="@(f.Done ? "done" : null)">@(f.Done ? Icons.Done : Icons.Circle)<span class="fu-text">@f.Text</span></li>
 										}

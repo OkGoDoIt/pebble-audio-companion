@@ -35,9 +35,11 @@ public sealed class SearchTools
 	[McpMeta("openai/toolInvocation/invoked", "Searched your conversations")]
 	[Description(
 		"Full-text search over the person's recorded conversations (titles, overviews, tags, transcripts), day recaps, " +
-		"week and month briefs, follow-ups, and notes. Best matches first, each with an id for fetch, a title, a " +
-		"snippet with the matched words in **bold**, and a link to the moment. Try several phrasings (names, places, " +
-		"products) when the first search is thin. Quotes match a phrase, -word leaves a word out.")]
+		"week and month briefs, reminders and follow-ups, and notes. Best matches first, each with an id for fetch, a " +
+		"title, a snippet with the matched words in **bold**, and a link to the moment. A followUp result has a stage: " +
+		"reminder (on the person's list), suggested (noticed by the app, not yet said yes to), or skipped. Try several " +
+		"phrasings (names, places, products) when the first search is thin. Quotes match a phrase, -word leaves a word " +
+		"out.")]
 	public static async Task<CallToolResult> Search(
 		RequestContext<CallToolRequestParams> context,
 		ArchiveReader archive,
@@ -80,7 +82,11 @@ public sealed class SearchTools
 		}
 
 		var page = await search.SearchAsync(call, text, first, last, wanted, call.Settings.ToolMaxResults, cancellationToken);
-		var hits = page.Rows.Select(row => Hit(archive, call, row)).ToList();
+		var followUpIds = page.Rows.Where(r => r.Kind == "followUp").Select(r => r.Id).ToList();
+		var stages = followUpIds.Count == 0
+			? []
+			: await archive.FollowUps(call).Where(f => followUpIds.Contains(f.Id)).ToDictionaryAsync(f => f.Id, f => f.Stage, cancellationToken);
+		var hits = page.Rows.Select(row => Hit(archive, call, row, stages)).ToList();
 
 		SearchResult Build(int n)
 		{
@@ -208,14 +214,20 @@ public sealed class SearchTools
 			var lines = new List<string> { shaped.Text };
 			lines.AddRange(new[] { shaped.Quote is { } quote ? $"Said: “{quote}”" : null, shaped.Why is { } why ? $"Why: {why}" : null }.OfType<string>());
 			lines.Add($"Status: {shaped.Status}{(shaped.DueAt is { } due ? $", due {due:yyyy-MM-dd HH:mm}" : "")}");
-			var metadata = new Dictionary<string, object> { ["kind"] = "followUp", ["status"] = shaped.Status, ["priority"] = shaped.Priority, ["origin"] = shaped.Origin };
+			var metadata = new Dictionary<string, object> { ["kind"] = "followUp", ["stage"] = shaped.Stage, ["status"] = shaped.Status, ["priority"] = shaped.Priority, ["origin"] = shaped.Origin };
 			if (shaped.Source is { } source)
 			{
 				lines.Add($"From: {source.Title ?? "a conversation"}");
 				metadata["conversationId"] = source.ConversationId;
 			}
 
-			return new FetchResult($"A follow-up: {Speak.Clause(shaped.Text)}.", key, Speak.Cap(shaped.Text, 200)!, string.Join("\n", lines), shaped.Url, metadata);
+			var what = followUp.Stage switch
+			{
+				FollowUpStage.Reminder => "A reminder",
+				FollowUpStage.Suggested => "A follow-up the app noticed, waiting for the person's review (not a reminder yet)",
+				FollowUpStage.Skipped => "A follow-up the person skipped",
+			};
+			return new FetchResult($"{what}: {Speak.Clause(shaped.Text)}.", key, Speak.Cap(shaped.Text, 200)!, string.Join("\n", lines), shaped.Url, metadata);
 		}
 
 		if (key.StartsWith(NotePrefix, StringComparison.Ordinal))
@@ -286,7 +298,7 @@ public sealed class SearchTools
 			data);
 	}
 
-	private static SearchHit Hit(ArchiveReader archive, ToolCall call, SearchRow row)
+	private static SearchHit Hit(ArchiveReader archive, ToolCall call, SearchRow row, IReadOnlyDictionary<string, FollowUpStage> stages)
 	{
 		var zone = row.TimeZone is not null ? LogicalDays.Zone(row.TimeZone) : call.Zone;
 		var snippet = ArchiveReader.Blank(row.Snippet);
@@ -315,7 +327,10 @@ public sealed class SearchTools
 				var followUpUrl = row.ConversationId is { } source && row.ConversationStartedAt is { } sourceStart && row.At is { } said
 					? archive.Links.Moment(source, Days.Offset(said, sourceStart))
 					: archive.Links.Day(LogicalDays.Of(row.At ?? call.Now, zone));
-				return new SearchHit(FollowUpPrefix + row.Id, Speak.Cap(row.Title, 200)!, followUpUrl, "followUp", row.At is { } a ? LogicalDays.Of(a, zone) : null, Days.Local(row.At, zone), snippet);
+				return new SearchHit(FollowUpPrefix + row.Id, Speak.Cap(row.Title, 200)!, followUpUrl, "followUp", row.At is { } a ? LogicalDays.Of(a, zone) : null, Days.Local(row.At, zone), snippet)
+				{
+					Stage = stages.TryGetValue(row.Id, out var stage) ? stage.ToWire() : null,
+				};
 			default:
 				var noteUrl = row.ConversationId is { } noteConversation ? archive.Links.Conversation(noteConversation) : archive.Links.Day(LogicalDays.Of(row.At ?? call.Now, zone));
 				return new SearchHit(NotePrefix + row.Id, row.Title, noteUrl, "note", row.Day ?? (row.At is { } written ? LogicalDays.Of(written, zone) : null), null, snippet);

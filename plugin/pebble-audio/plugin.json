@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pebble-audio",
   "version": "0.1.0",
-  "description": "Your private archive of all-day voice-recorded conversations: day recaps, week and month briefs, searchable transcripts, follow-ups, and clips on request.",
+  "description": "Your private archive of all-day voice-recorded conversations: day recaps, week and month briefs, searchable transcripts, reminders, and clips on request.",
   "author": { "name": "Roger Pincombe", "url": "https://github.com/OkGoDoIt/pebble-audio-companion" },
   "homepage": "https://github.com/OkGoDoIt/pebble-audio-companion",
   "repository": "https://github.com/OkGoDoIt/pebble-audio-companion",
@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Pebble Audio",
         "shortDescription": "Ask about your conversations",
-        "longDescription": "Pebble Audio keeps your own all-day voice recordings as conversations with titles, summaries, and transcripts, plus day recaps, week and month briefs, and follow-ups. Ask what happened on a day, what you discussed with someone, what you promised, or where a topic came up. Every answer links to the exact moment. Quiet stretches are shown as quiet, not as missing audio.",
+        "longDescription": "Pebble Audio keeps your own all-day voice recordings as conversations with titles, summaries, and transcripts, plus day recaps, week and month briefs, and reminders. Ask what happened on a day, what you discussed with someone, what you promised, or where a topic came up. Every answer links to the exact moment. Quiet stretches are shown as quiet, not as missing audio.",
         "developerName": "Roger Pincombe",
         "category": "productivity",
         "capabilities": ["search", "read"],
@@ -24,7 +24,7 @@
         "defaultPrompt": [
           "What did I agree to yesterday?",
           "Brief me on this week.",
-          "Which follow-ups are still open?"
+          "Which reminders are still open?"
         ]
       }
     }

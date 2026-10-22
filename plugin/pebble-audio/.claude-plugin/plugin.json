@@ -1,7 +1,7 @@
 {
   "name": "pebble-audio",
   "version": "0.1.0",
-  "description": "Your private archive of all-day voice-recorded conversations: day recaps, week and month briefs, searchable transcripts, follow-ups, and clips on request.",
+  "description": "Your private archive of all-day voice-recorded conversations: day recaps, week and month briefs, searchable transcripts, reminders, and clips on request.",
   "author": { "name": "Roger Pincombe", "url": "https://github.com/OkGoDoIt/pebble-audio-companion" },
   "homepage": "https://github.com/OkGoDoIt/pebble-audio-companion",
   "repository": "https://github.com/OkGoDoIt/pebble-audio-companion",
