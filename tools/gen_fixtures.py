@@ -734,6 +734,16 @@ def build_fixtures():
         {"request_token": 0x49, "action_id": 4, "flags": 0, "payload_hex": alarm.hex()},
         "A one-off alarm at 6:30 labelled Flight",
     )
+    for name, payload in [
+        ("list", bytes([10, 0, 0, 255, 255, 255, 255])),
+        ("smart_create", bytes([10, 1, 0, 11, 18, 1, 1])),
+        ("update", bytes([10, 2, 3, 255, 30, 255, 255])),
+        ("delete", bytes([10, 3, 3, 255, 255, 255, 255])),
+    ]:
+        add("watch_action_alarms_" + name, watch_action(0x52, 8, 0, payload),
+            "control_in", "parse",
+            {"request_token": 0x52, "action_id": 8, "flags": 0, "payload_hex": payload.hex()},
+            "Native regular/smart alarm management: " + name)
     first, rest = CHOOSE_PAYLOAD[:180], CHOOSE_PAYLOAD[180:]
     add(
         "watch_action_choose_first",

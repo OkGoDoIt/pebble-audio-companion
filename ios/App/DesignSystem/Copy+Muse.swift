@@ -122,7 +122,7 @@ extension Copy {
             case "conversations": return "Your conversations"
             case "followups": return "Follow-ups"
             case "watch.set_timer": return "Timer"
-            case "watch.set_alarm": return "Alarm"
+            case "watch.set_alarm", "watch.alarms": return "Alarms"
             case "watch.music": return "Music"
             case "watch.quiet_time": return "Quiet Time"
             case "watch.open_app": return "Open a watch app"
@@ -145,7 +145,7 @@ extension Copy {
         // What Muse can do on the watch (D7b): a switch each, on once paired.
         static let actionsHeader = "What Muse can do on your watch"
         static let actionTimer = "Set timers"
-        static let actionAlarm = "Set alarms"
+        static let actionAlarm = "Manage alarms"
         static let actionMusic = "Control music"
         static let actionQuietTime = "Turn on Quiet Time"
         static let actionLaunchApp = "Open watch apps"
@@ -175,9 +175,6 @@ extension Copy {
         static let allowAccess = "Allow Access"
         static let openSettings = "Open Settings"
 
-        // A moment Muse marked, as it appears in Follow-ups.
-        static let markedMoment = "Marked moment"
-        static func marked(_ label: String) -> String { "Marked: \(label)" }
         static let actionsFooter = "Only while it's answering a question you asked. Only the outcome goes back."
 
         // Questions from the watch.

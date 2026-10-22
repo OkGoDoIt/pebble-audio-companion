@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Native regular/smart alarm management: smart_create",
+  "expect": "parse",
+  "fields": {
+    "action_id": 8,
+    "flags": 0,
+    "payload_hex": "0a01000b120101",
+    "request_token": 82
+  },
+  "name": "watch_action_alarms_smart_create",
+  "size": 12
+}

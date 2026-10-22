@@ -3,6 +3,16 @@ import Testing
 
 /// Port of `core/protocol/src/commonTest/.../WireTest.kt`.
 @Suite struct WireTest {
+    @Test func smartAlarmWireContractRejectsMalformedRequests() throws {
+        let create = WatchActionRequest.alarms(.create, hour: 11, minute: 18, smart: 1, enabled: 1)
+        #expect(try create.payload() == [10, 1, 0, 11, 18, 1, 1])
+        #expect(WatchActionRequest.parse(try create.payload()) == create)
+        #expect(WatchActionRequest.parse([10, 1, 0, 24, 18, 1, 1]) == nil)
+        #expect(WatchActionRequest.parse([10, 1, 0, 11, 18, 1]) == nil)
+        #expect(WatchActionRequest.parse([10, 2, 3, 255, 255, 2, 255]) == nil)
+        #expect(WatchActionRequest.parse([10, 2, 3, 255, 30, 255, 255]) == .alarms(.update, id: 3, minute: 30))
+    }
+
 
     @Test func u64LittleEndianByteOrder() {
         var w = WireWriter()

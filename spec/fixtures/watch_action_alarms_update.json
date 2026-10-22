@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Native regular/smart alarm management: update",
+  "expect": "parse",
+  "fields": {
+    "action_id": 8,
+    "flags": 0,
+    "payload_hex": "0a0203ff1effff",
+    "request_token": 82
+  },
+  "name": "watch_action_alarms_update",
+  "size": 12
+}

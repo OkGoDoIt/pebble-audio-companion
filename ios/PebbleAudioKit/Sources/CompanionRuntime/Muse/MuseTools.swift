@@ -173,6 +173,7 @@ actor MuseTools {
 
     static let timerCommand = "watch.set_timer"
     static let alarmCommand = "watch.set_alarm"
+    static let alarmsCommand = "watch.alarms"
     static let musicCommand = "watch.music"
     static let quietTimeCommand = "watch.quiet_time"
     static let openAppCommand = "watch.open_app"
@@ -215,12 +216,26 @@ actor MuseTools {
         }
         if actions.contains(.alarm) {
             c[alarmCommand] = [
-                "description": "Set a one-time alarm on the user's Pebble watch, at a time of day in the watch's local time. It rings once, at the next time that clock time comes round.",
+                "description": "Create a regular or smart one-time alarm on the Pebble watch, in watch local time. A smart alarm may wake the user up to 30 minutes BEFORE this time, and rings at this time at the latest. The window is fixed. Alarms have no stored labels. Use watch.alarms to list, change or delete existing alarms; do not create a replacement when asked to change one.",
                 "required": [
                     "hour": param("integer", "Hour, 0 to 23."),
                     "minute": param("integer", "Minute, 0 to 59."),
                 ],
-                "optional": ["label": param("string", "What it is for, like \"Flight\".")],
+                "optional": ["smart": param("boolean", "true for smart wake, false for an exact alarm; false if omitted.")],
+                "timeout_ms": 15_000,
+            ]
+        }
+        if actions.contains(.alarm) {
+            c[alarmsCommand] = [
+                "description": "List, update or delete the watch's regular and smart alarms. Always list first to get an existing alarm's id; ask which one if ambiguous. Update preserves omitted fields, recurrence, sound and vibration. Smart wake uses a fixed 30-minute window before the alarm time. Alarms have no labels.",
+                "required": ["action": param("string", "list, update or delete.")],
+                "optional": [
+                    "id": param("integer", "With update/delete: the id returned by list, 0-9."),
+                    "hour": param("integer", "With update: new local hour, 0-23."),
+                    "minute": param("integer", "With update: new minute, 0-59."),
+                    "smart": param("boolean", "With update: true for smart wake; false for exact time."),
+                    "enabled": param("boolean", "With update: enable or disable the alarm."),
+                ],
                 "timeout_ms": 15_000,
             ]
         }
@@ -351,7 +366,13 @@ actor MuseTools {
             return earlier.result
         }
         let result = await perform(command, params, watch: watch)
-        if let key, result["ok"]?.bool == true { recentChanges.append((key, now, result)) }
+        if let key, result["ok"]?.bool == true {
+            // An intervening alarm edit/delete invalidates the old result for that state.
+            if command == Self.alarmCommand || command == Self.alarmsCommand {
+                recentChanges.removeAll { $0.key.hasPrefix(Self.alarmCommand + " ") || $0.key.hasPrefix(Self.alarmsCommand + " ") }
+            }
+            recentChanges.append((key, now, result))
+        }
         return result
     }
 
@@ -362,6 +383,8 @@ actor MuseTools {
         switch command {
         case timerCommand, alarmCommand:
             break
+        case alarmsCommand:
+            guard params["action"]?.string != "list" else { return nil }
         case remindersCommand:
             // An edit sets fields, so doing it twice is harmless, and a later edit may undo an
             // earlier one: only adds and deletes are answered from the first call.
@@ -394,8 +417,27 @@ actor MuseTools {
             guard let hour = Self.int(params["hour"]), (0...23).contains(hour),
                 let minute = Self.int(params["minute"]), (0...59).contains(minute)
             else { return Self.error("hour must be 0-23 and minute 0-59") }
-            let result = await watch.runWatchAction(.alarm(hour: hour, minute: minute, label: params["label"]?.string ?? ""), wait: .seconds(10))
-            return Self.outcome(result) { _ in ["set": true, "time": .string(String(format: "%02d:%02d", hour, minute))] }
+            guard params["smart"] == nil || params["smart"]?.bool != nil else { return Self.error("smart must be a boolean") }
+            let smart = params["smart"]?.bool ?? false
+            var result = await watch.runWatchAction(.alarms(.create, hour: hour, minute: minute,
+                                                           smart: smart ? 1 : 0, enabled: 1), wait: .seconds(10))
+            if result?.status == .unsupported, !smart {
+                result = await watch.runWatchAction(.alarm(hour: hour, minute: minute, label: ""), wait: .seconds(10))
+                return Self.outcome(result) { _ in
+                    ["set": true, "smart": false, "time": .string(String(format: "%02d:%02d", hour, minute))]
+                }
+            }
+            guard result != nil else {
+                return Self.error("The watch did not confirm this alarm. It may already exist; list alarms before trying again.")
+            }
+            return Self.outcome(result) { result in
+                ["set": true, "id": .number(Double(result.value)), "smart": .bool(smart),
+                 "time": .string(String(format: "%02d:%02d", hour, minute)),
+                 "wake_window_minutes": .number(smart ? 30 : 0)]
+            }
+        case Self.alarmsCommand:
+            guard prefs.watchActions.contains(.alarm) else { return Self.turnedOff }
+            return await alarms(params, watch: watch)
         case Self.musicCommand:
             guard prefs.watchActions.contains(.music) else { return Self.turnedOff }
             guard let action = Self.musicAction(params["action"]?.string) else {
@@ -448,6 +490,51 @@ actor MuseTools {
             return await followUps(params, data: data, prefs: prefs, watch: watch, deadline: deadline)
         default:
             return Self.error("unsupported command")
+        }
+    }
+
+    private func alarms(_ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
+        let operation: WatchActionRequest.AlarmOperation
+        switch params["action"]?.string {
+        case "list": operation = .list
+        case "update": operation = .update
+        case "delete": operation = .delete
+        default: return Self.error("action must be list, update or delete")
+        }
+        let id = Self.int(params["id"]) ?? -1
+        guard operation == .list || (0...9).contains(id) else { return Self.error("List the alarms first, then use an id from 0 to 9.") }
+        for (key, range) in [("hour", 0...23), ("minute", 0...59)] where params[key] != nil {
+            guard let value = Self.int(params[key]), range.contains(value) else { return Self.error("Invalid \(key)") }
+        }
+        for key in ["smart", "enabled"] where params[key] != nil {
+            guard params[key]?.bool != nil else { return Self.error("\(key) must be a boolean") }
+        }
+        if operation == .update, ["hour", "minute", "smart", "enabled"].allSatisfy({ params[$0] == nil }) {
+            return Self.error("Specify at least one field to change.")
+        }
+        let request = WatchActionRequest.alarms(operation, id: operation == .list ? 0 : id,
+            hour: Self.int(params["hour"]) ?? 255, minute: Self.int(params["minute"]) ?? 255,
+            smart: params["smart"]?.bool.map { $0 ? 1 : 0 } ?? 255,
+            enabled: params["enabled"]?.bool.map { $0 ? 1 : 0 } ?? 255)
+        let result = await watch.runWatchAction(request, wait: .seconds(10))
+        return Self.outcome(result) { result in
+            if operation != .list { return ["id": .number(Double(id)), "action": params["action"] ?? .null] }
+            // Fixed-width records fit all ten alarms in the 160-byte result: iHHMMsekDD.
+            let rows: [MuseJSON] = (result.textString ?? "").split(separator: "\n").compactMap { row in
+                let bytes = Array(row.utf8)
+                guard bytes.count == 10 else { return nil }
+                func number(_ range: Range<Int>, radix: Int = 10) -> Int {
+                    Int(String(decoding: bytes[range], as: UTF8.self), radix: radix) ?? 0
+                }
+                let kinds = ["everyday", "weekends", "weekdays", "once", "custom"]
+                let kind = number(7..<8)
+                return ["id": .number(Double(number(0..<1))),
+                        "hour": .number(Double(number(1..<3))), "minute": .number(Double(number(3..<5))),
+                        "smart": .bool(number(5..<6) == 1), "enabled": .bool(number(6..<7) == 1),
+                        "repeat": .string(kinds.indices.contains(kind) ? kinds[kind] : "unknown"),
+                        "days_sunday_bit0": .number(Double(number(8..<10, radix: 16)))]
+            }
+            return ["alarms": .array(rows), "smart_wake_window_minutes": 30]
         }
     }
 
@@ -1222,7 +1309,7 @@ actor MuseTools {
     }
 
     static func int(_ value: MuseJSON?) -> Int? {
-        if let number = value?.number { return Int(number.rounded()) }
+        if let number = value?.number { return Int(exactly: number) }
         if let text = value?.string { return Int(text.trimmingCharacters(in: .whitespaces)) }
         return nil
     }

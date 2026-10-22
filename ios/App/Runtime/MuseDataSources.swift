@@ -251,14 +251,19 @@ final class AppMuseData: MuseDataProvider, @unchecked Sendable {
         }
     }
 
-    /// A follow-up pointing at the last half minute, so the moment can be found again from the
-    /// Follow-ups list.
+    /// The moment, marked as the watch's Mark Moment marks it: in the transcript where it falls,
+    /// and read for follow-ups like a spoken "remind me". With a label, what to remember is
+    /// already said, and it is a reminder as well.
     func markMoment(_ label: String?) async -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let marked = (try? await MomentStore(db: composition.database).add(
+            Moment(id: "muse-\(nowMs)", wallMs: nowMs, onAudioClock: false, origin: .muse,
+                   createdAtMs: nowMs))) != nil
+        guard !trimmed.isEmpty else { return marked }
         let item = FollowUp(
             id: UUID().uuidString.lowercased(),
-            text: trimmed.isEmpty ? Copy.Muse.markedMoment : Copy.Muse.marked(trimmed),
+            text: trimmed,
             done: false, sourceConversationId: nil, sourceSegmentId: nil,
             createdAtMs: nowMs,
             origin: .assistant,

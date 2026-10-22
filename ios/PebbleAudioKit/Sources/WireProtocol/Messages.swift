@@ -1073,6 +1073,13 @@ public struct WatchAction: ControlInMessage, Equatable {
 public enum WatchActionRequest: Equatable, Sendable {
     case timer(seconds: Int, label: String)
     case alarm(hour: Int, minute: Int, label: String)
+    /// Kind 10. For update, 255 preserves an omitted field. Alarms have no stored labels.
+    case alarms(AlarmOperation, id: Int = 0, hour: Int = 255, minute: Int = 255,
+                smart: Int = 255, enabled: Int = 255)
+
+    public enum AlarmOperation: UInt8, Sendable {
+        case list = 0, create = 1, update = 2, delete = 3
+    }
     case choose(question: String, options: [String], timeoutSeconds: Int)
     case music(MusicCommand)
     /// `minutes` 0: until turned off.
@@ -1093,6 +1100,7 @@ public enum WatchActionRequest: Equatable, Sendable {
         case findWatch = 7
         case health = 8
         case notice = 9
+        case alarms = 10
     }
 
     public enum MusicCommand: UInt8, Sendable, CaseIterable {
@@ -1144,6 +1152,14 @@ public enum WatchActionRequest: Equatable, Sendable {
             w.u8(hour)
             w.u8(minute)
             Self.string(&w, label, max: ProtocolConstants.watchActionLabelMaxBytes)
+        case .alarms(let operation, let id, let hour, let minute, let smart, let enabled):
+            guard (0...9).contains(id), (0...23).contains(hour) || hour == 255,
+                  (0...59).contains(minute) || minute == 255,
+                  [0, 1, 255].contains(smart), [0, 1, 255].contains(enabled),
+                  operation != .create || (hour != 255 && minute != 255 && smart != 255 && enabled == 1)
+            else { throw .outOfRange("alarm fields") }
+            w.bytes([Kind.alarms.rawValue, operation.rawValue, UInt8(id), UInt8(hour),
+                     UInt8(minute), UInt8(smart), UInt8(enabled)])
         case .choose(let question, let options, let timeoutSeconds):
             guard (ProtocolConstants.watchActionMinOptions...ProtocolConstants.watchActionMaxOptions).contains(options.count) else {
                 throw .outOfRange("\(options.count) options")
@@ -1218,6 +1234,11 @@ public enum WatchActionRequest: Equatable, Sendable {
             let minute = r.u8()
             guard let label = string() else { return nil }
             return .alarm(hour: hour, minute: minute, label: label)
+        case .alarms:
+            guard r.remaining == 6, let operation = AlarmOperation(rawValue: UInt8(r.u8())) else { return nil }
+            let request = WatchActionRequest.alarms(operation, id: r.u8(), hour: r.u8(), minute: r.u8(),
+                                                    smart: r.u8(), enabled: r.u8())
+            return (try? request.payload()) == nil ? nil : request
         case .choose:
             guard r.remaining >= 2 else { return nil }
             let timeout = r.u16()

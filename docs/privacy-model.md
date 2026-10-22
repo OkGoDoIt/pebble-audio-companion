@@ -24,7 +24,7 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D6 | Assistants reading your server | whatever they read through the server: text, and clips if D5a | each connected assistant by name (ChatGPT, Claude, Codex on Mac, Muse, …), from the server's `access` list | connecting the assistant in that assistant | none connected |
 | D7 | Muse | the questions you ask Muse: typed ones as text, spoken ones (push-to-talk on the watch) as a short recording of what the watch microphone heard while the button was held; Muse's answers come back as text | Meta | pairing Muse | off |
 | D7a | Muse reads your conversations | transcript excerpts for a time range or a search (including other people's words), a day or week recap, or the answer of this app's own Ask (then only that answer), only while Muse is answering a question you asked | Meta | "What Muse can see" in Settings › Muse: Ask first, Allowed, or Off | Ask first once paired |
-| D7b | Muse acting on your watch | only the outcome (done, declined, or timed out); "what's playing" also returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
+| D7b | Muse acting on your watch | the outcome (done, declined, or timed out); alarm listing returns times, smart/regular mode, enabled state and repeat days; "what's playing" returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
 | D7c | Muse reads your health | steps, distance, active minutes, calories, sleep, and heart rate from the watch's own activity data, for the range asked | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
 | D7d | Muse reads and adds to Calendar, and reads, adds, changes, and deletes Reminders | events in the range asked; an event you asked it to add (it never changes or deletes events); your reminders lists' names; reminders from one list or all (title, list, due date, notes, done or not, and an id); a reminder you asked it to add, change, mark done, move, or delete, and how it is afterwards. Reminders are everything you said yes to: your Apple Reminders lists and Pebble Audio's own reminders, the same either way (see below) | Meta | "What Muse can see": Calendar and Reminders are separate sources, each Ask first, Allowed, or Off; Calendar and Apple Reminders lists also need iOS's own permission | Ask first once paired |
 | D7e | Muse reads and decides follow-ups | follow-ups waiting for your review (the task, when it was said, the conversation's title, the words said, and why it might matter); a follow-up you asked it to turn into a reminder or skip, and where the reminder went | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
@@ -82,8 +82,10 @@ muse.ai/privacy; nothing has run on a device yet):
   recording is off: while Muse is paired the app keeps the watch linked with capture paused, and
   the microphone is used only while the button is held (confirm in the Muse build's tests).
 - **Muse acting on the watch (D7b):** while a question you asked is open, Muse may set a timer or
-  a one-off alarm, control music, turn Quiet Time on or off, open a watch app, find the watch, or
-  pause or resume recording; only the outcome goes back. Each action has a switch under "What
+  create a regular or smart one-time alarm, list/edit/delete existing alarms, control music,
+  turn Quiet Time on or off, open a watch app, find the watch, or pause or resume recording.
+  Alarm listing sends times, smart/regular mode, enabled state and repeat days to Muse;
+  other actions return their outcome (music can also return the track title and artist). Each action has a switch under "What
   Muse can do on your watch", on by default once paired. Muse's own option buttons are drawn as a
   picker on the watch; the option the wearer picks goes to Muse as their own message, the same as
   a typed or spoken question (D7) and the same as a tap in the Muse app (the separate "choose"

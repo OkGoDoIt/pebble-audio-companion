@@ -127,6 +127,7 @@ public actor MusePushToTalk: MuseWatchSide {
         var frameCount: Int?
         var opening: Task<any MuseVoiceConversation, Error>?
         var finished = false
+        var needsReplay = false
         var sentAnswer = ""
         var answerText = ""
         var heard: String?
@@ -210,6 +211,8 @@ public actor MusePushToTalk: MuseWatchSide {
     private let tools: MuseTools
     private let hasData: Bool
     private let handoff: (any MusePhoneHandoffPosting)?
+    private var activeActions: Set<Int> = []
+    private var earlyActionResults: [Int: WatchActionResult] = [:]
     private var actionWaiters: [Int: CheckedContinuation<WatchActionResult?, Never>] = [:]
 
     public init(
@@ -313,7 +316,11 @@ public actor MusePushToTalk: MuseWatchSide {
                 turn.frames[audio.firstFrame + offset] = Data(frame)
             }
         case .watchActionResult(let result):
-            actionWaiters.removeValue(forKey: result.actionId)?.resume(returning: result)
+            if let waiter = actionWaiters.removeValue(forKey: result.actionId) {
+                waiter.resume(returning: result)
+            } else if activeActions.contains(result.actionId) {
+                earlyActionResults[result.actionId] = result
+            }
         }
     }
 
@@ -321,6 +328,7 @@ public actor MusePushToTalk: MuseWatchSide {
         lastAskedAt = Date()
         log("question \(event.turn): listening (\(event.detail == PttTrigger.quickLaunch.rawValue ? "Quick Launch" : "in the app"))")
         turn?.finished = true
+        outbox.removeAll()
         turnSerial += 1
         let current = Turn(serial: turnSerial, id: event.turn, trigger: PttTrigger(rawValue: event.detail))
         turn = current
@@ -561,6 +569,7 @@ public actor MusePushToTalk: MuseWatchSide {
         lastAskedAt = Date()
         log("question \(event.turn): option \(index + 1) of \(choice.options.count) picked; asking Muse")
         turn?.finished = true
+        outbox.removeAll()
         turnSerial += 1
         let current = Turn(serial: turnSerial, id: event.turn, trigger: .followUp)
         current.heard = option.label
@@ -875,6 +884,7 @@ public actor MusePushToTalk: MuseWatchSide {
             return
         }
         while let next = pendingMessages.first {
+            if sending || turn?.needsReplay == true { scheduleMessageRetry(); return }
             if let turn, !turn.finished {
                 scheduleMessageRetry()
                 return
@@ -925,6 +935,7 @@ public actor MusePushToTalk: MuseWatchSide {
 
     private func retryMessages() async {
         messageRetry = nil
+        await replayInterruptedAnswer()
         await deliverPending()
     }
 
@@ -983,6 +994,35 @@ public actor MusePushToTalk: MuseWatchSide {
         levelCheck.value?.phase = .done
     }
 
+    /// Replay a full snapshot: a failed ACK may mean a fragment arrived without its ACK.
+    /// Only the current exchange may replace the screen; newer questions supersede old ones.
+    private func replayInterruptedAnswer() async {
+        guard let current = turn, current.needsReplay else { return }
+        guard Date().timeIntervalSince(current.startedAt) < Self.messageShelfLife else {
+            current.needsReplay = false
+            return
+        }
+        guard current.finished else { scheduleMessageRetry(); return }
+        guard !current.answerText.isEmpty, watchKeepsConversation else {
+            current.needsReplay = false
+            return
+        }
+        let heard = Self.cut(current.heard ?? "", bytes: ProtocolConstants.assistantTextMaxBytes)
+        let id = current.id
+        let reply = await link.sendControlRequest { token in
+            AssistantUpdate(requestToken: token, turn: id, kind: .begin,
+                            detail: AssistantBegin.lateAnswer.rawValue, text: heard).encode()
+        }
+        guard turn === current else { return }
+        guard reply == .ok else { scheduleMessageRetry(); return }
+        current.needsReplay = false
+        current.sentAnswer = ""
+        current.choice = current.offered ?? current.choice
+        sendAnswer(current, rendered: WatchAnswerText.render(watchText(current), final: true))
+        await finish(current)
+        log("question \(current.id): replaying the complete answer and its options")
+    }
+
     // MARK: - To the watch
 
     private func send(turn: Int, _ kind: AssistantUpdateKind, detail: UInt8 = 0, text: [UInt8] = []) {
@@ -990,6 +1030,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func enqueue(_ item: Outgoing) {
+        if case .update(let id, _, _, _) = item, turn?.id == id, turn?.needsReplay == true { return }
         outbox.append(item)
         guard !sending else { return }
         sending = true
@@ -1003,13 +1044,18 @@ public actor MusePushToTalk: MuseWatchSide {
             if case .update(_, .answer, _, _) = outbox[0] {
                 try? await Task.sleep(for: .milliseconds(150))
             }
+            guard !outbox.isEmpty else { break }
             let item = coalesce()
             guard case .update(let turnID, let kind, let detail, let text) = item else { continue }
-            let delivered = await deliver { token in
+            let delivered = await deliver(retryNotSent: false) { token in
                 AssistantUpdate(requestToken: token, turn: turnID, kind: kind, detail: detail, text: text).encode()
             }
-            if !delivered {
-                log("question \(turnID): the watch didn't take an update; dropping the rest")
+            if delivered != .accepted {
+                log("question \(turnID): reply interrupted; retaining the whole answer and options for replay")
+                if turn?.id == turnID {
+                    turn?.needsReplay = true
+                    scheduleMessageRetry()
+                }
                 outbox.removeAll { if case .update(turnID, _, _, _) = $0 { return true } else { return false } }
             }
         }
@@ -1030,24 +1076,29 @@ public actor MusePushToTalk: MuseWatchSide {
         return .update(turn: turnID, kind: kind, detail: 0, text: text)
     }
 
-    /// Sends one request, asking again while the watch is busy.
-    private func deliver(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> Bool {
+    private enum Delivery { case accepted, unconfirmed, failed }
+
+    /// Retry only a known unsent write. A missing ACK may already have created an alarm.
+    private func deliver(retryNotSent: Bool = true, _ build: @escaping @Sendable (Int) -> [UInt8]) async -> Delivery {
         var unanswered = 0
         for _ in 0..<40 {
             switch await link.sendControlRequest(build) {
             case .ok:
-                return true
+                return .accepted
             case .busy:
                 try? await Task.sleep(for: .milliseconds(50))
-            case .notSent, .noAnswer:
+            case .noAnswer:
+                return .unconfirmed
+            case .notSent:
+                guard retryNotSent else { return .failed }
                 unanswered += 1
-                if unanswered >= 3 { return false }
+                if unanswered >= 3 { return .failed }
                 try? await Task.sleep(for: .milliseconds(200))
             case .rejected, .badState, .other:
-                return false
+                return .failed
             }
         }
-        return false
+        return .failed
     }
 
     // MARK: - Watch actions and tools
@@ -1097,6 +1148,12 @@ public actor MusePushToTalk: MuseWatchSide {
     func runWatchAction(_ request: WatchActionRequest, wait: Duration) async -> WatchActionResult? {
         nextActionID = nextActionID % 255 + 1
         let actionID = nextActionID
+        activeActions.insert(actionID)
+        earlyActionResults.removeValue(forKey: actionID)
+        defer {
+            activeActions.remove(actionID)
+            earlyActionResults.removeValue(forKey: actionID)
+        }
         let messages: [WatchAction]
         do {
             messages = try request.messages(actionId: actionID) { 0 }
@@ -1109,10 +1166,13 @@ public actor MusePushToTalk: MuseWatchSide {
             let delivered = await deliver { token in
                 WatchAction(requestToken: token, actionId: message.actionId, flags: message.flags, payload: message.payload).encode()
             }
-            guard delivered else {
+            guard delivered != .failed else {
                 log("watch action \(actionID): the watch didn't take it")
                 return nil
             }
+            // Do not resend an uncertain fragment, or continue a possibly incomplete action.
+            // Its result may still arrive, including before the ACK timeout did.
+            if delivered == .unconfirmed { break }
         }
         let result = await waitForResult(actionID, wait)
         log("watch action \(actionID): \(result.map { $0.status.map { "\($0)" } ?? "\($0.statusRaw)" } ?? "no answer")")
@@ -1131,6 +1191,7 @@ public actor MusePushToTalk: MuseWatchSide {
         switch request {
         case .timer: return "timer"
         case .alarm: return "alarm"
+        case .alarms: return "alarms"
         case .choose(_, let options, _): return "choice of \(options.count)"
         case .music(let command): return "music \(command)"
         case .quietTime(let on, _): return "Quiet Time \(on ? "on" : "off")"
@@ -1142,6 +1203,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func waitForResult(_ actionID: Int, _ wait: Duration) async -> WatchActionResult? {
+        if let result = earlyActionResults.removeValue(forKey: actionID) { return result }
         let timer = Task { [weak self] in
             try? await Task.sleep(for: wait)
             guard !Task.isCancelled else { return }

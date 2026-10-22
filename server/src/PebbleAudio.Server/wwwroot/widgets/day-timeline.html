@@ -93,7 +93,7 @@ function dayView(d) {
     ${d.recap ? recapHtml(d.recap) : ''}
     ${d.coverage?.recordedMinutes > 0 ? `<p class="w-line">${esc(duration(d.coverage.recordedMinutes * 60))} recorded</p>` : ''}
     ${d.coverage?.spansOmitted ? '<p class="day-help">Open the day for detailed recording coverage.</p>' : ''}
-    </div><div class="w-foot">${expandButton('day-content', 'Read more', 'Show less')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
   const first = hourStart(Math.min(...starts), tz);
   let last = hourStart(Math.max(...ends), tz);
   if (last < Math.max(...ends)) last += 3600000;
@@ -124,13 +124,13 @@ function dayView(d) {
     <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
     <p class="w-line">${esc(line)}</p>
     <div class="day-recap">${recapHtml(d.recap)}</div>
-    ${conversations.length ? `<details class="conversation-browser"><summary>Browse ${conversations.length} conversations${d.truncated ? ' shown' : ''}</summary><div class="sel" id="sel"></div></details>` : ''}
-    <details class="recording-details"><summary>Recording details</summary>
+    ${conversations.length ? `<section class="conversation-browser" aria-label="Conversations"><h2 class="section-label">${conversations.length} conversations${d.truncated ? ' shown' : ''}</h2><div class="sel" id="sel"></div></section>` : ''}
+    <section class="recording-details" aria-label="Recording details"><h2 class="section-label">Recording details</h2>
     <p class="day-help">${esc(duration(recorded * 60))} recorded${d.coverage?.quietMinutes > 0 ? ` · ${esc(duration(d.coverage.quietMinutes * 60))} quiet` : ''}${lost > 0 ? ` · ${esc(duration(lost * 60, { seconds: true }))} missing` : ''}</p>
     ${d.coverage?.spansOmitted ? '<p class="day-help">Conversation times shown. Open the day for detailed recording coverage.</p>' : ''}
     ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div>` : `<div class="tlw">${laneHtml}</div>`}
-    </details>
-    </div><div class="w-foot">${expandButton('day-content', 'Read more', 'Show less')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+    </section>
+    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
 }
 
 function select(d, i) {

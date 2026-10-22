@@ -98,9 +98,9 @@ button { font: inherit; color: inherit; }
 .day-widget:not(.is-expanded) .sel { margin-top: 10px; }
 .w-foot .summary-toggle { margin-right: auto; font-weight: 500; }
 
-/* Reading is primary; recording diagnostics and browsing are deliberate secondary disclosures. */
+/* One expansion state reveals all secondary content, with quiet noninteractive headings. */
 .recording-details, .conversation-browser { margin-top: 12px; border-top: 0.5px solid var(--hairline); }
-.recording-details > summary, .conversation-browser > summary { min-height: var(--target); padding-top: 12px; font-size: var(--fs-footnote); color: var(--meta); cursor: pointer; }
+.section-label { margin: 10px 0 0; font-size: var(--fs-footnote); font-weight: 500; color: var(--meta); }
 .recording-details .coverage { margin-top: 8px; }
 .day-recap { margin: 4px 0 10px; }
 
