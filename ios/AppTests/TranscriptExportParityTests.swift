@@ -65,7 +65,7 @@ struct TranscriptExportParityTests {
             assignments: [], timebase: .media, piece: member)
         let markers: [(text: String, at: Date?, missing: Bool)] = screen.items.compactMap { item in
             switch item {
-            case .turn: return nil
+            case .turn, .moment: return nil
             case .quiet(let marker): return (marker.text, marker.startedAt, false)
             case .missing(let marker): return (marker.text, marker.startedAt, true)
             }

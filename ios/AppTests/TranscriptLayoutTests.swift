@@ -43,6 +43,7 @@ struct TranscriptLayoutTests {
             case .turn(_, let opensRun): return opensRun ? "turn+name" : "turn"
             case .quiet: return "quiet"
             case .missing: return "missing"
+            case .moment: return "moment"
             case .band(let blocks, _): return "band(\(blocks.count))"
             case .provenance: return "provenance"
             }
