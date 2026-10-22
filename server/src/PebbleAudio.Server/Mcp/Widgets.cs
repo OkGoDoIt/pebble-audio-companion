@@ -24,11 +24,11 @@ namespace PebbleAudio.Server.Mcp;
 /// </remarks>
 public static class Widgets
 {
-	public const string ConversationCard = "ui://pebble/conversation-card.v1.html";
+	public const string ConversationCard = "ui://pebble/conversation-card.v2.html";
 
-	public const string DayTimeline = "ui://pebble/day-timeline.v1.html";
+	public const string DayTimeline = "ui://pebble/day-timeline.v2.html";
 
-	public const string ClipPlayer = "ui://pebble/clip-player.v1.html";
+	public const string ClipPlayer = "ui://pebble/clip-player.v2.html";
 
 	/// <summary>The ChatGPT alias of <c>_meta.ui.resourceUri</c>.</summary>
 	public const string OutputTemplateKey = "openai/outputTemplate";
@@ -55,7 +55,9 @@ public static class Widgets
 		public void PostConfigure(string? name, McpServerOptions server)
 		{
 			server.ResourceCollection ??= [];
-			foreach (var widget in All)
+			// Old chats can still reference v1. The result shapes are unchanged, so those
+			// resources can safely use the same rendering while new calls fetch v2.
+			foreach (var widget in All.Concat(All.Select(w => w with { Uri = w.Uri.Replace(".v2.", ".v1.", StringComparison.Ordinal) })))
 			{
 				if (!server.ResourceCollection.TryGetPrimitive(widget.Uri, out _))
 				{

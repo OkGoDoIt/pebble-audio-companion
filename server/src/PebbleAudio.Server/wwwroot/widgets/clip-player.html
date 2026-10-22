@@ -13,7 +13,7 @@
 /* instrument's compact player with its turns as buttons that light up as they are spoken. */
 .w pa-player { margin-top: 12px; }
 .w .pl-top { display: none; } /* the kicker already says the clip's times */
-.cp-turns { list-style: none; margin: 12px -16px 0; padding: 4px 16px; max-height: 232px; overflow-y: auto; border-top: 0.5px solid var(--hairline); overscroll-behavior: contain; }
+.cp-turns { list-style: none; margin: 12px -16px 0; padding: 4px 16px; max-height: 320px; overflow-y: auto; border-top: 0.5px solid var(--hairline); overscroll-behavior: contain; }
 .cp-turn {
   display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; width: calc(100% + 16px); min-height: var(--target);
   margin: 2px -8px; padding: 7px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left;
@@ -30,7 +30,8 @@
 .cp-say { margin: 0; font-size: 15px; line-height: 1.4; color: var(--label); }
 .is-playing .cp-turn:not(.current) .cp-say { color: var(--tertiary); }
 .cp-gap { margin: 6px 0; padding: 0 0 0 84px; font-size: var(--fs-meta); color: var(--quiet-text); }
-.cp-gap.lost { color: var(--missing-text); }
+.cp-gap.lost { color: var(--meta); }
+.cp-caption { margin-top: 16px; font-size: var(--fs-meta); color: var(--meta); }
 @container (max-width: 440px) {
   .cp-turns { margin: 12px -14px 0; padding: 4px 14px; }
   .cp-turn { grid-template-columns: 1fr; gap: 1px; }
@@ -40,11 +41,12 @@
 </style>
 </head>
 <body>
-<div class="w-root"><article class="w" id="widget"></article></div>
+<div class="w-root"><article class="w clip-widget" id="widget"></article></div>
 <script type="module">
 // @include js/view/format.js
 // @include js/view/pa-player.js
 // @include widgets/bridge.js
+// @include widgets/summary.js
 
 // The clip player: get_audio's clip on its own wall clock. The signed audio link arrives in the result's
 // _meta (the model never sees it); the turns come from get_conversation for the clip's span.
@@ -72,16 +74,24 @@ function states(r) {
 async function render({ structuredContent: r, _meta: meta }) {
   if (!r) return;
   current = r;
+  root.classList.remove('is-expanded');
   const audio = meta?.['pebbleaudio/audio'];
   const a = instant(r.startedAt), b = instant(r.endedAt);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zone = r.timeZone || zoneOf(r.startedAt) || tz;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    const unavailable = states(r) || { head: 'This clip is unavailable' };
+    root.innerHTML = `<div class="w-state"><p class="head">${esc(unavailable.head)}</p><p class="line">${esc(unavailable.line || '')}</p></div>`;
+    return;
+  }
+  const when = b - a < 60000 ? `${clock(a, zone, { seconds: true })} – ${clock(b, zone, { seconds: true })}` : range(a, b, zone);
   root.innerHTML = `
-    <p class="w-kicker">${esc(a && b ? `${shortDay(dayOf(r.startedAt))} · ${range(a, b, zone)}` : '')}</p>
+    <div id="clip-content"><p class="w-kicker">${esc(a && b ? `${shortDay(dayOf(r.startedAt))} · ${when}` : '')}</p>
     <h1 class="w-title${r.title ? '' : ' untitled'}">${esc(r.title || 'Not summarized yet')}</h1>
     <pa-player></pa-player>
-    <ol class="cp-turns" hidden></ol>
-    <div class="w-foot"><span class="hint"></span><a class="w-open" href="${esc(r.url || '#')}" target="_blank" rel="noopener">Open in Pebble Audio</a></div>`;
+    <p class="cp-caption" hidden>Transcript · select a line to play from there</p>
+    <ol class="cp-turns" aria-label="Clip transcript" hidden></ol>
+    </div><div class="w-foot">${expandButton('clip-content')}<a class="w-open" href="${esc(r.url || '#')}" target="_blank" rel="noopener">Open in Pebble Audio</a></div>`;
   root.querySelector('.w-open').addEventListener('click', (e) => { e.preventDefault(); if (r.url) openLink(r.url); });
   const player = root.querySelector('pa-player');
   const len = Math.max(1, (b - a) / 1000);
@@ -141,6 +151,7 @@ async function loadTurns(r, player, model, a, b) {
   } catch {
     return; // The player works without them.
   }
+  if (current !== r || !player.isConnected) return;
   const c = result?.structuredContent;
   const items = c?.transcript?.items || [];
   if (!items.length) return;
@@ -198,6 +209,7 @@ async function loadTurns(r, player, model, a, b) {
     return `<li class="cp-gap ${item.kind}">${esc(words)}</li>`;
   }).join('');
   list.hidden = false;
+  root.querySelector('.cp-caption').hidden = false;
   const buttons = [...list.querySelectorAll('.cp-turn')];
   buttons.forEach((btn) => btn.addEventListener('click', () => player.cueAt(Number(btn.dataset.t), true)));
   player.addEventListener('pa-time', (e) => {

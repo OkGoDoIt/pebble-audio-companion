@@ -15,6 +15,7 @@
 <script type="module">
 // @include js/view/format.js
 // @include widgets/bridge.js
+// @include widgets/summary.js
 
 // The conversation card: what get_conversation found, in the app's words, with a way to open it.
 const card = document.getElementById('card');
@@ -23,17 +24,31 @@ const CHEVRON = '<svg width="7" height="12" viewBox="0 0 7 12" aria-hidden="true
 
 function shapeOf(c) {
   const start = instant(c.startedAt), end = instant(c.endedAt) || start + (c.minutes || 0) * 60000;
-  const total = Math.max(1, (end - start) / 1000);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return '';
+  const total = (end - start) / 1000;
   const marks = (c.gaps || []).map((g) => {
     const s = (instant(g.startedAt) - start) / 1000;
     // A hole is drawn to scale; brief drops spread over a stretch are the app's tick where they start, not fourteen
-    // minutes of amber over words that are all there.
+    // minutes of hatching over words that are all there.
     const spread = g.kind === 'lost' && g.missingMinutes != null && g.minutes >= g.missingMinutes * 2;
     const e = spread ? s + 1 : (instant(g.endedAt) - start) / 1000;
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= 0 || s >= total || e <= s) return '';
     const kind = g.kind === 'lost' ? 'lost' : g.reason === 'watchPause' ? 'paused' : 'quiet';
-    return `<i class="${kind}" style="left:${((Math.max(0, s) / total) * 100).toFixed(2)}%;width:${((Math.max(0, e - s) / total) * 100).toFixed(2)}%"></i>`;
+    return `<i class="${kind}" style="left:${((Math.max(0, s) / total) * 100).toFixed(2)}%;width:${(((Math.min(total, e) - Math.max(0, s)) / total) * 100).toFixed(2)}%"></i>`;
   });
-  return `<div class="shape" role="img" aria-label="${esc(holesWords(c) || 'Speech throughout')}">${marks.join('')}</div>`;
+  const labels = [0, .25, .5, .75, 1].map((f, i) => `<span${i === 1 || i === 3 ? ' class="quarter"' : ''}>${esc(clock(start + f * (end - start), c.timeZone, { seconds: total < 120 }))}</span>`).join('');
+  const hasQuiet = (c.gaps || []).some(g => g.kind === 'quiet' && g.reason !== 'watchPause');
+  const hasPaused = (c.gaps || []).some(g => g.reason === 'watchPause');
+  const zone = (c.timeZone || 'UTC').split('/').pop().replaceAll('_', ' ');
+  return `<div class="coverage" aria-label="Recording coverage">
+    <div class="shape" role="img" aria-label="${esc(`Recording coverage, ${range(start, end, c.timeZone)}. ${holesWords(c)}`)}">${marks.join('')}</div>
+    <div class="coverage-axis">${labels}</div>
+    <div class="coverage-key"><span><i aria-hidden="true"></i>Recorded</span>
+      ${hasQuiet ? '<span><i class="quiet" aria-hidden="true"></i>Quiet</span>' : ''}
+      ${hasPaused ? '<span><i class="paused" aria-hidden="true"></i>Paused</span>' : ''}
+      ${c.lostMinutes > 0 ? `<span><i class="lost" aria-hidden="true"></i>${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : ''}
+      <span class="coverage-zone">${esc(zone)} time</span>
+    </div></div>`;
 }
 
 function holesWords(c) {
@@ -45,26 +60,29 @@ function holesWords(c) {
 
 function render({ structuredContent: c }) {
   if (!c) return;
+  card.classList.remove('is-expanded');
   if (!c.found) {
     card.innerHTML = `<div class="w-state"><p class="head">Not in your archive</p><p class="line">${esc(c.summary || '')}</p></div>`;
     return;
   }
   const tz = c.timeZone;
   const start = instant(c.startedAt), end = instant(c.endedAt);
-  const lost = c.lostMinutes > 0 ? `<span class="sep"> · </span><span class="loss">${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
-  const when = `${esc(shortDay(c.day))} · ${esc(end ? range(start, end, tz) : clock(start, tz))} · ${esc(duration((c.minutes || 0) * 60))}${lost}`;
+  const when = `${esc(shortDay(c.day))} · ${esc(end ? range(start, end, tz) : clock(start, tz))} · ${esc(duration((c.minutes || 0) * 60))}`;
   const people = peopleLine((c.people || []).map((p) => ({ name: p.name })));
   const followUps = (c.followUps || []).filter((f) => f.status === 'open').length;
   card.innerHTML = `
-    <p class="w-kicker">${when}</p>
+    <div id="card-content">
     <h1 class="w-title${c.title ? '' : ' untitled'}">${esc(c.title || 'Not summarized yet')}</h1>
-    ${c.overview ? `<p class="w-sum">${esc(c.overview)}</p>` : ''}
-    ${shapeOf(c)}
+    <p class="w-kicker" style="margin-top:5px">${when}</p>
+    ${summaryHtml(c.overview)}
     ${people ? `<p class="w-people">${PERSON}<span>${esc(people)}</span></p>` : ''}
     ${(c.tags || []).length ? `<ul class="pills" aria-label="Topics">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
+    ${shapeOf(c)}
+    </div>
     <div class="w-foot">
+      ${expandButton('card-content')}
       <span class="hint">${followUps ? esc(followUps === 1 ? '1 open follow-up' : `${followUps} open follow-ups`) : ''}</span>
-      <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open ${CHEVRON}</a>
+      <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open conversation ${CHEVRON}</a>
     </div>`;
   card.querySelector('.w-open').addEventListener('click', (e) => { e.preventDefault(); openLink(c.url); });
 }

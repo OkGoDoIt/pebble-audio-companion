@@ -70,6 +70,9 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: Test widget host behavior
+        run: node --test tools/widget-behavior.test.mjs
+
       - name: Restore dependencies
         run: dotnet restore PebbleAudio.Server.slnx
 
