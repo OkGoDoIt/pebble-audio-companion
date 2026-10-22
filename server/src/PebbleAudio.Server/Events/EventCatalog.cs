@@ -50,16 +50,17 @@ public static class EventCatalog
 				""")),
 		new(
 			FollowUpCreated,
-			"New follow-up",
-			"A follow-up was added to the user's archive, by the phone's AI or by the user. Follow-ups that an " +
-			"assistant created are not announced.",
+			"New reminder",
+			"A reminder was added to the user's list: one they asked for, or a follow-up the app noticed that they said " +
+			"yes to. Follow-ups still waiting for their review are not announced, and neither are reminders an assistant " +
+			"created.",
 			Schema(NoArguments),
 			Schema("""
 				{
 					"type": "object",
 					"properties": {
 						"followUpId": { "type": "string" },
-						"text": { "type": "string", "description": "What to follow up on." },
+						"text": { "type": "string", "description": "What the reminder is for." },
 						"why": { "type": "string" },
 						"dueAt": { "type": "string", "format": "date-time" },
 						"conversationId": { "type": "string", "description": "The conversation it came from, if any." },

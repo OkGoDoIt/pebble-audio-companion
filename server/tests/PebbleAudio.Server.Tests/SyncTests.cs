@@ -450,6 +450,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		var createPayload = pulled[0].GetProperty("payload");
 		Assert.Equal(created.Item.Id, createPayload.GetProperty("id").GetString());
 		Assert.Equal("assistant", createPayload.GetProperty("origin").GetString());
+		Assert.Equal("reminder", createPayload.GetProperty("stage").GetString());
 		Assert.Equal("Ask Mai about the hotel", createPayload.GetProperty("text").GetString());
 		Assert.Equal(Wire.T(Wire.Start.AddMinutes(3)), createPayload.GetProperty("sourceAt").GetString());
 		Assert.Equal(JsonValueKind.Null, createPayload.GetProperty("dueAt").ValueKind);
@@ -484,6 +485,59 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		Assert.Equal(0, (await phone.GetJsonAsync("/sync/requests")).GetProperty("requests").GetArrayLength());
 		Assert.Equal(PhoneRequestState.Expired, (await db.Requests.AsNoTracking().SingleAsync(r => r.Id == unanswered.RequestId)).State);
 		Assert.False(await db.FollowUps.AnyAsync(f => f.UserId == userId && f.Id == unanswered.Item!.Id));
+	}
+
+	[Fact]
+	public async Task A_follow_ups_stage_round_trips_and_a_phone_from_before_stages_sends_reminders()
+	{
+		var userId = await factory.CreateUserAsync();
+		using var phone = await Phone.LinkAsync(factory, userId);
+		var id = $"conv-seg-{Guid.NewGuid():N}";
+		JsonObject Staged(string text, string stage)
+		{
+			var payload = Wire.FollowUp(text, id);
+			payload["stage"] = stage;
+			return payload;
+		}
+
+		// A phone from before stages sends none; a newer phone may send a field this server does not know.
+		var suggested = Staged("Ask Mai about the hotel", "suggested");
+		suggested["fromANewerPhone"] = new JsonObject { ["anything"] = 1 };
+		var answer = await phone.BatchAsync(
+			Wire.Item("conversation", id, V, payload: Wire.Conversation("Planning the trip")),
+			Wire.Item("followUp", "fu-old-phone", V, payload: Wire.FollowUp("Book the train", id)),
+			Wire.Item("followUp", "fu-suggested", V, payload: (JsonObject)suggested.DeepClone()),
+			Wire.Item("followUp", "fu-skipped", V, payload: Staged("Buy a new suitcase", "skipped")),
+			Wire.Item("followUp", "fu-unknown", V, payload: Staged("Pack the charger", "maybe")));
+		Assert.Equal(4, answer.GetProperty("accepted").GetArrayLength());
+		var rejected = Assert.Single(answer.GetProperty("rejected").EnumerateArray());
+		Assert.Equal(("fu-unknown", "payload: stage 'maybe' is not known"), (rejected.GetProperty("id").GetString(), rejected.GetProperty("reason").GetString()));
+
+		await using var scope = factory.Services.CreateAsyncScope();
+		var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+		async Task<FollowUpStage> StageOf(string followUpId) =>
+			await db.FollowUps.AsNoTracking().Where(f => f.UserId == userId && f.Id == followUpId).Select(f => f.Stage).SingleAsync();
+		Assert.Equal(
+			(FollowUpStage.Reminder, FollowUpStage.Suggested, FollowUpStage.Skipped),
+			(await StageOf("fu-old-phone"), await StageOf("fu-suggested"), await StageOf("fu-skipped")));
+
+		// The person says yes on the phone: its next upsert makes it a reminder.
+		suggested["stage"] = "reminder";
+		Assert.Equal(1, (await phone.BatchAsync(Wire.Item("followUp", "fu-suggested", V + 1, payload: suggested))).GetProperty("accepted").GetArrayLength());
+		Assert.Equal(FollowUpStage.Reminder, await StageOf("fu-suggested"));
+
+		// An assistant skips one when the person says so: only the stage travels, and the archived mark goes with it,
+		// as the person's own answer on the phone does.
+		await phone.AllowAsync(clips: false, edits: true);
+		await db.FollowUps.Where(f => f.UserId == userId && f.Id == "fu-old-phone").ExecuteUpdateAsync(s => s.SetProperty(f => f.ArchivedAt, DateTimeOffset.UtcNow));
+		var requests = scope.ServiceProvider.GetRequiredService<PhoneRequestService>();
+		var skip = await requests.UpdateFollowUpAsync(userId, "fu-old-phone", new FollowUpChange { Stage = FollowUpStage.Skipped }, CancellationToken.None);
+		Assert.Equal(PhoneWriteOutcome.Queued, skip.Outcome);
+		Assert.Equal((FollowUpStage.Skipped, (DateTimeOffset?)null), (skip.Item!.Stage, skip.Item.ArchivedAt));
+		Assert.Equal(PhoneWriteOutcome.Unchanged, (await requests.UpdateFollowUpAsync(userId, "fu-old-phone", new FollowUpChange { Stage = FollowUpStage.Skipped }, CancellationToken.None)).Outcome);
+		var update = Assert.Single((await phone.GetJsonAsync("/sync/requests")).GetProperty("requests").EnumerateArray()).GetProperty("payload");
+		Assert.Equal(["id", "stage"], update.EnumerateObject().Select(p => p.Name).Order());
+		Assert.Equal("skipped", update.GetProperty("stage").GetString());
 	}
 
 	internal static HttpContent Clip(byte[] ogg, DateTimeOffset? start = null, DateTimeOffset? end = null, string gaps = "[]")

@@ -109,6 +109,22 @@ public enum ContentOrigin
 }
 
 /// <summary>
+/// Where a follow-up stands (docs/reminders.md, sync-protocol.md §2.5). A follow-up is something the app noticed that
+/// the person might act on; a reminder is one they said yes to or asked for.
+/// </summary>
+public enum FollowUpStage
+{
+	/// <summary>Noticed by the app and waiting for the person's review. Not a commitment.</summary>
+	Suggested,
+
+	/// <summary>On the person's list: they asked for it or said yes to it. Every row from before stages is one.</summary>
+	Reminder,
+
+	/// <summary>The person said no. Kept and findable, on no list.</summary>
+	Skipped,
+}
+
+/// <summary>
 /// Work the server asks the phone to do (sync-protocol.md §4).
 /// </summary>
 public enum PhoneRequestKind

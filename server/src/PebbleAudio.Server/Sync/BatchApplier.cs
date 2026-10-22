@@ -187,6 +187,14 @@ public sealed class BatchApplier(
 				.SingleOrDefaultAsync(cancellationToken)
 			: null;
 
+		var previousStage = record is FollowUp incoming
+			? await db.FollowUps
+				.AsNoTracking()
+				.Where(f => f.UserId == userId && f.Id == incoming.Id)
+				.Select(f => (FollowUpStage?)f.Stage)
+				.SingleOrDefaultAsync(cancellationToken)
+			: null;
+
 		var exists = record switch
 		{
 			Conversation c => await db.Conversations.AnyAsync(r => r.UserId == userId && r.Id == c.Id, cancellationToken),
@@ -211,13 +219,15 @@ public sealed class BatchApplier(
 			db.Add(record);
 		}
 
-		return new Upserted(record, exists, previousRecap);
+		return new Upserted(record, exists, previousRecap, previousStage);
 	}
 
 	/// <summary>
-	/// Tells subscribed assistants about a day's recap whose text is new or changed, and a follow-up the phone has
-	/// just added. A recap for an older day, or a follow-up created before the <c>EventRecentHours</c> setting, is
-	/// history the phone is catching up on, not news, and wakes no one.
+	/// Tells subscribed assistants about a day's recap whose text is new or changed, and a reminder the phone has just
+	/// added: a new one, or a follow-up the person has just said yes to. A follow-up still waiting for review is not
+	/// announced: nothing is on the person's list until they say yes. A recap for an older day, or a reminder that
+	/// became one before the <c>EventRecentHours</c> setting, is history the phone is catching up on, not news, and
+	/// wakes no one.
 	/// </summary>
 	private async Task AnnounceAsync(Upserted upserted, DateTimeOffset now, int recentHours, CancellationToken cancellationToken)
 	{
@@ -228,7 +238,8 @@ public sealed class BatchApplier(
 				recap.DayKey >= LogicalDays.Of(since, LogicalDays.Zone(recap.TimeZone)):
 				await events.DayRecapReadyAsync(recap, cancellationToken);
 				break;
-			case FollowUp followUp when !upserted.Existed && followUp.CreatedAt >= since:
+			case FollowUp followUp when followUp.Stage == FollowUpStage.Reminder && upserted.PreviousStage != FollowUpStage.Reminder &&
+				(upserted.Existed ? followUp.ChangedAt : followUp.CreatedAt) >= since:
 				await events.FollowUpCreatedAsync(followUp, cancellationToken);
 				break;
 		}
@@ -284,7 +295,8 @@ public sealed class BatchApplier(
 	/// <param name="Record">The row as stored.</param>
 	/// <param name="Existed">Whether it replaced an earlier version.</param>
 	/// <param name="PreviousRecap">For a recap, the text it replaced.</param>
-	private sealed record Upserted(SyncedRecord Record, bool Existed, RecapText? PreviousRecap);
+	/// <param name="PreviousStage">For a follow-up, the stage it had before.</param>
+	private sealed record Upserted(SyncedRecord Record, bool Existed, RecapText? PreviousRecap, FollowUpStage? PreviousStage);
 
 	/// <summary>
 	/// The person deleted it on the phone: the server deletes it and everything it derived from it.

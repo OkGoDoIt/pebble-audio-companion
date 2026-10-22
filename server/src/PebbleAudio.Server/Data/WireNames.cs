@@ -89,6 +89,13 @@ public static class WireNames
 		ContentOrigin.Assistant => "assistant",
 	};
 
+	public static string ToWire(this FollowUpStage stage) => stage switch
+	{
+		FollowUpStage.Suggested => "suggested",
+		FollowUpStage.Reminder => "reminder",
+		FollowUpStage.Skipped => "skipped",
+	};
+
 	public static string ToWire(this SharingScopeKind kind) => kind switch
 	{
 		SharingScopeKind.All => "all",
@@ -117,6 +124,8 @@ public static class WireNames
 	public static bool TryParse(string? value, out BriefKind kind) => TryParse(value, ToWire, out kind);
 
 	public static bool TryParse(string? value, out ContentOrigin origin) => TryParse(value, ToWire, out origin);
+
+	public static bool TryParse(string? value, out FollowUpStage stage) => TryParse(value, ToWire, out stage);
 
 	private static bool TryParse<T>(string? value, Func<T, string> toWire, out T result)
 		where T : struct, Enum

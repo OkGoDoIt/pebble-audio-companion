@@ -345,6 +345,13 @@ internal static class SyncPayloads
 			return Missing<FollowUp>("createdAt");
 		}
 
+		// A phone from before stages sends none: everything it has is a reminder.
+		var stage = FollowUpStage.Reminder;
+		if (p.Stage is not null && !WireNames.TryParse(p.Stage, out stage))
+		{
+			return Unknown<FollowUp>("stage", p.Stage);
+		}
+
 		return Parsed<FollowUp>.Ok(new FollowUp
 		{
 			Id = id,
@@ -358,6 +365,7 @@ internal static class SyncPayloads
 			ArchivedAt = p.ArchivedAt,
 			SnoozedUntil = p.SnoozedUntil,
 			Origin = origin,
+			Stage = stage,
 			SourceConversationId = p.SourceConversationId,
 			SourceAt = p.SourceAt,
 			SourceEndAt = p.SourceEndAt,
@@ -600,6 +608,7 @@ internal static class SyncPayloads
 		public DateTimeOffset? ArchivedAt { get; init; }
 		public DateTimeOffset? SnoozedUntil { get; init; }
 		public string? Origin { get; init; }
+		public string? Stage { get; init; }
 		public string? SourceConversationId { get; init; }
 		public DateTimeOffset? SourceAt { get; init; }
 		public DateTimeOffset? SourceEndAt { get; init; }
