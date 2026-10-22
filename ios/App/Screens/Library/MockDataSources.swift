@@ -1,6 +1,7 @@
 import Foundation
 import AppDB
 import Intelligence
+import SegmentStore
 import StatusUI
 
 // The mock world behind `AskLibraryDataSources.current` — carries the EXACT sample data from
@@ -241,6 +242,47 @@ final class MockWorld {
                 player: PlayerDisplay(durationMs: 31 * 60_000),
                 provenanceProvider: "Soniox", provenanceDate: yesterday(18, 44)
             ),
+
+            // The reminders review's day (`docs/mockups/reminders/reminders-v4.html`): three
+            // conversations each leaving one follow-up the app was unsure of. Clear of
+            // "long-day" (9:44–10:48), whose middle the History moment test opens.
+            MockConversation(
+                id: "vietnam-catchup",
+                title: "Catching up about Vietnam",
+                summary: "When Austin could visit, and who to ask about the dates.",
+                start: today(10, 50), end: today(11, 8),
+                tags: [ConversationTag(id: "tag-travel", name: "travel", source: "ai")],
+                transcript: [
+                    turn("vn1", "S1", "Roger", .you,
+                         "I should ask his mom when he could actually come over."),
+                ],
+                player: PlayerDisplay(durationMs: 19 * 60_000),
+                provenanceProvider: "Soniox", provenanceDate: today(11, 9)
+            ),
+            MockConversation(
+                id: "clinic-call",
+                title: "Call about the appointment",
+                summary: "Confirming today's clinic appointment and how to pay.",
+                start: today(11, 18), end: today(11, 26),
+                transcript: [
+                    turn("cc1", "S1", "Roger", .you,
+                         "I'll pay the clinic when I'm there on the twenty-second."),
+                ],
+                player: PlayerDisplay(durationMs: 8 * 60_000),
+                provenanceProvider: "Soniox", provenanceDate: today(11, 27)
+            ),
+            MockConversation(
+                id: "stage-blacks",
+                title: "Planning stage blacks",
+                summary: "What to wear for the show: plain black, nothing shiny.",
+                start: today(13, 28), end: today(13, 41),
+                transcript: [
+                    turn("sb1", "S1", "Roger", .you,
+                         "Plain black, no logo, nothing that catches the light."),
+                ],
+                player: PlayerDisplay(durationMs: 13 * 60_000),
+                provenanceProvider: "Soniox", provenanceDate: today(13, 42)
+            ),
         ]
 
         // ── Follow-ups ──────────────────────────────────────────────────────
@@ -309,6 +351,7 @@ final class MockWorld {
         // The History tab's demo follow-ups, so a follow-up line tapped on a demo day opens a
         // real demo follow-up rather than "This follow-up is gone".
         followUps += MockHistory.demoFollowUps(now: now)
+        followUps += Self.reviewDay(now: now, today: today)
 
         // ── Ask history (Q18 — up to 5, newest first) ───────────────────────
         askEntries = [
@@ -1275,6 +1318,72 @@ extension MockWorld: PeopleDataSource {
 }
 
 
+// MARK: - The reminders review's day
+
+extension MockWorld {
+    /// Today as `reminders-v4.html` has it: four follow-ups that became reminders on their own
+    /// (asked for out loud, or marked on the watch) and three the app was unsure of, waiting
+    /// for review. Said at the mockup's clock times; decided a few minutes ago, so they are
+    /// always in today's summary whatever time the demo runs.
+    static func reviewDay(now: Date, today: (Int, Int) -> Date) -> [FollowUp] {
+        func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+        let decided = ms(now.addingTimeInterval(-15 * 60))
+        let startOfToday = ms(Calendar.current.startOfDay(for: now))
+        func said(_ hour: Int, _ minute: Int, _ seconds: Int64) -> SegmentWallRange {
+            let start = ms(today(hour, minute))
+            return SegmentWallRange(startMs: start, endMs: start + seconds * 1000, isApproximate: false)
+        }
+        func item(
+            _ id: String, _ text: String, conversation: String, at wall: SegmentWallRange,
+            quote: String, why: String? = nil, due: Int64? = nil, stage: FollowUpStage
+        ) -> FollowUp {
+            FollowUp(
+                id: id, text: text, done: false, sourceConversationId: conversation,
+                sourceSegmentId: "seg-\(conversation)", createdAtMs: wall.endMs + 60_000,
+                quote: quote, why: why, dueAtMs: due, sourceStartMs: 30_000,
+                sourceEndMs: 30_000 + (wall.endMs - wall.startMs), sourceWall: wall,
+                stage: stage, decidedAtMs: stage == .suggested ? nil : decided)
+        }
+        return [
+            item(
+                "fu-muse-ptt",
+                "Fix Muse push-to-talk: a quick release should just open the app and keep the conversation",
+                conversation: "app-redesign", at: said(4, 8, 9),
+                quote: "Create a follow-up for this. A quick release should just open the app.",
+                stage: .reminder),
+            item(
+                "fu-auto-reminders",
+                "Send automatic follow-ups from Pebble Audio conversations to iOS Reminders",
+                conversation: "app-redesign", at: said(4, 8, 40),
+                quote: "Remind me to send the automatic follow-ups to Reminders.",
+                stage: .reminder),
+            item(
+                "fu-quick-action", "Add a Pebble quick action to mark a moment as important",
+                conversation: "app-redesign", at: said(4, 9, 7),
+                quote: "Remind me to add a quick action that marks a moment.", stage: .reminder),
+            item(
+                "fu-austin", "Talk to Austin’s mother about when Austin can visit Vietnam",
+                conversation: "vietnam-catchup", at: said(10, 55, 11),
+                quote: "I should ask his mom when he could actually come over.",
+                why: "the trip gets planned without the dates that work", stage: .suggested),
+            item(
+                "fu-clinic", "Pay the clinic at the October 22 appointment",
+                conversation: "clinic-call", at: said(11, 20, 14),
+                quote: "I’ll pay the clinic when I’m there on the twenty-second.",
+                why: "you’ll have to settle the bill separately later", due: startOfToday,
+                stage: .suggested),
+            item(
+                "fu-shirt", "Buy a plain black shirt without a logo for stage blacks",
+                conversation: "stage-blacks", at: said(13, 30, 6),
+                quote: "Plain black, no logo, nothing that catches the light.", stage: .suggested),
+            item(
+                "fu-dhl", "Look up DHL locations and their mailing details",
+                conversation: "app-redesign", at: said(14, 41, 5),
+                quote: "Mark this one: DHL locations and their mailing details.", stage: .reminder),
+        ]
+    }
+}
+
 // MARK: - FollowUpsDataSource
 
 /// Mirrors `LiveFollowUps`: its own object over the same sample data, for the same reason.
@@ -1303,9 +1412,9 @@ extension MockFollowUps: FollowUpsDataSource {
                 // Snoozed rows are INCLUDED, exactly as `FollowUpStore` has it. A mock that
                 // hides them is a mock that cannot show the bug where they belonged to no list
                 // at all.
-                return !row.done && row.archivedAtMs == nil
+                return !row.done && row.archivedAtMs == nil && row.stage == .reminder
             case .completed:
-                return row.done && row.archivedAtMs == nil
+                return row.done && row.archivedAtMs == nil && row.stage == .reminder
             case .archived:
                 return row.archivedAtMs != nil
             }
@@ -1349,7 +1458,41 @@ extension MockFollowUps: FollowUpsDataSource {
             },
             sourceSegmentId: row.sourceSegmentId,
             sourceStartMs: row.sourceStartMs,
-            sourceEndMs: row.sourceEndMs)
+            sourceEndMs: row.sourceEndMs,
+            stage: row.stage,
+            decidedAtMs: row.decidedAtMs,
+            saidAtMs: row.sourceWall?.startMs)
+    }
+
+    /// Oldest first, as `FollowUpStore` orders the review queue.
+    func reviewQueue() async throws -> [FollowUpItem] {
+        followUps
+            .filter { $0.stage == .suggested && $0.archivedAtMs == nil && !$0.done }
+            .map(mockItem(_:))
+            .sorted { ($0.saidAtMs ?? $0.createdAtMs) < ($1.saidAtMs ?? $1.createdAtMs) }
+    }
+
+    func decided(fromMs: Int64, toMs: Int64) async throws -> [FollowUpItem] {
+        followUps
+            .filter { row in
+                guard let decided = row.decidedAtMs, row.stage != .suggested, row.origin == .ai
+                else { return false }
+                return decided >= fromMs && decided < toMs
+            }
+            .map(mockItem(_:))
+            .sorted { ($0.saidAtMs ?? $0.createdAtMs) < ($1.saidAtMs ?? $1.createdAtMs) }
+    }
+
+    func items(conversationId: String) async throws -> [FollowUpItem] {
+        followUps.filter { $0.sourceConversationId == conversationId }.map(mockItem(_:))
+    }
+
+    func setStage(id: String, stage: FollowUpStage) async throws {
+        mutate(id) {
+            $0.stage = stage
+            $0.decidedAtMs = stage == .suggested ? nil : Int64(Date().timeIntervalSince1970 * 1000)
+            $0.archivedAtMs = nil
+        }
     }
 
     @discardableResult
@@ -1416,7 +1559,7 @@ extension MockFollowUps: FollowUpsDataSource {
                 priority: item.priority, sourceStartMs: item.sourceStartMs,
                 sourceEndMs: item.sourceEndMs, completedAtMs: item.completedAtMs,
                 archivedAtMs: item.archivedAtMs, snoozedUntilMs: item.snoozedUntilMs,
-                origin: item.origin))
+                origin: item.origin, stage: item.stage, decidedAtMs: item.decidedAtMs))
         changed()
     }
 

@@ -2057,8 +2057,28 @@ extension LiveFollowUps: FollowUpsDataSource {
                 sourceStartMs: row.sourceStartMs,
                 sourceEndMs: row.sourceEndMs,
                 model: row.model,
-                modelName: AiModels.displayName(modelUsed: row.model))
+                modelName: AiModels.displayName(modelUsed: row.model),
+                stage: row.stage,
+                decidedAtMs: row.decidedAtMs,
+                saidAtMs: row.sourceWall?.startMs)
         }
+    }
+
+    func reviewQueue() async throws -> [FollowUpItem] {
+        await withTitles(try await composition.followUps.list(scope: .suggested))
+    }
+
+    func decided(fromMs: Int64, toMs: Int64) async throws -> [FollowUpItem] {
+        await withTitles(try await composition.followUps.decided(fromMs: fromMs, toMs: toMs))
+    }
+
+    func items(conversationId: String) async throws -> [FollowUpItem] {
+        await withTitles(try await composition.followUps.list(conversationId: conversationId))
+    }
+
+    func setStage(id: String, stage: FollowUpStage) async throws {
+        try await composition.followUps.setStage(id: id, stage, nowMs: composition.clock.nowMs)
+        await redonateFollowUp(id: id)
     }
 
     func followUpUpdates() -> AsyncStream<Void> {
@@ -2137,7 +2157,8 @@ extension LiveFollowUps: FollowUpsDataSource {
                 priority: item.priority, sourceStartMs: item.sourceStartMs,
                 sourceEndMs: item.sourceEndMs, completedAtMs: item.completedAtMs,
                 archivedAtMs: item.archivedAtMs, snoozedUntilMs: item.snoozedUntilMs,
-                origin: item.origin, model: item.model))
+                origin: item.origin, model: item.model, stage: item.stage,
+                decidedAtMs: item.decidedAtMs))
     }
 
     /// The recording, cued to the words that created the item.

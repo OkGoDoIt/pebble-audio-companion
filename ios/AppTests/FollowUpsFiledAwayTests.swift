@@ -202,8 +202,8 @@ final class FakeFollowUpsSource: FollowUpsDataSource {
     func items(scope: FollowUpListScope) async throws -> [FollowUpItem] {
         rows.filter { row in
             switch scope {
-            case .open: return !row.done && !row.isArchived
-            case .completed: return row.done && !row.isArchived
+            case .open: return !row.done && !row.isArchived && row.stage == .reminder
+            case .completed: return row.done && !row.isArchived && row.stage == .reminder
             case .archived: return row.isArchived
             }
         }
@@ -258,6 +258,35 @@ final class FakeFollowUpsSource: FollowUpsDataSource {
     }
 
     func source(of id: String) async -> CitationTarget? { nil }
+
+    /// The clock `setStage` stamps decisions with.
+    var nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+
+    func reviewQueue() async throws -> [FollowUpItem] {
+        rows.filter { $0.stage == .suggested && !$0.isArchived && !$0.done }
+            .sorted { $0.said < $1.said }
+    }
+
+    func decided(fromMs: Int64, toMs: Int64) async throws -> [FollowUpItem] {
+        rows.filter { row in
+            guard let decided = row.decidedAtMs, row.stage != .suggested, row.origin == .ai
+            else { return false }
+            return decided >= fromMs && decided < toMs
+        }
+        .sorted { $0.said < $1.said }
+    }
+
+    func items(conversationId: String) async throws -> [FollowUpItem] {
+        rows.filter { $0.sourceConversationId == conversationId }
+    }
+
+    func setStage(id: String, stage: FollowUpStage) async throws {
+        let stamp = nowMs
+        mutate(id) {
+            $0.stage = stage
+            $0.decidedAtMs = stage == .suggested ? nil : stamp
+        }
+    }
 
     private func mutate(_ id: String, _ change: (inout FollowUpItem) -> Void) {
         guard let index = rows.firstIndex(where: { $0.id == id }) else { return }

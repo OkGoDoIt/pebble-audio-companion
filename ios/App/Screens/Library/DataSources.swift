@@ -590,8 +590,26 @@ struct FollowUpItem: Equatable, Identifiable {
     /// wrote and for rows from before it was recorded.
     var model: String? = nil
     var modelName: String? = nil
+    /// Suggested (waiting for review), a reminder, or skipped (`docs/reminders.md`).
+    var stage: FollowUpStage = .reminder
+    /// When it became a reminder or was skipped: what the day's summary lists.
+    var decidedAtMs: Int64? = nil
+    /// When the words were said, on the wall clock; nil when the moment is unknown.
+    var saidAtMs: Int64? = nil
 
     var isArchived: Bool { archivedAtMs != nil }
+
+    /// When it was said, or failing that when it was found: the time the review and the
+    /// summary print beside it.
+    var said: Date {
+        Date(timeIntervalSince1970: Double(saidAtMs ?? createdAtMs) / 1000)
+    }
+
+    /// How long the quote runs in the recording, when the moment is known.
+    var momentLengthMs: Int64? {
+        guard let start = sourceStartMs, let end = sourceEndMs, end > start else { return nil }
+        return end - start
+    }
 
     func isSnoozed(at now: Date) -> Bool {
         guard let snoozedUntilMs else { return false }
@@ -628,6 +646,18 @@ protocol FollowUpsDataSource: AnyObject {
     func snooze(id: String, untilMs: Int64?) async throws
     func setArchived(id: String, archived: Bool) async throws
     func delete(id: String) async throws
+
+    // MARK: Review (`docs/reminders.md`)
+
+    /// Follow-ups waiting for review, oldest first: the review's cards.
+    func reviewQueue() async throws -> [FollowUpItem]
+    /// Follow-ups decided in `[fromMs, toMs)` — reminders and skipped, automatic ones included —
+    /// in the order they were said: the summary of a day.
+    func decided(fromMs: Int64, toMs: Int64) async throws -> [FollowUpItem]
+    /// Every follow-up one conversation produced, whatever its stage.
+    func items(conversationId: String) async throws -> [FollowUpItem]
+    /// The person's answer: a reminder, or skipped.
+    func setStage(id: String, stage: FollowUpStage) async throws
     /// Puts a deleted item back exactly as it was — same id, same quote, same recording. What
     /// the undo snackbar calls.
     func restore(_ item: FollowUpItem) async throws
