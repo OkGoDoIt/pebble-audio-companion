@@ -257,6 +257,153 @@ struct MuseRemindersTests {
         #expect(fx.eventKit.titles(in: "L2") == ["Eggs", "Milk"])
     }
 
+    // MARK: - The Pebble Audio list
+
+    @Test func keptInTheAppTheyAreOneMoreListCalledPebbleAudio() async throws {
+        let data = FakeMuseData(home: .app)
+        data.seedReminder("Call the vet")
+        let fx = RemindersFixture(access: .allowed, data: data)
+
+        let lists = await fx.run(["action": "lists"])
+        let names = lists["payload"]?["lists"]?.array?.compactMap { $0["name"]?.string }
+        #expect(names?.first == "Pebble Audio")
+        // The person's own default list stays the default for an add that names none.
+        #expect(lists["payload"]?["default_list"]?.string == "TODO")
+
+        let added = await fx.run(["action": "add", "title": "Eggs", "list": "pebble audio", "due": "2026-10-23T09:00:00-05:00"])
+        let reminder = try #require(added["payload"]?["added"])
+        #expect(reminder["list"]?.string == "Pebble Audio")
+        // Kept by the day: the reply says the day, not a time it didn't keep.
+        #expect(reminder["due"]?.string?.count == 10)
+        let id = try #require(reminder["id"]?.string)
+        #expect(id.hasPrefix("pa:"))
+        #expect(fx.eventKit.all().isEmpty)
+        #expect(data.open().map(\.title) == ["Call the vet", "Eggs"])
+
+        let read = await fx.run(["action": "read", "list": "Pebble Audio"])
+        #expect(read["payload"]?["reminders"]?.array?.compactMap { $0["title"]?.string }.sorted() == ["Call the vet", "Eggs"])
+
+        let done = await fx.run(["action": "edit", "id": .string(id), "completed": true])
+        #expect(done["payload"]?["updated"]?["completed"]?.bool == true)
+        #expect(done["payload"]?["changed"] == ["completed"])
+
+        let deleted = await fx.run(["action": "delete", "id": .string(id)])
+        #expect(deleted["payload"]?["deleted"]?["title"]?.string == "Eggs")
+        #expect(deleted["payload"]?["filed_away"]?.bool == true)
+        #expect(data.filedAway() == ["Eggs"])
+        let after = await fx.run(["action": "read", "list": "Pebble Audio"])
+        #expect(after["payload"]?["reminders"]?.array?.compactMap { $0["title"]?.string } == ["Call the vet"])
+    }
+
+    @Test func pebbleAudioRemindersHaveNoNotesAndDoNotCrossToAppleLists() async {
+        let data = FakeMuseData(home: .app)
+        let id = "pa:" + data.seedReminder("Call the vet")
+        let fx = RemindersFixture(access: .allowed, data: data)
+        #expect(await fx.run(["action": "add", "title": "Eggs", "list": "Pebble Audio", "notes": "Dozen"]) == MuseReminders.appNoNotes)
+        #expect(await fx.run(["action": "edit", "id": .string(id), "list": "Groceries"]) == MuseReminders.noMoveAcrossHomes)
+        let appleID = fx.eventKit.seed("Milk", list: "L2")
+        #expect(await fx.run(["action": "edit", "id": .string(appleID), "list": "Pebble Audio"]) == MuseReminders.noMoveAcrossHomes)
+        #expect(data.open().map(\.title) == ["Call the vet"])
+    }
+
+    @Test func withoutAppleAccessThePebbleAudioListStillWorksAlone() async {
+        let data = FakeMuseData(home: .app)
+        let fx = RemindersFixture(access: .allowed, data: data, authorized: false, refused: true)
+        let lists = await fx.run(["action": "lists"])
+        #expect(lists["payload"]?["lists"]?.array?.compactMap { $0["name"]?.string } == ["Pebble Audio"])
+        #expect(lists["payload"]?["default_list"]?.string == "Pebble Audio")
+        #expect(lists["payload"]?["note"]?.string == MuseReminders.noAppleAccess)
+        // No list named: Pebble Audio, the only one there is.
+        let added = await fx.run(["action": "add", "title": "Eggs"])
+        #expect(added["payload"]?["added"]?["list"]?.string == "Pebble Audio")
+        #expect(fx.watch.notices().isEmpty)
+        // An Apple list needs iOS's access, which was refused: said so, on the watch too.
+        let groceries = await fx.run(["action": "add", "title": "Milk", "list": "Groceries"])
+        #expect(groceries == MuseTools.reply(.phoneRefused, .reminders))
+        #expect(fx.watch.notices().count == 1)
+        #expect(data.open().map(\.title) == ["Eggs"])
+    }
+
+    @Test func keptInAppleRemindersTheyAreNotListedTwice() async {
+        let data = FakeMuseData(home: .apple)
+        data.seedReminder("Call the vet")
+        let fx = RemindersFixture(access: .allowed, data: data)
+        _ = fx.eventKit.seed("Call the vet", list: "L1")
+        let names = (await fx.run(["action": "lists"]))["payload"]?["lists"]?.array?.compactMap { $0["name"]?.string }
+        #expect(names?.contains("Pebble Audio") == false)
+        let read = await fx.run(["action": "read"])
+        #expect(read["payload"]?["reminders"]?.array?.count == 1)
+    }
+
+    // MARK: - Follow-ups: the review queue
+
+    @Test func followUpsAreTheReviewQueueAndCanBecomeRemindersOrBeSkipped() async throws {
+        let data = FakeMuseData(home: .app)
+        data.seedReminder("Already a reminder")
+        data.seedSuggestion("f1", "Send Sam the deck")
+        data.seedSuggestion("f2", "Book the dentist")
+        let fx = RemindersFixture(access: .allowed, data: data, followUps: .allowed)
+
+        let read = await fx.runFollowUps(["action": "read"])
+        let items = try #require(read["payload"]?["follow_ups"]?.array)
+        #expect(items.compactMap { $0["task"]?.string } == ["Send Sam the deck", "Book the dentist"])
+        #expect(items.first?["id"]?.string == "f1")
+        #expect(items.first?["conversation"]?.string == "Planning")
+        #expect(items.first?["quote"]?.string == "I'll send Sam the deck")
+        #expect(items.first?["why"]?.string?.isEmpty == false)
+        #expect(items.first?["said_at"]?.string?.isEmpty == false)
+
+        let reminded = await fx.runFollowUps(["action": "remind", "id": "f1"])
+        #expect(reminded["payload"]?["reminder"]?["kept_in"]?.string == "Pebble Audio")
+        #expect(reminded["payload"]?["reminder"]?["list"]?.string == "Pebble Audio")
+        #expect(reminded["payload"]?["reminder"]?["id"]?.string == "pa:f1")
+        let skipped = await fx.runFollowUps(["action": "skip", "id": "f2"])
+        #expect(skipped["payload"]?["skipped"]?["task"]?.string == "Book the dentist")
+        #expect(data.stages() == ["f1": "reminder", "f2": "skipped"])
+        // It is a reminder now, in the reminders tool.
+        let reminders = await fx.run(["action": "read", "list": "Pebble Audio"])
+        #expect(reminders["payload"]?["reminders"]?.array?.compactMap { $0["title"]?.string }.sorted() == [
+            "Already a reminder", "Send Sam the deck",
+        ])
+        // Nothing waits now; deciding one twice is said plainly.
+        #expect((await fx.runFollowUps(["action": "read"]))["payload"]?["follow_ups"]?.array?.isEmpty == true)
+        #expect((await fx.runFollowUps(["action": "skip", "id": "f1"]))["ok"]?.bool == false)
+    }
+
+    @Test func aFollowUpCantBeAddedOnlyAReminderCan() async {
+        let data = FakeMuseData(home: .app)
+        let fx = RemindersFixture(access: .allowed, data: data, followUps: .allowed)
+        let result = await fx.runFollowUps(["action": "add", "text": "Book flights"])
+        #expect(result == MuseTools.followUpAddRefused)
+        #expect(result["error"]?.string?.contains("reminders tool") == true)
+        #expect(data.open().isEmpty)
+    }
+
+    @Test func inAppleRemindersARemindedFollowUpSaysWhichList() async {
+        let data = FakeMuseData(home: .apple, appleList: "Groceries")
+        data.seedSuggestion("f1", "Buy a spatula")
+        let fx = RemindersFixture(access: .allowed, data: data, followUps: .allowed)
+        let reminded = await fx.runFollowUps(["action": "remind", "id": "f1"])
+        #expect(reminded["payload"]?["reminder"]?["kept_in"]?.string == "Apple Reminders")
+        #expect(reminded["payload"]?["reminder"]?["list"]?.string == "Groceries")
+    }
+
+    @Test func decidingFollowUpsIsAskedOncePerQuestion() async {
+        let data = FakeMuseData(home: .app)
+        for index in 1...3 { data.seedSuggestion("f\(index)", "Task \(index)") }
+        let fx = RemindersFixture(access: .allowed, data: data, followUps: .ask)
+        fx.watch.answer(value: 0)
+        _ = await fx.runFollowUps(["action": "remind", "id": "f1"])
+        _ = await fx.runFollowUps(["action": "skip", "id": "f2"])
+        _ = await fx.runFollowUps(["action": "read"])
+        #expect(fx.watch.questions() == [MuseTools.changeQuestion(.followUps)])
+        #expect(MuseTools.changeQuestion(.followUps).utf8.count <= ProtocolConstants.watchActionQuestionMaxBytes)
+        // Reading alone keeps its own question.
+        await fx.tools.questionBegan()
+        _ = await fx.runFollowUps(["action": "read"])
+        #expect(fx.watch.questions().last == "Let Muse read your follow-ups? What it reads goes to Meta.")
+    }
+
     // MARK: - What Muse is told exists
 
     @Test func theToolOffersListsReadAddEditAndDeleteOrNothingWhenOff() {
@@ -274,21 +421,154 @@ struct MuseRemindersTests {
 
 private struct RemindersFixture {
     let preferences = MusePreferencesStore(defaults: UserDefaults(suiteName: "muse-reminders-\(UUID().uuidString)")!)
-    let eventKit = FakeReminderStore(lists: MuseRemindersTests.lists)
+    let eventKit: FakeReminderStore
     let watch = FakeWatchSide()
     let clock: RemindersClock
     let tools: MuseTools
 
-    init(access: MuseSourceAccess) {
-        preferences.update { $0.dataAccess[.reminders] = access }
+    init(
+        access: MuseSourceAccess, data: FakeMuseData? = nil, authorized: Bool = true, refused: Bool = false,
+        followUps: MuseSourceAccess = .ask
+    ) {
+        preferences.update {
+            $0.dataAccess[.reminders] = access
+            $0.dataAccess[.followUps] = followUps
+        }
         let clock = RemindersClock()
         self.clock = clock
+        eventKit = FakeReminderStore(lists: MuseRemindersTests.lists, authorized: authorized, refused: refused)
         tools = MuseTools(
-            preferences: preferences, data: nil, eventKit: eventKit, clock: { clock.now() }, holdLimit: .seconds(5))
+            preferences: preferences, data: data, eventKit: eventKit, clock: { clock.now() }, holdLimit: .seconds(5))
     }
 
     func run(_ params: MuseJSON) async -> MuseJSON {
         await tools.run(MuseTools.remindersCommand, params, watch: watch)
+    }
+
+    func runFollowUps(_ params: MuseJSON) async -> MuseJSON {
+        await tools.run(MuseTools.followUpsCommand, params, watch: watch)
+    }
+}
+
+/// The app's side: its own reminders and the follow-ups waiting for review.
+private final class FakeMuseData: MuseDataProvider, @unchecked Sendable {
+    private struct Item {
+        var id: String
+        var text: String
+        var stage: String
+        var done = false
+        var due: Date?
+        var filedAway = false
+    }
+
+    private let lock = NSLock()
+    private let home: ReminderHome
+    private let appleList: String
+    private var items: [Item] = []
+    private var next = 1
+
+    init(home: ReminderHome, appleList: String = "Pebble Audio") {
+        self.home = home
+        self.appleList = appleList
+    }
+
+    @discardableResult
+    func seedReminder(_ text: String) -> String {
+        lock.withLock {
+            let id = "r\(next)"
+            next += 1
+            items.append(Item(id: id, text: text, stage: "reminder"))
+            return id
+        }
+    }
+
+    func seedSuggestion(_ id: String, _ text: String) {
+        lock.withLock { items.append(Item(id: id, text: text, stage: "suggested")) }
+    }
+
+    func open() -> [MuseAppReminder] {
+        lock.withLock { items.filter { $0.stage == "reminder" && !$0.filedAway && !$0.done }.map(Self.reminder) }
+    }
+
+    func filedAway() -> [String] { lock.withLock { items.filter(\.filedAway).map(\.text) } }
+    func stages() -> [String: String] {
+        lock.withLock { Dictionary(uniqueKeysWithValues: items.filter { $0.id.hasPrefix("f") }.map { ($0.id, $0.stage) }) }
+    }
+
+    private static func reminder(_ item: Item) -> MuseAppReminder {
+        MuseAppReminder(id: item.id, title: item.text, due: item.due, done: item.done)
+    }
+
+    func conversations(from: Date, to: Date, query: String?, characters: Int) async -> [MuseConversationText] { [] }
+    func answerFromRecordings(_ question: String) async -> String? { nil }
+    func recap(day: Date, week: Bool) async -> String? { nil }
+    func pauseRecording(minutes: Int) async -> Bool { false }
+    func resumeRecording() async -> Bool { false }
+    func markMoment(_ label: String?) async -> Bool { false }
+
+    func reminderHome() async -> ReminderHome { home }
+
+    func appReminders(completedSince: Date?) async -> [MuseAppReminder] {
+        lock.withLock {
+            items.filter { $0.stage == "reminder" && !$0.filedAway && (!$0.done || completedSince != nil) }.map(Self.reminder)
+        }
+    }
+
+    func appReminder(id: String) async -> MuseAppReminder? {
+        lock.withLock { items.first { $0.id == id && $0.stage == "reminder" && !$0.filedAway }.map(Self.reminder) }
+    }
+
+    func addAppReminder(title: String, due: Date?) async -> MuseAppReminder? {
+        lock.withLock {
+            let id = "r\(next)"
+            next += 1
+            let item = Item(id: id, text: title, stage: "reminder", due: due.map { Calendar.current.startOfDay(for: $0) })
+            items.append(item)
+            return Self.reminder(item)
+        }
+    }
+
+    func updateAppReminder(id: String, _ change: MuseEventKitSource.ReminderChange) async -> MuseAppReminder? {
+        lock.withLock {
+            guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
+            if let title = change.title { items[index].text = title }
+            if let done = change.completed { items[index].done = done }
+            switch change.due {
+            case .set(let date, _)?: items[index].due = Calendar.current.startOfDay(for: date)
+            case .clear?: items[index].due = nil
+            case nil: break
+            }
+            return Self.reminder(items[index])
+        }
+    }
+
+    func fileAwayAppReminder(id: String) async -> MuseAppReminder? {
+        lock.withLock {
+            guard let index = items.firstIndex(where: { $0.id == id && !$0.filedAway }) else { return nil }
+            items[index].filedAway = true
+            return Self.reminder(items[index])
+        }
+    }
+
+    func followUpsToReview(limit: Int) async -> [MuseFollowUp] {
+        lock.withLock {
+            items.filter { $0.stage == "suggested" }.prefix(limit).map {
+                MuseFollowUp(
+                    id: $0.id, text: $0.text, due: nil, saidAt: Date(timeIntervalSince1970: 1_800_000_000),
+                    conversation: "Planning", quote: "I'll \($0.text.prefix(1).lowercased())\($0.text.dropFirst())",
+                    why: "Sam is waiting for it.")
+            }
+        }
+    }
+
+    func decideFollowUp(id: String, remind: Bool) async -> MuseFollowUpDecision? {
+        lock.withLock {
+            guard let index = items.firstIndex(where: { $0.id == id && $0.stage == "suggested" }) else { return nil }
+            items[index].stage = remind ? "reminder" : "skipped"
+            return MuseFollowUpDecision(
+                id: id, title: items[index].text, keptInApple: home == .apple,
+                list: home == .apple ? appleList : "Pebble Audio", reminderID: home == .app && remind ? "pa:\(id)" : nil)
+        }
     }
 }
 
@@ -304,14 +584,17 @@ private final class RemindersClock: @unchecked Sendable {
 private final class FakeWatchSide: MuseWatchSide, @unchecked Sendable {
     private let lock = NSLock()
     private var asked: [String] = []
+    private var told: [String] = []
     private var choice = 2
 
     func answer(value: Int) { lock.withLock { choice = value } }
     func questions() -> [String] { lock.withLock { asked } }
+    func notices() -> [String] { lock.withLock { told } }
 
     func runWatchAction(_ request: WatchActionRequest, wait: Duration) async -> WatchActionResult? {
         let value: Int = lock.withLock {
             if case .choose(let question, _, _) = request { asked.append(question) }
+            if case .notice(let text) = request { told.append(text) }
             return choice
         }
         return WatchActionResult(actionId: 1, statusRaw: WatchActionStatus.done.rawValue, value: value, text: [])
@@ -327,12 +610,19 @@ private final class FakeReminderStore: MuseEventKitAccess, @unchecked Sendable {
     private var items: [MuseEventKitSource.Reminder] = []
     private var nextID = 1
 
-    init(lists: [MuseEventKitSource.ReminderList]) { self.lists = lists }
+    private let authorized: Bool
+    private let refused: Bool
+
+    init(lists: [MuseEventKitSource.ReminderList], authorized: Bool = true, refused: Bool = false) {
+        self.lists = lists
+        self.authorized = authorized
+        self.refused = refused
+    }
 
     var calendarAuthorized: Bool { true }
     var calendarRefused: Bool { false }
-    var remindersAuthorized: Bool { true }
-    var remindersRefused: Bool { false }
+    var remindersAuthorized: Bool { authorized }
+    var remindersRefused: Bool { refused }
 
     func events(from start: Date, to end: Date, limit: Int) -> [MuseEventKitSource.Event] { [] }
     func addEvent(title: String, start: Date, end: Date?, notes: String?) throws -> MuseEventKitSource.Event {
@@ -352,7 +642,7 @@ private final class FakeReminderStore: MuseEventKitAccess, @unchecked Sendable {
         }
     }
 
-    func reminderLists() -> [MuseEventKitSource.ReminderList] { lists }
+    func reminderLists() -> [MuseEventKitSource.ReminderList] { authorized ? lists : [] }
 
     func reminders(inLists listIDs: [String]?, completedSince: Date?) async -> [MuseEventKitSource.Reminder] {
         all().filter { (listIDs?.contains($0.listID) ?? true) && (!$0.completed || completedSince != nil) }

@@ -919,12 +919,14 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
 
 private final class FakeData: MuseDataProvider, @unchecked Sendable {
     private let lock = NSLock()
-    private var _followUps: [MuseFollowUp] = [MuseFollowUp(text: "Send Sam the deck", due: nil)]
+    private var _followUps: [MuseFollowUp] = [MuseFollowUp(id: "f1", text: "Send Sam the deck", due: nil)]
+    private var _decided: [String] = []
     private var _paused: Int?
     private var _marks: [String?] = []
     private var _searches: [(Date, Date, String?)] = []
 
     var followUps: [MuseFollowUp] { lock.withLock { _followUps } }
+    var decided: [String] { lock.withLock { _decided } }
     var paused: Int? { lock.withLock { _paused } }
     var marks: [String?] { lock.withLock { _marks } }
     var searches: [(Date, Date, String?)] { lock.withLock { _searches } }
@@ -936,10 +938,21 @@ private final class FakeData: MuseDataProvider, @unchecked Sendable {
 
     func answerFromRecordings(_ question: String) async -> String? { "Alex said the budget is fine." }
     func recap(day: Date, week: Bool) async -> String? { week ? nil : "A quiet day." }
-    func openFollowUps(limit: Int) async -> [MuseFollowUp] { followUps }
-    func addFollowUp(_ text: String, due: Date?) async -> Bool {
-        lock.withLock { _followUps.append(MuseFollowUp(text: text, due: due)) }
-        return true
+    func reminderHome() async -> ReminderHome { .app }
+    func appReminders(completedSince: Date?) async -> [MuseAppReminder] { [] }
+    func appReminder(id: String) async -> MuseAppReminder? { nil }
+    func addAppReminder(title: String, due: Date?) async -> MuseAppReminder? { nil }
+    func updateAppReminder(id: String, _ change: MuseEventKitSource.ReminderChange) async -> MuseAppReminder? { nil }
+    func fileAwayAppReminder(id: String) async -> MuseAppReminder? { nil }
+    func followUpsToReview(limit: Int) async -> [MuseFollowUp] { followUps }
+    func decideFollowUp(id: String, remind: Bool) async -> MuseFollowUpDecision? {
+        lock.withLock {
+            guard let index = _followUps.firstIndex(where: { $0.id == id }) else { return nil }
+            let item = _followUps.remove(at: index)
+            _decided.append("\(id): \(remind ? "remind" : "skip")")
+            return MuseFollowUpDecision(
+                id: id, title: item.text, keptInApple: false, list: "Pebble Audio", reminderID: "pa:\(id)")
+        }
     }
     func pauseRecording(minutes: Int) async -> Bool {
         lock.withLock { _paused = minutes }
@@ -1014,15 +1027,15 @@ struct MuseToolsTests {
         #expect(question == "Let Muse read your follow-ups? What it reads goes to Meta.")
         #expect(options == ["Allow Once", "Always Allow", "Not Now", "Never Allow"])
         let result = await reply.value
-        #expect(result["payload"]?["follow_ups"]?.array?.first?["text"]?.string == "Send Sam the deck")
+        #expect(result["payload"]?["follow_ups"]?.array?.first?["task"]?.string == "Send Sam the deck")
         #expect(fx.preferences.current.value.access(.followUps) == .allowed)
 
         // Allowed: the next call goes straight through, with no question on the watch.
         let before = fx.link.actions().count
-        let again = await fx.service.runCommand(MuseTools.followUpsCommand, ["action": "add", "text": "Book flights"])
-        #expect(again["ok"]?.bool == true)
+        let again = await fx.service.runCommand(MuseTools.followUpsCommand, ["action": "remind", "id": "f1"])
+        #expect(again["payload"]?["reminder"]?["list"]?.string == "Pebble Audio")
         #expect(fx.link.actions().count == before)
-        #expect(fx.data.followUps.map(\.text) == ["Send Sam the deck", "Book flights"])
+        #expect(fx.data.decided == ["f1: remind"])
     }
 
     @Test func notNowRefusesOnceAndAsksAgainNextTime() async throws {
