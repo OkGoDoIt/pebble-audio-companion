@@ -68,6 +68,7 @@ struct TranscriptExportParityTests {
             case .turn, .moment: return nil
             case .quiet(let marker): return (marker.text, marker.startedAt, false)
             case .missing(let marker): return (marker.text, marker.startedAt, true)
+            case .moment: return nil
             }
         }
 

@@ -46,6 +46,7 @@ struct TranscriptLayoutTests {
             case .moment: return "moment"
             case .band(let blocks, _): return "band(\(blocks.count))"
             case .provenance: return "provenance"
+            case .moment: return "moment"
             }
         }
     }

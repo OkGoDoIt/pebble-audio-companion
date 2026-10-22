@@ -8,7 +8,7 @@ import SegmentStore
 import Transcription
 
 /// What Muse can reach in the app while answering a question from the watch (docs/privacy-model.md
-/// D7a, D7b, D7e). Every call is one Muse made during a question the wearer asked, after
+/// D7a, D7b, D7d, D7e). Every call is one Muse made during a question the wearer asked, after
 /// `MuseTools` has checked the source is allowed; nothing here decides permission.
 final class AppMuseData: MuseDataProvider, @unchecked Sendable {
     private let composition: AppComposition
@@ -118,25 +118,108 @@ final class AppMuseData: MuseDataProvider, @unchecked Sendable {
         return text.isEmpty ? nil : text
     }
 
-    // MARK: - Follow-ups
+    // MARK: - Reminders kept in the app (`docs/reminders.md`)
 
-    func openFollowUps(limit: Int) async -> [MuseFollowUp] {
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let open = (try? await composition.followUps.list(scope: .open, nowMs: nowMs)) ?? []
-        return open
-            .filter { ($0.snoozedUntilMs ?? 0) <= nowMs }
-            .prefix(limit)
-            .map { MuseFollowUp(text: $0.text, due: $0.dueAtMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }) }
+    func reminderHome() async -> ReminderHome {
+        await MainActor.run { RemindersComposition.preferences.current.value.home }
     }
 
-    func addFollowUp(_ text: String, due: Date?) async -> Bool {
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        guard let added = try? await composition.followUps.add(
-            text: text, dueAtMs: due.map { Int64($0.timeIntervalSince1970 * 1000) }, nowMs: nowMs)
-        else { return false }
-        try? await composition.donator.donateFollowUp(id: added.id, text: added.text, createdAtMs: nowMs)
-        return true
+    func appReminders(completedSince: Date?) async -> [MuseAppReminder] {
+        let store = composition.followUps
+        var rows = (try? await store.list(scope: .open)) ?? []
+        if let completedSince {
+            let since = Self.ms(completedSince)
+            rows += ((try? await store.list(scope: .completed)) ?? []).filter { ($0.completedAtMs ?? 0) >= since }
+        }
+        return rows.map(Self.reminder)
     }
+
+    func appReminder(id: String) async -> MuseAppReminder? {
+        guard let row = try? await composition.followUps.load(id: id), row.stage == .reminder, !row.isArchived else {
+            return nil
+        }
+        return Self.reminder(row)
+    }
+
+    /// Asked of an assistant: a reminder at once, never a suggestion.
+    func addAppReminder(title: String, due: Date?) async -> MuseAppReminder? {
+        let nowMs = Self.ms(Date())
+        let item = FollowUp(
+            id: UUID().uuidString.lowercased(), text: title, done: false, sourceConversationId: nil,
+            sourceSegmentId: nil, createdAtMs: nowMs, dueAtMs: due.map(Self.startOfDayMs), origin: .assistant)
+        guard (try? await composition.followUps.insertFromAssistant(item)) == true else { return nil }
+        try? await composition.donator.donateFollowUp(id: item.id, text: item.text, createdAtMs: nowMs)
+        return await appReminder(id: item.id)
+    }
+
+    func updateAppReminder(id: String, _ change: MuseEventKitSource.ReminderChange) async -> MuseAppReminder? {
+        let store = composition.followUps
+        guard await appReminder(id: id) != nil else { return nil }
+        let nowMs = Self.ms(Date())
+        do {
+            if let title = change.title { try await store.setText(id: id, title, nowMs: nowMs) }
+            switch change.due {
+            case .set(let date, _)?: try await store.setDue(id: id, Self.startOfDayMs(date), nowMs: nowMs)
+            case .clear?: try await store.setDue(id: id, nil, nowMs: nowMs)
+            case nil: break
+            }
+            if let done = change.completed { try await store.setDone(id: id, done, nowMs: nowMs) }
+        } catch {
+            return nil
+        }
+        guard let row = try? await store.load(id: id) else { return nil }
+        return Self.reminder(row)
+    }
+
+    /// Off the list, kept and findable: the app never erases what someone may have acted on.
+    func fileAwayAppReminder(id: String) async -> MuseAppReminder? {
+        guard let before = await appReminder(id: id) else { return nil }
+        guard (try? await composition.followUps.setArchived(id: id, true, nowMs: Self.ms(Date()))) != nil else { return nil }
+        return before
+    }
+
+    // MARK: - Follow-ups waiting for review
+
+    func followUpsToReview(limit: Int) async -> [MuseFollowUp] {
+        let rows = Array(((try? await composition.followUps.list(scope: .suggested)) ?? []).prefix(limit))
+        let titles = (try? await ArchiveReadTitles.load(
+            Array(Set(rows.compactMap(\.sourceConversationId))), in: composition.database)) ?? [:]
+        return rows.map { row in
+            MuseFollowUp(
+                id: row.id, text: row.text, due: row.dueAtMs.map(Self.date),
+                saidAt: Self.date(row.sourceWall?.startMs ?? row.createdAtMs),
+                conversation: row.sourceConversationId.flatMap { titles[$0] },
+                quote: row.quote, why: row.why)
+        }
+    }
+
+    func decideFollowUp(id: String, remind: Bool) async -> MuseFollowUpDecision? {
+        let store = composition.followUps
+        guard let row = try? await store.load(id: id), row.stage == .suggested, !row.isArchived else { return nil }
+        guard (try? await store.setStage(id: id, remind ? .reminder : .skipped, nowMs: Self.ms(Date()))) != nil else {
+            return nil
+        }
+        let (home, listId, lists) = await MainActor.run {
+            (
+                RemindersComposition.preferences.current.value.home,
+                RemindersComposition.preferences.current.value.appleListId,
+                RemindersComposition.home?.lists() ?? []
+            )
+        }
+        let apple = home == .apple
+        let list = apple ? lists.first { $0.id == listId }?.title ?? RemindersHome.newListTitle : RemindersHome.newListTitle
+        return MuseFollowUpDecision(
+            id: id, title: row.text, keptInApple: apple, list: list, reminderID: !apple && remind ? "pa:\(id)" : nil)
+    }
+
+    private static func reminder(_ row: FollowUp) -> MuseAppReminder {
+        MuseAppReminder(id: row.id, title: row.text, due: row.dueAtMs.map(date), done: row.done)
+    }
+
+    private static func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+    private static func date(_ ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
+    /// Reminders in the app are kept by the day, at its start.
+    private static func startOfDayMs(_ date: Date) -> Int64 { ms(Calendar.current.startOfDay(for: date)) }
 
     // MARK: - Recording
 

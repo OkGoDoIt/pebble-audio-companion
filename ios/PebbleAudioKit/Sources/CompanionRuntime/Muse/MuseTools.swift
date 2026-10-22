@@ -3,7 +3,8 @@ import MuseLink
 import WireProtocol
 
 /// The app's side of what Muse can reach while it answers a question from the watch: the
-/// person's recordings, follow-ups and recording control. Provided by the app, which owns them.
+/// person's recordings, reminders, follow-ups and recording control. Provided by the app, which
+/// owns them.
 public protocol MuseDataProvider: Sendable {
     /// Conversations that overlap `from`–`to`, newest first, their text cut to fit `characters`
     /// in all; with `query`, only the conversations (and passages) that match it.
@@ -13,8 +14,30 @@ public protocol MuseDataProvider: Sendable {
     func answerFromRecordings(_ question: String) async -> String?
     /// What happened on `day`, or in the seven days ending on it. Nil when there is nothing.
     func recap(day: Date, week: Bool) async -> String?
-    func openFollowUps(limit: Int) async -> [MuseFollowUp]
-    func addFollowUp(_ text: String, due: Date?) async -> Bool
+
+    // Reminders the app keeps itself (`docs/reminders.md`): the reminders tool's "Pebble Audio"
+    // list while the app is their home. Only reminders: never a follow-up waiting for review.
+
+    /// Where reminders are kept.
+    func reminderHome() async -> ReminderHome
+    /// Open reminders, and with `completedSince` the ones completed since then.
+    func appReminders(completedSince: Date?) async -> [MuseAppReminder]
+    /// One reminder, nil when there is none by that id (or it was filed away).
+    func appReminder(id: String) async -> MuseAppReminder?
+    /// A new reminder an assistant was asked for. Nil when it couldn't be added.
+    func addAppReminder(title: String, due: Date?) async -> MuseAppReminder?
+    /// Its title, due day, or done; the rest of `change` is never set. The reminder as it is now.
+    func updateAppReminder(id: String, _ change: MuseEventKitSource.ReminderChange) async -> MuseAppReminder?
+    /// Files it away (off the list, kept, findable). What it was; nil when there is none.
+    func fileAwayAppReminder(id: String) async -> MuseAppReminder?
+
+    // Follow-ups: what the app noticed, waiting for review.
+
+    /// Follow-ups waiting for review, oldest said first.
+    func followUpsToReview(limit: Int) async -> [MuseFollowUp]
+    /// Turns a follow-up waiting for review into a reminder, or skips it. Nil when no follow-up
+    /// with that id is waiting.
+    func decideFollowUp(id: String, remind: Bool) async -> MuseFollowUpDecision?
     /// Pauses recording for `minutes` (0: until resumed). False when recording isn't on.
     func pauseRecording(minutes: Int) async -> Bool
     func resumeRecording() async -> Bool
@@ -36,13 +59,67 @@ public struct MuseConversationText: Sendable, Equatable {
     }
 }
 
+/// A follow-up waiting for review: something the app noticed, not something decided.
 public struct MuseFollowUp: Sendable, Equatable {
+    public let id: String
     public let text: String
     public let due: Date?
+    /// When it was said.
+    public let saidAt: Date?
+    /// The conversation's title.
+    public let conversation: String?
+    /// The words said.
+    public let quote: String?
+    /// Why it might matter.
+    public let why: String?
 
-    public init(text: String, due: Date?) {
+    public init(
+        id: String = "", text: String, due: Date?, saidAt: Date? = nil, conversation: String? = nil,
+        quote: String? = nil, why: String? = nil
+    ) {
+        self.id = id
         self.text = text
         self.due = due
+        self.saidAt = saidAt
+        self.conversation = conversation
+        self.quote = quote
+        self.why = why
+    }
+}
+
+/// A reminder the app keeps itself.
+public struct MuseAppReminder: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    /// The day it is due, at its start.
+    public let due: Date?
+    public let done: Bool
+
+    public init(id: String, title: String, due: Date?, done: Bool) {
+        self.id = id
+        self.title = title
+        self.due = due
+        self.done = done
+    }
+}
+
+/// Where a follow-up went when it was decided.
+public struct MuseFollowUpDecision: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    /// Its reminder is kept in Apple Reminders.
+    public let keptInApple: Bool
+    /// The list it is in: "Pebble Audio", or the Apple list's name.
+    public let list: String
+    /// The reminders tool's id for it, when known now.
+    public let reminderID: String?
+
+    public init(id: String, title: String, keptInApple: Bool, list: String, reminderID: String?) {
+        self.id = id
+        self.title = title
+        self.keptInApple = keptInApple
+        self.list = list
+        self.reminderID = reminderID
     }
 }
 
@@ -213,7 +290,7 @@ actor MuseTools {
         if prefs.access(.reminders) != .off {
             c[remindersCommand] = [
                 "description":
-                    "The user's reminders on their phone, in all of their lists (like Groceries or Work). lists returns the list names and which one is the default; read returns reminders not done yet, each with its id, from one list or all of them; add adds one to a list by name; edit changes one by id: its title, due date, notes, list (to move it), or whether it is done; delete removes one by id. Each reply says what is now true, including the list the reminder is in.",
+                    "The user's reminders: everything they said yes to or asked to be reminded of, in all of their lists, Apple Reminders lists (like Groceries or Work) and the Pebble Audio list, which holds the reminders they made from their recorded conversations. lists returns the list names and which one is the default; read returns reminders not done yet, each with its id, from one list or all of them; add adds one to a list by name; edit changes one by id: its title, due date, notes, list (to move it), or whether it is done; delete removes one by id. Each reply says what is now true, including the list the reminder is in. Follow-ups waiting for review are not reminders; they are in the followups tool.",
                 "required": ["action": param("string", "One of: lists, read, add, edit, delete.")],
                 "optional": [
                     "list": param(
@@ -246,12 +323,10 @@ actor MuseTools {
         }
         if prefs.access(.followUps) != .off, hasData {
             c[followUpsCommand] = [
-                "description": "The user's follow-ups in Pebble Audio, things they said they would do: list the open ones, or add one.",
-                "required": ["action": param("string", "list or add.")],
-                "optional": [
-                    "text": param("string", "With add: what to follow up on."),
-                    "due": param("string", "With add: when, \(date)."),
-                ],
+                "description":
+                    "The user's follow-ups: things Pebble Audio noticed in their recorded conversations that they might want to act on, waiting for them to review. A follow-up is a suggestion, not a commitment and not their to-do list: never present follow-ups as things they have to do. read returns the ones waiting, each with its id, the task, when it was said, the conversation, the words said, and why it might matter. remind turns one into a reminder, and skip sets one aside; do either only when the user asks. To add something the user wants to remember, use the reminders tool.",
+                "required": ["action": param("string", "One of: read, remind, skip.")],
+                "optional": ["id": param("string", "With remind and skip: the follow-up's id, from read.")],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
         }
@@ -281,8 +356,8 @@ actor MuseTools {
     }
 
     /// What identifies a call that changes something (a timer, an alarm, a new or deleted
-    /// reminder, a new follow-up, a calendar event): its command and parameters. Nil for a call
-    /// that only reads.
+    /// reminder, a follow-up decided, a calendar event): its command and parameters. Nil for a
+    /// call that only reads.
     static func changeKey(_ command: String, _ params: MuseJSON) -> String? {
         switch command {
         case timerCommand, alarmCommand:
@@ -291,7 +366,10 @@ actor MuseTools {
             // An edit sets fields, so doing it twice is harmless, and a later edit may undo an
             // earlier one: only adds and deletes are answered from the first call.
             guard let action = MuseReminders.Action(params["action"]?.string), action == .add || action == .delete else { return nil }
-        case followUpsCommand, calendarCommand:
+        case followUpsCommand:
+            // Answered from the first call: a repeat would find it decided already.
+            guard let action = FollowUpAction(params["action"]?.string), action == .remind || action == .skip else { return nil }
+        case calendarCommand:
             guard let action = params["action"]?.string, ["add", "create", "complete"].contains(action) else { return nil }
         default:
             return nil
@@ -367,8 +445,7 @@ actor MuseTools {
             return await conversations(params, data: data)
         case Self.followUpsCommand:
             guard let data else { return Self.turnedOff }
-            if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
-            return await followUps(params, data: data)
+            return await followUps(params, data: data, prefs: prefs, watch: watch, deadline: deadline)
         default:
             return Self.error("unsupported command")
         }
@@ -458,7 +535,10 @@ actor MuseTools {
     /// "add eggs to my grocery list" is one prompt (Roger, 2026-10-22). Word for word from
     /// docs/privacy-model.md, section 4.
     static func changeQuestion(_ source: MuseSource) -> String {
-        "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
+        switch source {
+        case .followUps: return "Let Muse turn your follow-ups into reminders or skip them? What it reads goes to Meta."
+        default: return "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
+        }
     }
 
     /// How many changes one Allow Once covers; past that the watch asks again.
@@ -690,6 +770,16 @@ actor MuseTools {
 
     // MARK: - Reminders
 
+    /// Everything the person said yes to: their Apple Reminders lists, and the reminders Pebble
+    /// Audio keeps itself, shown as one more list called "Pebble Audio" (`docs/reminders.md`).
+    /// While the app keeps its reminders in Apple Reminders they are already in an Apple list, so
+    /// that list is shown only while the app keeps them, or Apple Reminders can't be reached.
+    private func appListShown() async -> Bool {
+        guard let data else { return false }
+        if !eventKit.remindersAuthorized { return true }
+        return await data.reminderHome() == .app
+    }
+
     /// Reading asks the way every source does. Changes (add, edit, delete) are asked about once
     /// per question under Ask first (see `permission`); a list Muse names that isn't there is an
     /// error naming the lists, never an add to another list.
@@ -699,9 +789,15 @@ actor MuseTools {
         guard let action = MuseReminders.Action(params["action"]?.string) else {
             return Self.error("action must be lists, read, add, edit or delete")
         }
+        let appList = await appListShown()
+        // iOS's access is for Apple Reminders: a call that touches only the Pebble Audio list
+        // goes on without it.
+        let apple = needsApple(params, appList: appList)
         guard action.changes else {
-            if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
-            return action == .lists ? reminderLists() : await readReminders(params)
+            if let refusal = await remindersAccess(apple, prefs: prefs, watch: watch, deadline: deadline, change: false) {
+                return refusal
+            }
+            return action == .lists ? reminderLists(appList: appList) : await readReminders(params, appList: appList)
         }
         let request: MuseReminders.Request
         switch MuseReminders.request(action, params) {
@@ -709,20 +805,70 @@ actor MuseTools {
         case .request(let parsed): request = parsed
         }
         guard prefs.access(.reminders) != .off else { return Self.reply(.notAllowed, .reminders) }
-        if eventKit.remindersAuthorized {
+        if eventKit.remindersAuthorized || !apple {
             // A call that can't happen (no such list or reminder) isn't asked about on the
             // watch. Lists' names go to Muse only when it may read the reminders already.
             let namesAllowed = prefs.access(.reminders) == .allowed || mayReadOnce(.reminders)
-            if case .failed(let reply) = resolve(request, namesAllowed: namesAllowed) { return reply }
+            if case .failed(let reply) = await resolve(request, namesAllowed: namesAllowed, appList: appList) { return reply }
         }
-        if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: true) {
+        if let refusal = await remindersAccess(apple, prefs: prefs, watch: watch, deadline: deadline, change: true) {
             return refusal
         }
         // Again: the person may have taken a while, and iOS access may be new.
-        switch resolve(request, namesAllowed: true) {
+        switch await resolve(request, namesAllowed: true, appList: appList) {
         case .failed(let reply): return reply
-        case .ready(let ready): return apply(ready)
+        case .ready(let ready): return await apply(ready)
         }
+    }
+
+    private func remindersAccess(
+        _ apple: Bool, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant, change: Bool
+    ) async -> MuseJSON? {
+        apple
+            ? await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: change)
+            : await permission(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: change)
+    }
+
+    /// Whether a call needs Apple Reminders: not when the Pebble Audio list is shown, Apple
+    /// Reminders can't be read, and the call names nothing but that list and its reminders.
+    private func needsApple(_ params: MuseJSON, appList: Bool) -> Bool {
+        guard appList, !eventKit.remindersAuthorized else { return true }
+        if let id = params["id"]?.string?.trimmingCharacters(in: .whitespaces), !id.isEmpty, MuseReminders.appID(id) == nil {
+            return true
+        }
+        if let name = params["list"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+            MuseReminders.match(name, in: [MuseReminders.appList(isDefault: true)]) == .notFound
+        {
+            return true
+        }
+        return false
+    }
+
+    /// The lists Muse sees: Pebble Audio's own first when shown (the default one when Apple
+    /// Reminders has none to offer), then the person's Apple lists.
+    private func allLists(appList: Bool) -> [MuseEventKitSource.ReminderList] {
+        let apple = eventKit.reminderLists()
+        guard appList else { return apple }
+        return [MuseReminders.appList(isDefault: !apple.contains(where: \.isDefault))] + apple
+    }
+
+    private func fetchReminders(listIDs: [String]?, since: Date?, appList: Bool) async -> [MuseEventKitSource.Reminder] {
+        var found: [MuseEventKitSource.Reminder] = []
+        let appleIDs = listIDs?.filter { $0 != MuseReminders.appListID }
+        if eventKit.remindersAuthorized, appleIDs?.isEmpty != true {
+            found += await eventKit.reminders(inLists: appleIDs, completedSince: since)
+        }
+        if appList, let data, listIDs?.contains(MuseReminders.appListID) ?? true {
+            found += await data.appReminders(completedSince: since).map(MuseReminders.reminder)
+        }
+        return found
+    }
+
+    private func findReminder(_ id: String) async -> MuseEventKitSource.Reminder? {
+        if let appID = MuseReminders.appID(id) {
+            return await data?.appReminder(id: appID).map(MuseReminders.reminder)
+        }
+        return eventKit.reminder(id: id)
     }
 
     private struct ReadyChange {
@@ -739,8 +885,8 @@ actor MuseTools {
     }
 
     /// The list and the reminder a change means, from the phone as it is now.
-    private func resolve(_ request: MuseReminders.Request, namesAllowed: Bool) -> Resolution {
-        let lists = eventKit.reminderLists()
+    private func resolve(_ request: MuseReminders.Request, namesAllowed: Bool, appList: Bool) async -> Resolution {
+        let lists = allLists(appList: appList)
         var list: MuseEventKitSource.ReminderList?
         if let name = request.list {
             switch MuseReminders.match(name, in: lists) {
@@ -757,18 +903,26 @@ actor MuseTools {
         if let list, !list.canChange { return .failed(MuseReminders.listCannotChange(list.name)) }
         var existing: MuseEventKitSource.Reminder?
         if request.action != .add {
-            guard let id = request.id, let found = eventKit.reminder(id: id) else { return .failed(MuseReminders.noSuchReminder) }
+            guard let id = request.id, let found = await findReminder(id) else { return .failed(MuseReminders.noSuchReminder) }
             if lists.first(where: { $0.id == found.listID })?.canChange == false {
                 return .failed(MuseReminders.listCannotChange(found.list))
             }
             existing = found
         }
+        // The Pebble Audio list is the app's own: no notes, and nothing crosses to Apple's.
+        let inApp = (existing?.listID ?? list?.id) == MuseReminders.appListID
+        if inApp, request.notes != nil, request.action != .delete { return .failed(MuseReminders.appNoNotes) }
+        if let existing, let list, (existing.listID == MuseReminders.appListID) != (list.id == MuseReminders.appListID) {
+            return .failed(MuseReminders.noMoveAcrossHomes)
+        }
         return .ready(ReadyChange(request: request, existing: existing, list: list))
     }
 
     /// Makes the change and says what is now true.
-    private func apply(_ ready: ReadyChange) -> MuseJSON {
+    private func apply(_ ready: ReadyChange) async -> MuseJSON {
         let request = ready.request
+        let inApp = (ready.existing?.listID ?? ready.list?.id) == MuseReminders.appListID
+        if inApp { return await applyInApp(ready) }
         do {
             switch request.action {
             case .add:
@@ -781,25 +935,9 @@ actor MuseTools {
                 return ["ok": true, "payload": ["added": MuseReminders.json(added)]]
             case .edit:
                 guard let before = ready.existing else { return MuseReminders.noSuchReminder }
-                var change = MuseEventKitSource.ReminderChange(
-                    title: request.title, notes: request.notes, listID: ready.list?.id, completed: request.completed)
-                switch request.due {
-                case .set(let date, let hasTime)?: change.due = .set(date, hasTime: hasTime)
-                case .clear?: change.due = .clear
-                case nil: break
-                }
-                let after = try eventKit.updateReminder(id: before.id, change)
+                let after = try eventKit.updateReminder(id: before.id, Self.change(request, listID: ready.list?.id))
                 log("reminders: edited one")
-                var payload: [String: MuseJSON] = [
-                    "updated": MuseReminders.json(after),
-                    "changed": .array(MuseReminders.changedFields(from: before, to: after).map { .string($0) }),
-                ]
-                if after.listID != before.listID { payload["moved_from"] = .string(before.list) }
-                if request.completed == true, !after.completed {
-                    // A repeating reminder marked done comes back as its next time.
-                    payload["note"] = "It repeats: this time is done, and it is now due again at the date shown."
-                }
-                return ["ok": true, "payload": .object(payload)]
+                return ["ok": true, "payload": .object(Self.edited(before, after, request))]
             case .delete:
                 guard let before = ready.existing else { return MuseReminders.noSuchReminder }
                 let deleted = try eventKit.deleteReminder(id: before.id)
@@ -821,22 +959,89 @@ actor MuseTools {
         }
     }
 
-    private func reminderLists() -> MuseJSON {
-        let lists = eventKit.reminderLists()
+    /// A change to the Pebble Audio list, made in the app. A delete files the reminder away:
+    /// the person can find it there and bring it back.
+    private func applyInApp(_ ready: ReadyChange) async -> MuseJSON {
+        guard let data else { return MuseReminders.noSuchReminder }
+        let request = ready.request
+        switch request.action {
+        case .add:
+            var due: Date?
+            if case .set(let date, _)? = request.due { due = date }
+            guard let added = await data.addAppReminder(title: request.title ?? "", due: due) else {
+                return Self.error("The reminder couldn't be added. Nothing was changed.")
+            }
+            log("reminders: added to Pebble Audio")
+            return ["ok": true, "payload": ["added": MuseReminders.json(MuseReminders.reminder(added))]]
+        case .edit:
+            guard let before = ready.existing, let id = MuseReminders.appID(before.id) else { return MuseReminders.noSuchReminder }
+            guard let after = await data.updateAppReminder(id: id, Self.change(request, listID: nil)) else {
+                return Self.error("The reminder couldn't be changed.")
+            }
+            log("reminders: edited one in Pebble Audio")
+            return ["ok": true, "payload": .object(Self.edited(before, MuseReminders.reminder(after), request))]
+        case .delete:
+            guard let before = ready.existing, let id = MuseReminders.appID(before.id) else { return MuseReminders.noSuchReminder }
+            guard let filed = await data.fileAwayAppReminder(id: id) else {
+                return Self.error("The reminder couldn't be deleted.")
+            }
+            log("reminders: filed one away in Pebble Audio")
+            return [
+                "ok": true,
+                "payload": [
+                    "deleted": MuseReminders.json(MuseReminders.reminder(filed)),
+                    "filed_away": true,
+                    "note": "It is off the person's reminders, filed away in Pebble Audio rather than erased: they can find it there and bring it back.",
+                ],
+            ]
+        case .lists, .read:
+            return Self.error("action must be lists, read, add, edit or delete")
+        }
+    }
+
+    private static func change(_ request: MuseReminders.Request, listID: String?) -> MuseEventKitSource.ReminderChange {
+        var change = MuseEventKitSource.ReminderChange(
+            title: request.title, notes: request.notes, listID: listID, completed: request.completed)
+        switch request.due {
+        case .set(let date, let hasTime)?: change.due = .set(date, hasTime: hasTime)
+        case .clear?: change.due = .clear
+        case nil: break
+        }
+        return change
+    }
+
+    private static func edited(
+        _ before: MuseEventKitSource.Reminder, _ after: MuseEventKitSource.Reminder, _ request: MuseReminders.Request
+    ) -> [String: MuseJSON] {
+        var payload: [String: MuseJSON] = [
+            "updated": MuseReminders.json(after),
+            "changed": .array(MuseReminders.changedFields(from: before, to: after).map { .string($0) }),
+        ]
+        if after.listID != before.listID { payload["moved_from"] = .string(before.list) }
+        if request.completed == true, !after.completed {
+            // A repeating reminder marked done comes back as its next time.
+            payload["note"] = "It repeats: this time is done, and it is now due again at the date shown."
+        }
+        return payload
+    }
+
+    private func reminderLists(appList: Bool) -> MuseJSON {
+        let lists = allLists(appList: appList)
         guard !lists.isEmpty else { return Self.error("There are no reminders lists on the phone.") }
         var payload: [String: MuseJSON] = ["lists": .array(lists.map { MuseReminders.json($0) })]
         if let fallback = lists.first(where: \.isDefault) { payload["default_list"] = .string(fallback.name) }
+        if appList, !eventKit.remindersAuthorized { payload["note"] = .string(MuseReminders.noAppleAccess) }
         return ["ok": true, "payload": .object(payload)]
     }
 
     /// The most reminders one read sends.
     static let remindersPerRead = 60
 
-    private func readReminders(_ params: MuseJSON) async -> MuseJSON {
+    private func readReminders(_ params: MuseJSON, appList: Bool) async -> MuseJSON {
         var listIDs: [String]?
         var listName: String?
         if let name = params["list"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            let lists = eventKit.reminderLists()
+            let lists = allLists(appList: appList)
             switch MuseReminders.match(name, in: lists) {
             case .found(let list):
                 listIDs = [list.id]
@@ -846,11 +1051,12 @@ actor MuseTools {
             }
         }
         let since = MuseReminders.bool(params["include_completed"]) == true ? clock().addingTimeInterval(-30 * 24 * 60 * 60) : nil
-        let found = MuseReminders.ordered(await eventKit.reminders(inLists: listIDs, completedSince: since))
+        let found = MuseReminders.ordered(await fetchReminders(listIDs: listIDs, since: since, appList: appList))
         let shown = found.prefix(Self.remindersPerRead)
         var payload: [String: MuseJSON] = ["reminders": .array(shown.map { MuseReminders.json($0) })]
         if let listName { payload["list"] = .string(listName) }
         if found.count > shown.count { payload["not_shown"] = .number(Double(found.count - shown.count)) }
+        if appList, !eventKit.remindersAuthorized { payload["note"] = .string(MuseReminders.noAppleAccess) }
         return ["ok": true, "payload": .object(payload)]
     }
 
@@ -885,25 +1091,79 @@ actor MuseTools {
         }
     }
 
-    private func followUps(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
-        switch params["action"]?.string?.lowercased() {
-        case "list"?, nil:
-            let items = await data.openFollowUps(limit: 40)
-            return [
-                "ok": true,
-                "payload": ["follow_ups": .array(items.map { item in
-                    var entry: [String: MuseJSON] = ["text": .string(item.text)]
-                    if let due = item.due { entry["due"] = .string(Self.isoFormatter.string(from: due)) }
-                    return .object(entry)
-                })],
-            ]
-        case "add"?:
-            guard let text = params["text"]?.string, !text.isEmpty else { return Self.error("add needs the text") }
-            let added = await data.addFollowUp(text, due: Self.date(params["due"]?.string)?.date)
-            return added ? ["ok": true, "payload": ["added": .string(text)]] : Self.error("The follow-up couldn't be added.")
-        default:
-            return Self.error("action must be list or add")
+    /// Follow-ups: what the app noticed in the person's conversations, waiting for them to review
+    /// (`docs/reminders.md`). Muse can read them, and turn one into a reminder or skip it. It
+    /// can't add one: something the person wants to remember is a reminder.
+    enum FollowUpAction: Equatable {
+        case read, remind, skip, add
+
+        init?(_ name: String?) {
+            switch name?.lowercased().trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "_") {
+            case nil, "read"?, "list"?, "get"?: self = .read
+            case "remind"?, "remind_me"?, "accept"?, "keep"?: self = .remind
+            case "skip"?, "dismiss"?: self = .skip
+            case "add"?, "create"?, "new"?: self = .add
+            default: return nil
+            }
         }
+    }
+
+    static let followUpAddRefused = error(
+        "Follow-ups are what Pebble Audio noticed for the person to review, so none can be added. To add something the person wants to remember, use the reminders tool with action add. Nothing was added.")
+
+    private func followUps(
+        _ params: MuseJSON, data: any MuseDataProvider, prefs: MusePreferences, watch: any MuseWatchSide,
+        deadline: ContinuousClock.Instant
+    ) async -> MuseJSON {
+        guard let action = FollowUpAction(params["action"]?.string) else {
+            return Self.error("action must be read, remind or skip")
+        }
+        switch action {
+        case .add:
+            return Self.followUpAddRefused
+        case .read:
+            if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
+            let items = await data.followUpsToReview(limit: 40)
+            return ["ok": true, "payload": ["follow_ups": .array(items.map(Self.json))]]
+        case .remind, .skip:
+            guard let id = params["id"]?.string?.trimmingCharacters(in: .whitespaces), !id.isEmpty else {
+                return Self.error("\(action == .remind ? "remind" : "skip") needs the follow-up's id, from read")
+            }
+            if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline, change: true) {
+                return refusal
+            }
+            guard let decided = await data.decideFollowUp(id: id, remind: action == .remind) else {
+                return Self.error(
+                    "There is no follow-up waiting for review with that id; it may have been decided already. Call followups with action read to get current ids. Nothing was changed.")
+            }
+            log("followups: \(action == .remind ? "one became a reminder" : "one was skipped")")
+            if action == .skip {
+                return [
+                    "ok": true,
+                    "payload": [
+                        "skipped": ["id": .string(decided.id), "task": .string(decided.title)],
+                        "note": "Set aside, not deleted: it stays with its conversation, and the person can still turn it into a reminder.",
+                    ],
+                ]
+            }
+            var reminder: [String: MuseJSON] = [
+                "task": .string(decided.title),
+                "kept_in": .string(decided.keptInApple ? "Apple Reminders" : "Pebble Audio"),
+                "list": .string(decided.list),
+            ]
+            if let reminderID = decided.reminderID { reminder["id"] = .string(reminderID) }
+            return ["ok": true, "payload": ["reminder": .object(reminder)]]
+        }
+    }
+
+    static func json(_ item: MuseFollowUp) -> MuseJSON {
+        var entry: [String: MuseJSON] = ["id": .string(item.id), "task": .string(item.text)]
+        if let saidAt = item.saidAt { entry["said_at"] = .string(isoFormatter.string(from: saidAt)) }
+        if let title = item.conversation, !title.isEmpty { entry["conversation"] = .string(title) }
+        if let quote = item.quote, !quote.isEmpty { entry["quote"] = .string(quote) }
+        if let why = item.why, !why.isEmpty { entry["why"] = .string(why) }
+        if let due = item.due { entry["due"] = .string(dayFormatter.string(from: due)) }
+        return .object(entry)
     }
 
     private func recording(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {

@@ -155,11 +155,45 @@ enum MuseReminders {
         }
     }
 
-    /// Lists with the very same name (in two accounts) can't be told apart by name: the default
-    /// one, else one that can be changed, else the first.
+    /// Lists with the very same name (in two accounts) can't be told apart by name: Pebble
+    /// Audio's own list, else the default one, else one that can be changed, else the first.
     private static func pick(_ lists: [ReminderList]) -> ReminderList? {
-        lists.first(where: \.isDefault) ?? lists.first(where: \.canChange) ?? lists.first
+        lists.first { $0.id == appListID } ?? lists.first(where: \.isDefault) ?? lists.first(where: \.canChange)
+            ?? lists.first
     }
+
+    // MARK: - The Pebble Audio list
+
+    /// The reminders kept in Pebble Audio, shown to Muse as one more list while the app keeps them
+    /// itself (`docs/reminders.md`). Its reminders' ids are the follow-up's id after `appIDPrefix`.
+    static let appListID = "pa:list"
+    static let appIDPrefix = "pa:"
+    static let appListName = RemindersHome.newListTitle
+
+    static func appList(isDefault: Bool) -> ReminderList {
+        ReminderList(id: appListID, name: appListName, isDefault: isDefault)
+    }
+
+    /// The follow-up id in a reminder id from the Pebble Audio list, or nil for an Apple one.
+    static func appID(_ id: String) -> String? {
+        guard id.hasPrefix(appIDPrefix), id != appListID else { return nil }
+        let rest = String(id.dropFirst(appIDPrefix.count))
+        return rest.isEmpty ? nil : rest
+    }
+
+    static func reminder(_ item: MuseAppReminder) -> Reminder {
+        Reminder(
+            id: appIDPrefix + item.id, title: item.title, due: item.due, dueHasTime: false, list: appListName,
+            listID: appListID, completed: item.done)
+    }
+
+    static let appNoNotes = MuseTools.error(
+        "Reminders in the Pebble Audio list have no notes. Leave notes out. Nothing was changed.")
+
+    static let noMoveAcrossHomes = MuseTools.error(
+        "Moving a reminder between the Pebble Audio list and an Apple Reminders list isn't supported. Nothing was changed.")
+
+    static let noAppleAccess = "Pebble Audio has no access to Apple Reminders, so only its own Pebble Audio list is here."
 
     /// A list's name as compared: lowercase words without punctuation, "my"/"the" and a final
     /// "list" dropped, each word singular, run together.

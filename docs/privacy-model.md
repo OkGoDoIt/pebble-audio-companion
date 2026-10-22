@@ -26,8 +26,8 @@ feed this model. Neither adds privacy wording of its own outside it.
 | D7a | Muse reads your conversations | transcript excerpts for a time range or a search (including other people's words), a day or week recap, or the answer of this app's own Ask (then only that answer), only while Muse is answering a question you asked | Meta | "What Muse can see" in Settings › Muse: Ask first, Allowed, or Off | Ask first once paired |
 | D7b | Muse acting on your watch | only the outcome (done, declined, or timed out); "what's playing" also returns the track's title and artist | Meta | a switch per action in Settings › Muse: timer, alarm, music, Quiet Time, open a watch app, find my watch, pause or resume recording | on once paired |
 | D7c | Muse reads your health | steps, distance, active minutes, calories, sleep, and heart rate from the watch's own activity data, for the range asked | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
-| D7d | Muse reads and adds to Calendar, and reads, adds, changes, and deletes Reminders | events in the range asked; an event you asked it to add (it never changes or deletes events); your reminders lists' names; reminders from one list or all (title, list, due date, notes, done or not, and an id); a reminder you asked it to add, change, mark done, move, or delete, and how it is afterwards | Meta | "What Muse can see": Calendar and Reminders are separate sources, each Ask first, Allowed, or Off, each also needing iOS's own permission | Ask first once paired |
-| D7e | Muse reads and adds follow-ups | your open follow-ups; a follow-up you asked it to add | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
+| D7d | Muse reads and adds to Calendar, and reads, adds, changes, and deletes Reminders | events in the range asked; an event you asked it to add (it never changes or deletes events); your reminders lists' names; reminders from one list or all (title, list, due date, notes, done or not, and an id); a reminder you asked it to add, change, mark done, move, or delete, and how it is afterwards. Reminders are everything you said yes to: your Apple Reminders lists and Pebble Audio's own reminders, the same either way (see below) | Meta | "What Muse can see": Calendar and Reminders are separate sources, each Ask first, Allowed, or Off; Calendar and Apple Reminders lists also need iOS's own permission | Ask first once paired |
+| D7e | Muse reads and decides follow-ups | follow-ups waiting for your review (the task, when it was said, the conversation's title, the words said, and why it might matter); a follow-up you asked it to turn into a reminder or skip, and where the reminder went | Meta | "What Muse can see": Ask first, Allowed, or Off | Ask first once paired |
 
 Invariants that stay commitments, whatever is on: the official Pebble app never receives audio;
 nothing goes to this app's developer; diagnostic logs stay on the phone; nothing is used for
@@ -106,6 +106,20 @@ muse.ai/privacy; nothing has run on a device yet):
   reads are unaffected. Every result says exactly what changed, so the person can see it.
   A list Muse names that isn't there is an error that says which lists there are (only once
   Muse may read the reminders); nothing is ever added to another list instead.
+  Muse uses the app's two nouns (`docs/reminders.md`, Roger 2026-10-22). **Reminders** (D7d) are
+  everything the person said yes to or asked for: their Apple Reminders lists, plus the reminders
+  Pebble Audio keeps, which Muse sees as one more list called "Pebble Audio" wherever they are
+  kept. Kept in Apple Reminders, they already are an Apple list and nothing is added (so they
+  never reach Muse twice). Kept in the app, the "Pebble Audio" list is the app's own: reminders
+  are kept by the day, have no notes, and can't be moved to or from an Apple list; a delete
+  files one away in the app (off the list, findable, recoverable) and the reply says so. It
+  needs no iOS permission, so without Reminders access Muse sees that list alone. An add that
+  names no list goes to the person's default Apple list, or to Pebble Audio without access.
+  **Follow-ups** (D7e) are what the app noticed in conversations, waiting for review: a
+  suggestion, not a commitment. Muse can read them and, when the person asks, turn one into a
+  reminder (the reply says where it went) or skip it (kept with its conversation). It can't add
+  one: that is a reminder, and the tool says so. Under Ask first, deciding follow-ups asks once
+  per question, like reminder changes.
   Calendar and Reminders also need iOS's own permission. The app never asks for it up front
   (Roger, 2026-10-21): only when a Muse question needs it, or when the person sets Calendar or
   Reminders to Allowed themselves in Settings › Muse (the app then asks at once). When a question
@@ -173,13 +187,14 @@ sentence.
    - Allowed: "When you ask, Muse can also read <allowed> to answer. What it reads goes to Meta."
    - Ask first: "Muse asks on your watch before it reads <ask first>."
    - Conversations Allowed or Ask first: "Your conversations can include what other people said."
-   - Calendar, Reminders, or Follow-ups Allowed or Ask first: "Muse can add <the ones that apply,
-     as "events", "reminders", "follow-ups"> you ask for." then, without Reminders, "It never
-     deletes them."; with Reminders alone, "It can change or delete them too."; with Reminders and
-     others, "It can change or delete reminders too, never <the others, as "events",
-     "follow-ups", joined with "or">."
-   - Reminders Ask first: "Muse asks on your watch before it changes your reminders, once per
-     question."
+   - Calendar or Reminders Allowed or Ask first: "Muse can add <the ones that apply, as
+     "events", "reminders"> you ask for." then, without Reminders, "It never deletes them."; with
+     Reminders alone, "It can change or delete them too."; with both, "It can change or delete
+     reminders too, never events."
+   - Follow-ups Allowed or Ask first: "Muse can turn follow-ups into reminders or skip them when
+     you ask."
+   - Reminders or Follow-ups Ask first: "Muse asks on your watch before it changes <"your
+     reminders", "your follow-ups", joined with "or">, once per question."
    - Music on in D7b: "When you ask what's playing, the song's title and artist go to Meta."
    The Meta row's chips: "Your questions", then one chip per Allowed source ("Conversations",
    "Health", "Calendar", "Reminders", "Follow-ups"). Ask first and Off sources get no chip. Meta
@@ -219,7 +234,9 @@ The first change to the person's reminders in a question asks, under Ask first, 
 item, and it covers reading as well, so one request is one prompt. Same buttons: Allow Once
 covers up to ten changes and the reads for the rest of the question (then it asks again), Not
 Now refuses changes for the rest of the question without asking again, Always Allow makes
-Reminders Allowed, Never Allow turns it Off.
+Reminders Allowed, Never Allow turns it Off. Turning follow-ups into reminders or skipping them
+works the same way, with the question "Let Muse turn your follow-ups into reminders or skip
+them? What it reads goes to Meta."
 
 When the person allows Calendar or Reminders on the watch but iOS has not given the app access
 yet, Muse's call answers that access is still needed, and the watch shows, word for word: "Open
@@ -250,15 +267,21 @@ neither retries what was refused nor gives up on what is only pending:
   later."
 - Not Now on changing reminders, for this and every later change in the question: "The person
   said not now to changing their reminders, so nothing was changed. Do not try another change
-  in this conversation."
+  in this conversation." (For follow-ups: "…to changing their follow-ups…".)
+- Adding a follow-up, which isn't possible: "Follow-ups are what Pebble Audio noticed for the
+  person to review, so none can be added. To add something the person wants to remember, use the
+  reminders tool with action add. Nothing was added."
 These are outcomes only, like D7b: no data goes with them.
 
 Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
 "Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
 conversations row's subtitle "Includes what other people said."; the reminders row's subtitle
-"Muse can also add, change, and delete them.", and on its choice screen, "The first time Muse
-wants to read them, your watch asks you. It also asks once per question before changing
-them."), with the footer "Muse reads
+"In Pebble Audio and Apple Reminders. Muse can also add, change, and delete them.", and on its
+choice screen, "The first time Muse wants to read them, your watch asks you. It also asks once
+per question before changing them."; the follow-ups row's subtitle "Waiting for your review.
+Muse can turn one into a reminder or skip it.", and on its choice screen, "The first time Muse
+wants to read them, your watch asks you. It also asks once per question before turning them
+into reminders or skipping them."), with the footer "Muse reads
 these only while answering a question you asked on your watch. What it reads goes to Meta." Turning a destination off says what
 stays where it went ("Your server keeps what it already has").
 

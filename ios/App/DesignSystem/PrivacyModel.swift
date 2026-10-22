@@ -101,13 +101,13 @@ enum MuseDataSource: CaseIterable, Hashable {
         }
     }
 
-    /// What Muse can add to it, when it can ("events").
+    /// What Muse can add to it, when it can ("events"). Not follow-ups: those are what the app
+    /// noticed, and Muse can only turn them into reminders or skip them (`docs/reminders.md`).
     var addName: String? {
         switch self {
         case .calendar: return "events"
         case .reminders: return "reminders"
-        case .followUps: return "follow-ups"
-        case .conversations, .health: return nil
+        case .followUps, .conversations, .health: return nil
         }
     }
 
@@ -369,7 +369,7 @@ enum PrivacyModel {
         }
         let adds = readable.compactMap(\.addName)
         if !adds.isEmpty {
-            // Reminders can also be changed and deleted (D7d); events and follow-ups never are.
+            // Reminders can also be changed and deleted (D7d); events never are.
             let others = readable.filter { $0 != .reminders }.compactMap(\.addName)
             let changes: String
             if !readable.contains(.reminders) {
@@ -381,8 +381,14 @@ enum PrivacyModel {
             }
             lines.append("Muse can add \(Copy.list(adds)) you ask for. \(changes)")
         }
-        if muse.access(.reminders) == .ask {
-            lines.append("Muse asks on your watch before it changes your reminders, once per question.")
+        if readable.contains(.followUps) {
+            lines.append("Muse can turn follow-ups into reminders or skip them when you ask.")
+        }
+        let askedChanges = [MuseDataSource.reminders, .followUps].filter { muse.access($0) == .ask }
+        if !askedChanges.isEmpty {
+            lines.append(
+                "Muse asks on your watch before it changes \(Copy.list(askedChanges.map(\.readName), conjunction: "or")), "
+                    + "once per question.")
         }
         if muse.watchActions.contains(.music) {
             lines.append("When you ask what's playing, the song's title and artist go to Meta.")
