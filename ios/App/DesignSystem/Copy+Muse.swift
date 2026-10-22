@@ -167,7 +167,7 @@ extension Copy {
         static let seeFooter = "Muse reads these only while answering a question you asked on your watch. What it reads goes to Meta."
         static let accessAskFooter = "The first time Muse wants it, your watch asks you."
         static let accessAskFooterReminders =
-            "The first time Muse wants to read them, your watch asks you. It also asks before each change."
+            "The first time Muse wants to read them, your watch asks you. It also asks once per question before changing them."
         static let noPhoneAccess = "No access in iPhone Settings"
         static let allowAccess = "Allow Access"
         static let openSettings = "Open Settings"

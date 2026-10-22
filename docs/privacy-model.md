@@ -96,9 +96,14 @@ muse.ai/privacy; nothing has run on a device yet):
   Off, and Not Now refuses only that call (Roger, 2026-10-21). Nothing is read or sent except while a question asked on the
   watch is open. Health comes from the watch's own activity data, not from Apple Health.
   Reminders can also be changed and deleted (Roger, 2026-10-22: Muse could only add to the
-  default list, and couldn't fix or remove what it had added). Under Ask first every change asks
-  on the watch on its own, naming the action and the item, even when reading was allowed once
-  for that question; Allow Once on a change lets that change through and the question's reads.
+  default list, and couldn't fix or remove what it had added). Under Ask first the first change
+  in a question asks one general question on the watch, even when reading was allowed once, and
+  that question covers reading too (Roger, 2026-10-22: not one prompt per item). Allow Once then
+  lets through up to ten changes of any kind (add, edit, mark done, move, delete) and the
+  question's reads, for the rest of that question: until the next question from the watch, and
+  at most the 15 minutes Muse may act for one (`MusePushToTalk.toolWindow`). The eleventh change
+  asks again. Not Now refuses every change for the rest of the question without asking again;
+  reads are unaffected. Every result says exactly what changed, so the person can see it.
   A list Muse names that isn't there is an error that says which lists there are (only once
   Muse may read the reminders); nothing is ever added to another list instead.
   Calendar and Reminders also need iOS's own permission. The app never asks for it up front
@@ -173,7 +178,8 @@ sentence.
      deletes them."; with Reminders alone, "It can change or delete them too."; with Reminders and
      others, "It can change or delete reminders too, never <the others, as "events",
      "follow-ups", joined with "or">."
-   - Reminders Ask first: "Muse asks on your watch before each change to your reminders."
+   - Reminders Ask first: "Muse asks on your watch before it changes your reminders, once per
+     question."
    - Music on in D7b: "When you ask what's playing, the song's title and artist go to Meta."
    The Meta row's chips: "Your questions", then one chip per Allowed source ("Conversations",
    "Health", "Calendar", "Reminders", "Follow-ups"). Ask first and Off sources get no chip. Meta
@@ -208,13 +214,11 @@ follow-ups | health data>? What it reads goes to Meta." For conversations: "Let 
 conversations? What it reads, including what others said, goes to Meta." Buttons: Allow Once
 (highlighted), Always Allow, Not Now, Never Allow.
 
-A change to the person's reminders asks its own question under Ask first, every time, naming the
-action and the item (titles are shortened with "…" to fit the watch's 120 bytes), word for word:
-"Let Muse add "<title>" to <list>?", "Let Muse delete "<title>" from <list>?", "Let Muse mark
-"<title>" as done?", "Let Muse mark "<title>" as not done?", "Let Muse move "<title>" to <list>?",
-"Let Muse rename "<title>" to "<new title>"?", and for a due date, notes, or several changes at
-once, "Let Muse change "<title>" in <list>?". Before iOS has given access the item isn't known
-yet, and the question says "one of your reminders" instead. Same buttons; Always Allow makes
+The first change to the person's reminders in a question asks, under Ask first, word for word:
+"Let Muse add to, change, or delete your reminders? What it reads goes to Meta." It names no
+item, and it covers reading as well, so one request is one prompt. Same buttons: Allow Once
+covers up to ten changes and the reads for the rest of the question (then it asks again), Not
+Now refuses changes for the rest of the question without asking again, Always Allow makes
 Reminders Allowed, Never Allow turns it Off.
 
 When the person allows Calendar or Reminders on the watch but iOS has not given the app access
@@ -244,15 +248,17 @@ neither retries what was refused nor gives up on what is only pending:
   in iPhone Settings. They can allow it there. Do not ask again until they do."
 - No answer in time: not answered. "The person has not answered yet. You can ask again
   later."
-- Not Now on a change to a reminder: "The person said no to this change, so nothing was
-  changed. Do not make it unless they ask again."
+- Not Now on changing reminders, for this and every later change in the question: "The person
+  said not now to changing their reminders, so nothing was changed. Do not try another change
+  in this conversation."
 These are outcomes only, like D7b: no data goes with them.
 
 Settings › Muse lists them under "What Muse can see" (rows "Your conversations",
 "Health", "Calendar", "Reminders", "Follow-ups"; values "Ask first", "Allowed", "Off"; the
 conversations row's subtitle "Includes what other people said."; the reminders row's subtitle
 "Muse can also add, change, and delete them.", and on its choice screen, "The first time Muse
-wants to read them, your watch asks you. It also asks before each change."), with the footer "Muse reads
+wants to read them, your watch asks you. It also asks once per question before changing
+them."), with the footer "Muse reads
 these only while answering a question you asked on your watch. What it reads goes to Meta." Turning a destination off says what
 stays where it went ("Your server keeps what it already has").
 

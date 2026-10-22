@@ -382,7 +382,7 @@ enum PrivacyModel {
             lines.append("Muse can add \(Copy.list(adds)) you ask for. \(changes)")
         }
         if muse.access(.reminders) == .ask {
-            lines.append("Muse asks on your watch before each change to your reminders.")
+            lines.append("Muse asks on your watch before it changes your reminders, once per question.")
         }
         if muse.watchActions.contains(.music) {
             lines.append("When you ask what's playing, the song's title and artist go to Meta.")
