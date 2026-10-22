@@ -177,9 +177,9 @@ public sealed partial class ViewerTests(ArchiveServerFactory factory)
 			Assert.DoesNotMatch(@"(?m)^\s*import\s", read.Text);
 			Assert.Contains("ui/initialize", read.Text, StringComparison.Ordinal);
 			// Cached tool metadata in an existing chat must still resolve after the URI bump.
-			foreach (var version in new[] { 1, 2 })
+			foreach (var version in new[] { 1, 2, 3 })
 			{
-				var oldUri = widget.Uri.Replace(".v3.", $".v{version}.", StringComparison.Ordinal);
+				var oldUri = widget.Uri.Replace(".v4.", $".v{version}.", StringComparison.Ordinal);
 				var old = Assert.IsType<TextResourceContents>(Assert.Single((await mcp.ReadResourceAsync(oldUri)).Contents));
 				Assert.Equal(read.Text, old.Text);
 			}

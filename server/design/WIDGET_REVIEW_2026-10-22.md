@@ -8,24 +8,24 @@ Compactness must not come at the expense of the summary.
 ## Final behavior
 
 - Conversation: title and subtle time metadata, then the app’s actual overview in readable text.
-  Compact mode allows four lines; Read more reveals the entire supplied overview and secondary
-  topics/people. Recording details are a separate collapsed disclosure, even after Read more.
+  Compact mode allows four lines; Expand reveals the entire supplied overview and secondary
+  topics/people. Expanded mode reveals recording details as well, with no nested disclosure.
 - Every get_conversation mode includes the overview. Previously include=transcript intentionally
   removed it, producing exactly the empty cards Roger supplied. The existing integration test
   now verifies that transcript mode retains the same overview as summary mode.
 - Older result payloads without an overview retrieve the summary automatically while compact.
   Missing summaries and retrieval failures have explicit text and a retry/Open path rather than
   leaving a blank card. A Node regression checks compact-mode retrieval and no duplicate fetch.
-- Day: the concise day recap appears compact; Read more reveals the fuller recap. Browsing
-  conversations is a separate disclosure and begins with a summarized conversation when available.
-  Recording details, including gaps and timelines, are another secondary disclosure. The card no
+- Day: the concise day recap appears compact; Expand reveals the fuller recap. Expanded mode also reveals conversation browsing, beginning with a summarized conversation when
+  available, and recording details including gaps and timelines. These are ordinary sections with
+  subdued headings, not additional expansion controls. The card no
   longer substitutes an arbitrary unsummarized first conversation for a recap that already exists.
 - Multi-day: compact date buttons and the selected day’s recap; expanded mode reveals all days.
 - Clip: playback controls stay compact; expansion reveals its scrubber and transcript. Short
   clips have clock endpoints and seconds in the header. Transcript selection seeks the audio.
 - Gaps remain explicit and distinct from quiet, with neutral styling confined to the widgets.
   They do not lead the reading experience. Labels and timezone remain available with the timeline.
-- Resource URIs are v3, with both v1 and v2 aliases retained. Repeated host results do not reset
+- Resource URIs are v4, with v1, v2, and v3 aliases retained. Repeated host results do not reset
   expansion, selection, or playback; changed results and renewed signed audio URLs still render.
 
 ## Live day-response repair
@@ -40,14 +40,14 @@ checks the answer size, preserved cards, and preserved totals.
 
 ## Validation
 
-- 44 server tests pass, including transcript-mode overviews and all three resource URI versions.
+- 44 server tests pass, including transcript-mode overviews and all four resource URI versions.
 - 3 Node behavior tests pass; both CI workflows run them. Composed widget modules parse and
   git diff --check passes.
 - Browser inspection uses the actual composed widget sources at phone, tablet, and desktop
   widths, compact/expanded, light/dark. The final pass uses saved live results from the exact
   conversation/day in Roger’s screenshots, including the legacy payload without an overview.
-- Checked summary recovery while compact, full recap expansion, optional conversation browsing,
-  and separate recording detail. Earlier checks covered keyboard navigation, failures/retry,
+- Checked summary recovery while compact, full recap expansion, conversation browsing,
+  and recording detail revealed together by the single Expand control. Earlier checks covered keyboard navigation, failures/retry,
   clip play/pause/seeking, and resize/collapse preserving state.
 - These visual checks use a simulated host. Roger’s supplied screenshots are the evidence of the
   actual assistant rendering; the assistant sandbox cannot be independently inspected here.
@@ -60,3 +60,6 @@ Run `python3 server/tools/preview-widgets.py`, then open http://localhost:5099. 
 are illustrative; the ready clip is generated silence. `--fixtures /path/to/local-results.json`
 accepts a private local object keyed by conversation-card and day-timeline for exact-data review.
 `--before /path/to/original/wwwroot` enables the original implementation for comparison.
+
+Roger’s subsequent review required exactly two states: compact and expanded. The sole Expand /
+Collapse button now controls all secondary sections; there are no nested details/summary controls.
