@@ -7,7 +7,8 @@ import WireProtocol
 
 /// Muse's reminders tool: every list, not just the default one; edits and deletes by id; a named
 /// list that isn't there is an error naming the lists, never an add somewhere else (2026-10-22:
-/// "Grocery" landed in the default list because "Groceries" doesn't contain it).
+/// "Grocery" landed in the default list because "Groceries" doesn't contain it). Under Ask first,
+/// changes are asked about once per question, in general terms.
 struct MuseRemindersTests {
     typealias List = MuseEventKitSource.ReminderList
 
@@ -158,46 +159,80 @@ struct MuseRemindersTests {
         #expect(missing["error"]?.string?.hasPrefix("There is no reminder with that id") == true)
     }
 
-    // MARK: - Asking first, per change
+    // MARK: - Asking first, once per question
 
-    @Test func eachChangeIsAskedOnTheWatchNamingTheActionAndTheItem() async {
+    static let changeQuestion = "Let Muse add to, change, or delete your reminders? What it reads goes to Meta."
+
+    @Test func oneGeneralQuestionCoversEveryKindOfChangeAndReading() async {
+        #expect(MuseTools.changeQuestion(.reminders) == Self.changeQuestion)
+        #expect(Self.changeQuestion.utf8.count <= ProtocolConstants.watchActionQuestionMaxBytes)
         let fx = RemindersFixture(access: .ask)
-        let id = fx.eventKit.seed("Small spatula", list: "L2")
-        fx.watch.answer(value: 0)  // Allow Once, every time
+        let id = fx.eventKit.seed("Small spatula", list: "L1")
+        fx.watch.answer(value: 0)  // Allow Once
 
-        _ = await fx.run(["action": "add", "title": "Eggs", "list": "groceries"])
-        _ = await fx.run(["action": "edit", "id": .string(id), "completed": true])
-        _ = await fx.run(["action": "edit", "id": .string(id), "completed": "false"])
-        _ = await fx.run(["action": "edit", "id": .string(id), "list": "TODO"])
-        _ = await fx.run(["action": "edit", "id": .string(id), "title": "Spatula"])
-        _ = await fx.run(["action": "edit", "id": .string(id), "due": "2026-10-24", "notes": "Target"])
-        _ = await fx.run(["action": "delete", "id": .string(id)])
-        #expect(fx.watch.questions() == [
-            "Let Muse add \u{201C}Eggs\u{201D} to Groceries?",
-            "Let Muse mark \u{201C}Small spatula\u{201D} as done?",
-            "Let Muse mark \u{201C}Small spatula\u{201D} as not done?",
-            "Let Muse move \u{201C}Small spatula\u{201D} to TODO?",
-            "Let Muse rename \u{201C}Small spatula\u{201D} to \u{201C}Spatula\u{201D}?",
-            "Let Muse change \u{201C}Spatula\u{201D} in TODO?",
-            "Let Muse delete \u{201C}Spatula\u{201D} from TODO?",
-        ])
-        #expect(fx.eventKit.titles(in: "L2") == ["Eggs"])
-        #expect(fx.eventKit.all().count == 1)
-        // Allow Once lets this question's reads through without asking again.
-        let before = fx.watch.questions().count
+        // "Add eggs to my grocery list": one question, which covers reading the lists too.
+        let added = await fx.run(["action": "add", "title": "Eggs", "list": "groceries"])
+        #expect(added["payload"]?["added"]?["list"]?.string == "Groceries")
+        #expect((await fx.run(["action": "lists"]))["ok"]?.bool == true)
+        #expect((await fx.run(["action": "edit", "id": .string(id), "completed": true]))["ok"]?.bool == true)
+        #expect((await fx.run(["action": "edit", "id": .string(id), "list": "Groceries"]))["ok"]?.bool == true)
         #expect((await fx.run(["action": "read"]))["ok"]?.bool == true)
-        #expect(fx.watch.questions().count == before)
+        let deleted = await fx.run(["action": "delete", "id": .string(id)])
+        #expect(deleted["payload"]?["deleted"]?["title"]?.string == "Small spatula")
+        #expect(fx.watch.questions() == [Self.changeQuestion])
+        #expect(fx.eventKit.titles(in: "L2") == ["Eggs"])
+        #expect(fx.preferences.current.value.access(.reminders) == .ask)
     }
 
-    @Test func notNowOnAChangeChangesNothingAndSaysSo() async {
+    @Test func allowOnceCoversTenChangesThenAsksAgainAndANewQuestionAsksAgain() async {
+        let fx = RemindersFixture(access: .ask)
+        fx.watch.answer(value: 0)
+        for item in 1...MuseTools.changesPerAllowOnce {
+            #expect((await fx.run(["action": "add", "title": .string("Item \(item)"), "list": "Groceries"]))["ok"]?.bool == true)
+        }
+        #expect(fx.watch.questions().count == 1)
+        // The eleventh asks again, once, and that answer covers ten more.
+        _ = await fx.run(["action": "add", "title": "Item 11", "list": "Groceries"])
+        _ = await fx.run(["action": "add", "title": "Item 12", "list": "Groceries"])
+        #expect(fx.watch.questions() == [Self.changeQuestion, Self.changeQuestion])
+        #expect(fx.eventKit.titles(in: "L2").count == 12)
+
+        // A new question from the watch starts over.
+        await fx.tools.questionBegan()
+        _ = await fx.run(["action": "add", "title": "Item 13", "list": "Groceries"])
+        #expect(fx.watch.questions().count == 3)
+    }
+
+    @Test func allowOnceEndsWithTheQuestionsWindow() async {
+        let fx = RemindersFixture(access: .ask)
+        fx.watch.answer(value: 0)
+        _ = await fx.run(["action": "add", "title": "Eggs", "list": "Groceries"])
+        fx.clock.advance(MuseTools.changeSession + 1)
+        _ = await fx.run(["action": "add", "title": "Milk", "list": "Groceries"])
+        #expect(fx.watch.questions().count == 2)
+    }
+
+    @Test func notNowDeclinesTheRestOfTheQuestionsChangesWithoutAskingAgain() async {
         let fx = RemindersFixture(access: .ask)
         let id = fx.eventKit.seed("Small spatula", list: "L2")
         fx.watch.answer(value: 2)  // Not Now
         let result = await fx.run(["action": "delete", "id": .string(id)])
         #expect(result == MuseTools.reply(.changeDeclined, .reminders))
         #expect(MuseTools.outcome(of: result) == .declined)
+        // More changes: refused at once, nothing asked, nothing changed.
+        #expect(await fx.run(["action": "add", "title": "Eggs", "list": "Groceries"]) == MuseTools.reply(.changeDeclined, .reminders))
+        #expect(await fx.run(["action": "edit", "id": .string(id), "completed": true]) == MuseTools.reply(.changeDeclined, .reminders))
+        #expect(fx.watch.questions() == [Self.changeQuestion])
         #expect(fx.eventKit.all().count == 1)
         #expect(fx.preferences.current.value.access(.reminders) == .ask)
+        // Reading is asked about as before.
+        fx.watch.answer(value: 0)
+        #expect((await fx.run(["action": "read"]))["ok"]?.bool == true)
+        #expect(fx.watch.questions().last == "Let Muse read your reminders? What it reads goes to Meta.")
+        // A new question may ask about changes again.
+        await fx.tools.questionBegan()
+        #expect((await fx.run(["action": "add", "title": "Eggs", "list": "Groceries"]))["ok"]?.bool == true)
+        #expect(fx.watch.questions().last == Self.changeQuestion)
     }
 
     @Test func readingAllowedOnceDoesNotAllowAChange() async {
@@ -207,7 +242,8 @@ struct MuseRemindersTests {
         _ = await fx.run(["action": "read"])
         #expect(fx.watch.questions() == ["Let Muse read your reminders? What it reads goes to Meta."])
         _ = await fx.run(["action": "delete", "id": .string(id)])
-        #expect(fx.watch.questions().last == "Let Muse delete \u{201C}Small spatula\u{201D} from Groceries?")
+        #expect(fx.watch.questions().last == Self.changeQuestion)
+        #expect(fx.eventKit.all().isEmpty)
     }
 
     @Test func alwaysAllowOnAChangeMakesRemindersAllowed() async {
@@ -215,18 +251,10 @@ struct MuseRemindersTests {
         fx.watch.answer(value: 1)
         _ = await fx.run(["action": "add", "title": "Eggs", "list": "Groceries"])
         #expect(fx.preferences.current.value.access(.reminders) == .allowed)
+        await fx.tools.questionBegan()
         _ = await fx.run(["action": "add", "title": "Milk", "list": "Groceries"])
         #expect(fx.watch.questions().count == 1)
         #expect(fx.eventKit.titles(in: "L2") == ["Eggs", "Milk"])
-    }
-
-    @Test func aLongTitleIsShortenedToFitTheWatch() {
-        let title = String(repeating: "Remember to pick up the ", count: 8)
-        let question = MuseReminders.question(.delete, title: title, list: "Groceries")
-        #expect(question.utf8.count <= ProtocolConstants.watchActionQuestionMaxBytes)
-        #expect(question.hasPrefix("Let Muse delete \u{201C}Remember to pick up"))
-        #expect(question.hasSuffix("\u{2026}\u{201D} from Groceries?"))
-        #expect(MuseReminders.question(.delete, title: nil, list: nil) == "Let Muse delete one of your reminders?")
     }
 
     // MARK: - What Muse is told exists
@@ -248,16 +276,28 @@ private struct RemindersFixture {
     let preferences = MusePreferencesStore(defaults: UserDefaults(suiteName: "muse-reminders-\(UUID().uuidString)")!)
     let eventKit = FakeReminderStore(lists: MuseRemindersTests.lists)
     let watch = FakeWatchSide()
+    let clock: RemindersClock
     let tools: MuseTools
 
     init(access: MuseSourceAccess) {
         preferences.update { $0.dataAccess[.reminders] = access }
-        tools = MuseTools(preferences: preferences, data: nil, eventKit: eventKit, holdLimit: .seconds(5))
+        let clock = RemindersClock()
+        self.clock = clock
+        tools = MuseTools(
+            preferences: preferences, data: nil, eventKit: eventKit, clock: { clock.now() }, holdLimit: .seconds(5))
     }
 
     func run(_ params: MuseJSON) async -> MuseJSON {
         await tools.run(MuseTools.remindersCommand, params, watch: watch)
     }
+}
+
+private final class RemindersClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var offset: TimeInterval = 0
+
+    func now() -> Date { lock.withLock { Date().addingTimeInterval(offset) } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { offset += seconds } }
 }
 
 /// The watch: answers every question with the same choice, and keeps what it was asked.

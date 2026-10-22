@@ -69,6 +69,10 @@ actor MuseTools {
     /// Sources allowed once, for the question being answered: Muse often reads a source several
     /// times for one answer (steps, then distance, then heart rate).
     private var allowedOnce: [MuseSource: Date] = [:]
+    /// Changes allowed once for the question being answered: when, and how many are left.
+    private var changesAllowedOnce: [MuseSource: (at: Date, left: Int)] = [:]
+    /// Not Now on a change: no more changes, and no more asking, for this question.
+    private var changesDeclined: [MuseSource: Date] = [:]
     /// Calls that change something, and how they went, for a repeat that comes soon after.
     private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
     /// A call that changes something, repeated within this, gets the first one's result: Muse
@@ -259,6 +263,8 @@ actor MuseTools {
     /// A new question from the watch: what was allowed once is asked about again.
     func questionBegan() {
         allowedOnce.removeAll()
+        changesAllowedOnce.removeAll()
+        changesDeclined.removeAll()
     }
 
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
@@ -373,10 +379,10 @@ actor MuseTools {
     /// Calendar and Reminders also need iOS's permission, which only an app on screen can ask
     /// for. Nil when the source may be read now; otherwise what to tell Muse, after telling the
     /// wearer on the watch what to do.
-    /// `change`: the question the watch asks for a change, under Ask first (see `permission`).
+    /// `change`: the call changes something (see `permission`).
     private func phoneAccess(
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
-        change: String? = nil
+        change: Bool = false
     ) async -> MuseJSON? {
         let what = source == .calendar ? "calendar" : "reminders"
         if phoneRefused(source) {
@@ -428,9 +434,8 @@ actor MuseTools {
 
     // MARK: - Asking first
 
-    /// The question the watch asks the first time Muse wants to read a source. A change to the
-    /// person's reminders asks its own question, naming the action and the item
-    /// (`MuseReminders.question`). Word for word from docs/privacy-model.md (D7a, D7c-e).
+    /// The question the watch asks the first time Muse wants to read a source. A change asks
+    /// `changeQuestion` instead. Word for word from docs/privacy-model.md (D7a, D7c-e).
     static func consentQuestion(_ source: MuseSource) -> String {
         switch source {
         case .conversations:
@@ -448,6 +453,20 @@ actor MuseTools {
     /// How long an Allow Once lasts at most, if no new question ends it first.
     static let allowedOnceFor: TimeInterval = 10 * 60
 
+    /// The question the watch asks the first time in a question that Muse wants to change a
+    /// source, under Ask first. General, not about one item, and it covers reading too, so one
+    /// "add eggs to my grocery list" is one prompt (Roger, 2026-10-22). Word for word from
+    /// docs/privacy-model.md, section 4.
+    static func changeQuestion(_ source: MuseSource) -> String {
+        "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
+    }
+
+    /// How many changes one Allow Once covers; past that the watch asks again.
+    static let changesPerAllowOnce = 10
+    /// How long a change Allow Once or Not Now lasts at most, if no new question ends it first:
+    /// the window in which Muse may act for a question asked on the watch.
+    static let changeSession: TimeInterval = MusePushToTalk.toolWindow
+
     /// How a data call ended without reading anything. Each tells Muse plainly what happened, so
     /// it neither retries a refusal nor gives up on something still pending
     /// (docs/privacy-model.md, section 4, "What Muse is told"). Outcomes only: no data goes with
@@ -457,7 +476,7 @@ actor MuseTools {
         case notNow
         case phoneRefused
         case notAnswered
-        /// Not Now on the watch's question about one change.
+        /// Not Now on the watch's question about changes: for the rest of this question.
         case changeDeclined
     }
 
@@ -474,27 +493,31 @@ actor MuseTools {
         case .notAnswered:
             return error("The person has not answered yet. You can ask again later.")
         case .changeDeclined:
-            return error("The person said no to this change, so nothing was changed. Do not make it unless they ask again.")
+            return error(
+                "The person said not now to changing their \(name), so nothing was changed. Do not try another change in this conversation.")
         }
     }
 
     /// Nil when `source` may be used now: allowed already, or the wearer allows it on the watch.
     /// The call is held open while the watch asks, up to `deadline`.
     ///
-    /// `change`: the call changes something, and this is what the watch asks. Under Ask first a
-    /// change is asked about every time, even when reading was allowed once for this question;
-    /// Allow Once lets this change through and this question's reads, Always Allow makes the
-    /// source Allowed, Never Allow turns it off.
+    /// `change`: the call changes something. Under Ask first the watch asks `changeQuestion`
+    /// once for the question being answered, even when reading was allowed once: Allow Once
+    /// then lets through `changesPerAllowOnce` changes and the question's reads, and asks again
+    /// after them; Not Now refuses every change for the rest of the question without asking
+    /// again (reads are unaffected); Always Allow makes the source Allowed, Never Allow turns it
+    /// off.
     private func permission(
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
-        change: String? = nil
+        change: Bool = false
     ) async -> MuseJSON? {
         switch prefs.access(source) {
         case .allowed: return nil
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
-        if change == nil, mayReadOnce(source) { return nil }
+        if change, let answer = changeAnswered(source) { return answer.refusal }
+        if !change, mayReadOnce(source) { return nil }
         // One question on the watch at a time; a second source waits its turn.
         while prompting {
             guard ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
@@ -506,22 +529,27 @@ actor MuseTools {
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
-        if change == nil, mayReadOnce(source) { return nil }
+        if change, let answer = changeAnswered(source) { return answer.refusal }
+        if !change, mayReadOnce(source) { return nil }
         prompting = true
         defer { prompting = false }
         let left = Int((deadline - ContinuousClock.now).components.seconds)
         guard left >= 1 else { return Self.reply(.notAnswered, source) }
-        log("asking the wearer about \(change == nil ? "reading" : "a change to") \(source.rawValue)")
+        log("asking the wearer about \(change ? "changing" : "reading") \(source.rawValue)")
         await watch.showStatus("Asking you first")
         // The watch keeps the question up until a few seconds before the call's own limit.
         let shown = min(max(left - 10, 10), 300)
         let result = await watch.runWatchAction(
-            .choose(question: change ?? Self.consentQuestion(source), options: Self.consentOptions, timeoutSeconds: shown),
+            .choose(
+                question: change ? Self.changeQuestion(source) : Self.consentQuestion(source), options: Self.consentOptions,
+                timeoutSeconds: shown),
             wait: .seconds(shown + 8))
         switch (result?.status, result?.value) {
         case (.done?, 0?):
             allowedOnce[source] = clock()
-            log("\(source.rawValue): allowed once on the watch")
+            // This change is the first of the ones allowed.
+            if change { changesAllowedOnce[source] = (clock(), Self.changesPerAllowOnce - 1) }
+            log("\(source.rawValue): \(change ? "changes" : "reading") allowed once on the watch")
             return nil
         case (.done?, 1?):
             preferences.update { $0.dataAccess[source] = .allowed }
@@ -532,12 +560,32 @@ actor MuseTools {
             log("\(source.rawValue): turned off on the watch")
             return Self.reply(.notAllowed, source)
         case (.done?, _), (.declined?, _):
-            log("\(source.rawValue): not now")
-            return Self.reply(change == nil ? .notNow : .changeDeclined, source)
+            log("\(source.rawValue): not now\(change ? " to changes" : "")")
+            if change { changesDeclined[source] = clock() }
+            return Self.reply(change ? .changeDeclined : .notNow, source)
         default:
             log("\(source.rawValue): no answer on the watch")
             return Self.reply(.notAnswered, source)
         }
+    }
+
+    private struct ChangeAnswer {
+        /// Nil: go ahead.
+        let refusal: MuseJSON?
+    }
+
+    /// How the wearer already answered about changes in this question: nil when the watch must
+    /// ask. An allowed change uses up one of those Allow Once let through.
+    private func changeAnswered(_ source: MuseSource) -> ChangeAnswer? {
+        let now = clock()
+        if let since = changesDeclined[source], now.timeIntervalSince(since) < Self.changeSession {
+            return ChangeAnswer(refusal: Self.reply(.changeDeclined, source))
+        }
+        if let grant = changesAllowedOnce[source], now.timeIntervalSince(grant.at) < Self.changeSession, grant.left > 0 {
+            changesAllowedOnce[source] = (grant.at, grant.left - 1)
+            return ChangeAnswer(refusal: nil)
+        }
+        return nil
     }
 
     /// Allowed once on the watch for the question being answered.
@@ -642,9 +690,9 @@ actor MuseTools {
 
     // MARK: - Reminders
 
-    /// Reading asks the way every source does. A change (add, edit, delete) is asked about on its
-    /// own, under Ask first, with the action and the item on the watch; a list Muse names that
-    /// isn't there is an error naming the lists, never an add to another list.
+    /// Reading asks the way every source does. Changes (add, edit, delete) are asked about once
+    /// per question under Ask first (see `permission`); a list Muse names that isn't there is an
+    /// error naming the lists, never an add to another list.
     private func reminders(
         _ params: MuseJSON, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
     ) async -> MuseJSON {
@@ -661,19 +709,13 @@ actor MuseTools {
         case .request(let parsed): request = parsed
         }
         guard prefs.access(.reminders) != .off else { return Self.reply(.notAllowed, .reminders) }
-        // What the watch asks names the item. Before iOS access there is only what Muse sent.
-        var question = MuseReminders.question(
-            MuseReminders.change(request, existing: nil, target: nil), title: request.action == .add ? request.title : nil,
-            list: request.action == .add ? request.list : nil)
         if eventKit.remindersAuthorized {
-            // Lists' names go to Muse only when it may read the reminders already.
+            // A call that can't happen (no such list or reminder) isn't asked about on the
+            // watch. Lists' names go to Muse only when it may read the reminders already.
             let namesAllowed = prefs.access(.reminders) == .allowed || mayReadOnce(.reminders)
-            switch resolve(request, namesAllowed: namesAllowed) {
-            case .failed(let reply): return reply
-            case .ready(let ready): question = ready.question
-            }
+            if case .failed(let reply) = resolve(request, namesAllowed: namesAllowed) { return reply }
         }
-        if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: question) {
+        if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: true) {
             return refusal
         }
         // Again: the person may have taken a while, and iOS access may be new.
@@ -689,12 +731,6 @@ actor MuseTools {
         let existing: MuseEventKitSource.Reminder?
         /// Add: the list it goes to. Edit: the list it moves to.
         let list: MuseEventKitSource.ReminderList?
-
-        var question: String {
-            let change = MuseReminders.change(request, existing: existing, target: list)
-            if request.action == .add { return MuseReminders.question(change, title: request.title, list: list?.name) }
-            return MuseReminders.question(change, title: existing?.title, list: existing?.list)
-        }
     }
 
     private enum Resolution {
