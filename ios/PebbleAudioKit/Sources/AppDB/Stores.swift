@@ -1226,10 +1226,13 @@ public struct FollowUpStore: Sendable {
         public var dueAtMs: Int64??
         public var snoozedUntilMs: Int64??
         public var archivedAtMs: Int64??
+        /// The person's answer to a follow-up, through the assistant: `setStage`'s meaning.
+        public var stage: FollowUpStage?
 
         public init(
             done: Bool? = nil, completedAtMs: Int64?? = nil, text: String? = nil,
-            dueAtMs: Int64?? = nil, snoozedUntilMs: Int64?? = nil, archivedAtMs: Int64?? = nil
+            dueAtMs: Int64?? = nil, snoozedUntilMs: Int64?? = nil, archivedAtMs: Int64?? = nil,
+            stage: FollowUpStage? = nil
         ) {
             self.done = done
             self.completedAtMs = completedAtMs
@@ -1237,11 +1240,12 @@ public struct FollowUpStore: Sendable {
             self.dueAtMs = dueAtMs
             self.snoozedUntilMs = snoozedUntilMs
             self.archivedAtMs = archivedAtMs
+            self.stage = stage
         }
 
         public var isEmpty: Bool {
             done == nil && completedAtMs == nil && text == nil && dueAtMs == nil
-                && snoozedUntilMs == nil && archivedAtMs == nil
+                && snoozedUntilMs == nil && archivedAtMs == nil && stage == nil
         }
     }
 
@@ -1279,6 +1283,19 @@ public struct FollowUpStore: Sendable {
         if let snoozed = change.snoozedUntilMs {
             sets.append("snoozedUntilMs = ?")
             arguments.append(snoozed)
+        }
+        // As `setStage` records the person's answer: stamped as decided (so the day's summary
+        // lists it) and out of the archive. Only when it is a change: a repeat neither re-stamps
+        // the decision nor brings back something filed away since. SET expressions read the row
+        // as it was, and a later `archivedAtMs` below wins over this one.
+        if let stage = change.stage {
+            sets.append("decidedAtMs = CASE WHEN stage IS ? THEN decidedAtMs ELSE ? END")
+            arguments.append(stage.rawValue)
+            arguments.append(stage == .suggested ? nil : nowMs)
+            sets.append("archivedAtMs = CASE WHEN stage IS ? THEN archivedAtMs ELSE NULL END")
+            arguments.append(stage.rawValue)
+            sets.append("stage = ?")
+            arguments.append(stage.rawValue)
         }
         if let archived = change.archivedAtMs {
             sets.append("archivedAtMs = ?")

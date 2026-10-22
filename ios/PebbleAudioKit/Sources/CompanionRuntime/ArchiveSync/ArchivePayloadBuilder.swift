@@ -455,12 +455,9 @@ public struct ArchivePayloadBuilder: Sendable {
             ArchiveFollowUpPayload(
                 text: item.text, quote: item.quote, why: item.why, dueAtMs: item.dueAtMs,
                 priority: item.priority.rawValue, done: item.done,
-                // A skipped follow-up is the person's "no": to an assistant reading the archive it
-                // is off the list, as an archived one is.
-                completedAtMs: item.completedAtMs,
-                archivedAtMs: item.archivedAtMs
-                    ?? (item.stage == .skipped ? (item.decidedAtMs ?? item.createdAtMs) : nil),
+                completedAtMs: item.completedAtMs, archivedAtMs: item.archivedAtMs,
                 snoozedUntilMs: item.snoozedUntilMs, origin: item.origin.rawValue,
+                stage: item.stage.rawValue,
                 sourceConversationId: item.sourceConversationId,
                 sourceAtMs: item.sourceWall?.startMs, sourceEndAtMs: item.sourceWall?.endMs,
                 sourceApproximate: item.sourceWall?.isApproximate ?? false,

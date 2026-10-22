@@ -868,6 +868,12 @@ public struct AppDatabase: Sendable {
             try db.execute(
                 sql: "ALTER TABLE follow_up_candidates ADD COLUMN askedFor BOOLEAN NOT NULL DEFAULT 0")
         }
+        // A follow-up's stage reaches the archive server: the outbox watches it, and every
+        // follow-up is sent once more with it. Before this, a review's answer changed no column the
+        // outbox watched, so the server never heard it.
+        migrator.registerMigration("archive-sync-follow-up-stage-v1") { db in
+            try ArchiveOutbox.installFollowUpStage(db)
+        }
         try migrator.migrate(writer)
     }
 }

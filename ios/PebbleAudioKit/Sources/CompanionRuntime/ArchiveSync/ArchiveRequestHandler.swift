@@ -231,10 +231,21 @@ public struct ArchiveRequestHandler: Sendable {
             if value.isNull { return .some(nil) }
             return .some(ArchiveTime.ms(value.string))
         }
+        // The person's answer to a follow-up, given through an assistant: a reminder, or skipped.
+        // Nothing goes back into review from outside the app.
+        var stage: FollowUpStage?
+        if let value = p["stage"], !value.isNull {
+            guard let parsed = value.string.flatMap(FollowUpStage.init(rawValue:)),
+                parsed != .suggested
+            else {
+                return .result(.init(status: .failed, detail: "A follow-up can only become a reminder or be skipped."))
+            }
+            stage = parsed
+        }
         let change = FollowUpStore.AssistantChange(
             done: p["done"]?.bool, completedAtMs: instant("completedAt"), text: p["text"]?.string,
             dueAtMs: instant("dueAt"), snoozedUntilMs: instant("snoozedUntil"),
-            archivedAtMs: instant("archivedAt"))
+            archivedAtMs: instant("archivedAt"), stage: stage)
         guard !change.isEmpty else { return .result(.init(status: .done, detail: "Nothing to change.")) }
         let found = try await FollowUpStore(db: database).applyAssistantChange(
             id: id, change, nowMs: sources.nowMs())

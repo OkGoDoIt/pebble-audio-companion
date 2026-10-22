@@ -455,6 +455,8 @@ public struct ArchiveFollowUpPayload: Encodable, Equatable, Sendable {
     public var archivedAtMs: Int64?
     public var snoozedUntilMs: Int64?
     public var origin: String
+    /// `suggested` (waiting for the person's review), `reminder`, or `skipped` (§2.5).
+    public var stage: String
     public var sourceConversationId: String?
     public var sourceAtMs: Int64?
     public var sourceEndAtMs: Int64?
@@ -464,8 +466,8 @@ public struct ArchiveFollowUpPayload: Encodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case text, quote, why, dueAt, priority, done, completedAt, archivedAt, snoozedUntil
-        case origin, sourceConversationId, sourceAt, sourceEndAt, sourceApproximate, createdAt
-        case editedAt
+        case origin, stage, sourceConversationId, sourceAt, sourceEndAt, sourceApproximate
+        case createdAt, editedAt
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -480,6 +482,7 @@ public struct ArchiveFollowUpPayload: Encodable, Equatable, Sendable {
         try c.encode(ArchiveTime.nullable(archivedAtMs), forKey: .archivedAt)
         try c.encode(ArchiveTime.nullable(snoozedUntilMs), forKey: .snoozedUntil)
         try c.encode(origin, forKey: .origin)
+        try c.encode(stage, forKey: .stage)
         try c.encode(sourceConversationId, forKey: .sourceConversationId)
         try c.encode(ArchiveTime.nullable(sourceAtMs), forKey: .sourceAt)
         try c.encode(ArchiveTime.nullable(sourceEndAtMs), forKey: .sourceEndAt)

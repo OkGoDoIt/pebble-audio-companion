@@ -285,13 +285,37 @@ public struct ArchiveOutbox: Sendable {
         return out
     }
 
+    /// The follow-up columns a payload is built from, as `archive-sync-outbox-v1` installed them.
+    /// `stage` came later (`follow-ups-stage-v1`), so on a phone that ran that migration first the
+    /// column did not exist yet; `installFollowUpStage` replaces the update trigger with one that
+    /// watches it too.
+    static let followUpColumns = [
+        "text", "done", "sourceConversationId", "sourceSegmentId", "quote", "why", "dueAtMs",
+        "priority", "completedAtMs", "archivedAtMs", "snoozedUntilMs", "editedAtMs", "origin",
+        "sourceWallStartMs", "sourceWallEndMs", "sourceWallApproximate",
+    ]
+
+    private static func followUpUpdateTrigger(columns: [String]) -> Trigger {
+        trigger("sync_follow_ups_au", "UPDATE", on: "follow_ups",
+            when: changed(columns),
+            [enqueueSQL(kind: "'followUp'", id: "NEW.id", op: "'upsert'")])
+    }
+
+    /// A follow-up's stage on the wire (`sync-protocol.md` §2.5): the update trigger watches
+    /// `stage` too, so a review's answer reaches the server, and every follow-up is marked to be
+    /// sent once more so the server learns the stage of each. The payload gained the field, so
+    /// none of them matches the hash the server last accepted. Nothing is marked while no server
+    /// is linked.
+    static func installFollowUpStage(_ db: Database) throws {
+        guard try db.tableExists("follow_ups"), try db.tableExists("sync_outbox") else { return }
+        try db.execute(sql: "DROP TRIGGER IF EXISTS sync_follow_ups_au")
+        try db.execute(sql: followUpUpdateTrigger(columns: followUpColumns + ["stage"]).sql)
+        try db.execute(
+            sql: enqueueSQL(kind: "'followUp'", id: "id", op: "'upsert'", from: "follow_ups"))
+    }
+
     static func triggers() -> [Trigger] {
         let annotationColumns = ["title", "summary", "tagsJson", "isFinal", "titleEditedAtMs"]
-        let followUpColumns = [
-            "text", "done", "sourceConversationId", "sourceSegmentId", "quote", "why", "dueAtMs",
-            "priority", "completedAtMs", "archivedAtMs", "snoozedUntilMs", "editedAtMs", "origin",
-            "sourceWallStartMs", "sourceWallEndMs", "sourceWallApproximate",
-        ]
         let recapColumns = [
             "text", "segmentIds", "provider", "model", "shortText", "headline", "lineSummary",
         ]
@@ -351,9 +375,7 @@ public struct ArchiveOutbox: Sendable {
             // Follow-ups.
             trigger("sync_follow_ups_ai", "INSERT", on: "follow_ups",
                 [enqueueSQL(kind: "'followUp'", id: "NEW.id", op: "'upsert'")]),
-            trigger("sync_follow_ups_au", "UPDATE", on: "follow_ups",
-                when: changed(followUpColumns),
-                [enqueueSQL(kind: "'followUp'", id: "NEW.id", op: "'upsert'")]),
+            followUpUpdateTrigger(columns: followUpColumns),
             trigger("sync_follow_ups_ad", "DELETE", on: "follow_ups",
                 [enqueueSQL(kind: "'followUp'", id: "OLD.id", op: deleteOp)]),
             // Notes.
