@@ -824,6 +824,20 @@ public struct AppDatabase: Sendable {
         // A candidate drawn from beside a sentence in which the person asked, out loud, for a
         // reminder or a follow-up (`FollowUpRequestDetector`). Curation keeps those unless they
         // repeat something already on the list.
+        // Moments the person marked as important on the watch (`MomentStore`).
+        migrator.registerMigration("moments-v1") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE IF NOT EXISTS moments (
+                        id TEXT PRIMARY KEY,
+                        wallMs INTEGER NOT NULL,
+                        onAudioClock BOOLEAN NOT NULL DEFAULT 0,
+                        origin TEXT NOT NULL DEFAULT 'watch',
+                        createdAtMs INTEGER NOT NULL
+                    )
+                    """)
+            try db.execute(sql: "CREATE INDEX IF NOT EXISTS moments_wall ON moments(wallMs)")
+        }
         migrator.registerMigration("follow-up-candidates-asked-for-v1") { db in
             guard try db.tableExists("follow_up_candidates") else { return }
             let columns = Set(try db.columns(in: "follow_up_candidates").map(\.name))

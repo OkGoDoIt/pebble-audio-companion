@@ -258,6 +258,12 @@ public actor ReceiverService {
         await session.setAssistantHandler(handler)
     }
 
+    public func setMomentHandler(
+        _ handler: (@Sendable (AudioReceiverSession.MarkedMoment) -> Void)?
+    ) async {
+        await session.setMomentHandler(handler)
+    }
+
     public func setMuseSetupHandler(
         _ handler: (@Sendable (AudioReceiverSession.MuseSetupInbound) -> Void)?
     ) async {

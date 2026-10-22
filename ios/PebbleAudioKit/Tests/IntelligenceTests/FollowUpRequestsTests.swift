@@ -1,4 +1,5 @@
 import Foundation
+import SegmentStore
 import Testing
 import Transcription
 
@@ -71,5 +72,39 @@ import Transcription
         #expect(FollowUpRequestDetector.isAskedFor(near, requests: requests))
         #expect(!FollowUpRequestDetector.isAskedFor(far, requests: requests))
         #expect(!FollowUpRequestDetector.isAskedFor(elsewhere, requests: requests))
+    }
+
+    // A moment marked on the watch is about what was said just before it.
+    @Test func aMarkOnTheWatchIsAboutTheWordsJustBeforeIt() {
+        let meta = SegmentMeta(
+            segmentId: "seg-1", streamId: 1, protocolVersion: 1, codecIdRaw: 1, channels: 1,
+            frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 9_800, frameDurationMs: 20,
+            startTimeMs: 1_788_000_000_000, startMonotonicMs: 1,
+            receivedAtMs: 1_788_000_000_000, frameCount: 30_000, closeReason: .rotated,
+            transcriptionState: .complete)
+        let turns = [
+            TranscriptSegment(
+                text: "We should get lunch soon.", startMs: 10_000, endMs: 14_000, speaker: "1"),
+            TranscriptSegment(
+                text: "The garden shed needs a new hinge before winter.", startMs: 200_000,
+                endMs: 206_000, speaker: "1"),
+            TranscriptSegment(
+                text: "Anyway, back to the movie.", startMs: 400_000, endMs: 404_000, speaker: "2"),
+        ]
+        let part = FollowUpSourcePart(
+            segmentId: "seg-1", startedAtMs: meta.startWallMs + 10_000,
+            text: turns.map(\.text).joined(separator: " "), turns: turns)
+        let found = FollowUpRequestDetector.markedRequests(
+            [meta.startWallMs + 210_000, meta.startWallMs + 900_000], parts: [part],
+            members: [meta])
+        #expect(found.count == 1)
+        #expect(found.first?.kind == .marked)
+        #expect(found.first?.sentence == "The garden shed needs a new hinge before winter.")
+
+        let block = FollowUpRequestDetector.promptBlock(
+            found, in: "S1: The garden shed needs a new hinge before winter.") ?? ""
+        #expect(block.hasPrefix("Marked as important on their watch"))
+        let near = QuoteLocation(segmentId: "seg-1", startMs: 200_000, endMs: 206_000)
+        #expect(FollowUpRequestDetector.isAskedFor(near, requests: found))
     }
 }

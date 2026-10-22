@@ -814,6 +814,38 @@ import WireProtocol
         #expect(await reply.value == .busy)
     }
 
+    @Test func aMarkedMomentIsPlacedOnTheRecordingsOwnClock() async {
+        // The watch's clock drifts from its sample count over a long stream, and the transcript
+        // is on the sample count: a mark naming the open stream is placed by its samples.
+        let fx = await startSession()
+        await authorize(fx)
+        fx.link.pushData(streamStart())
+        await fx.settle()
+        let received = MomentBox()
+        await fx.session.setMomentHandler { received.append($0) }
+
+        fx.link.pushControl(
+            MomentMark(
+                markId: 3, flags: MomentMark.flagRecording, streamId: streamId,
+                sampleIndex: 16_000 * 90, wallMs: 1_781_000_095_000))
+        // Marked with nothing recording: the watch's clock is all there is.
+        fx.link.pushControl(
+            MomentMark(markId: 4, flags: 0, streamId: 0, sampleIndex: 0, wallMs: 1_781_000_200_000))
+        // A watch whose clock was never set: placed at its arrival.
+        fx.link.pushControl(
+            MomentMark(markId: 5, flags: 0, streamId: 0, sampleIndex: 0, wallMs: 1_262_304_000_000))
+        await fx.settle()
+
+        let moments = received.values
+        #expect(moments.count == 3)
+        #expect(moments.first?.wallMs == 1_781_000_090_000)
+        #expect(moments.first?.onAudioClock == true)
+        #expect(moments.first?.id == "watch-1781000095000-3")
+        #expect(moments.dropFirst().first?.wallMs == 1_781_000_200_000)
+        #expect(moments.dropFirst().first?.onAudioClock == false)
+        #expect(moments.last?.wallMs == moments.last?.receivedAtMs)
+    }
+
     @Test func withoutAProbeThePhoneMediaQueryGoesUnanswered() async {
         // The watch then falls back to the media service alone.
         let fx = await startSession()
@@ -1740,6 +1772,13 @@ private final class ArmedFlag: @unchecked Sendable {
             return wasArmed
         }
     }
+}
+
+private final class MomentBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [AudioReceiverSession.MarkedMoment] = []
+    func append(_ value: AudioReceiverSession.MarkedMoment) { lock.withLock { stored.append(value) } }
+    var values: [AudioReceiverSession.MarkedMoment] { lock.withLock { stored } }
 }
 
 private final class MuseInboundBox: @unchecked Sendable {

@@ -302,7 +302,7 @@ public final class FollowUpCurator: @unchecked Sendable {
             }
             out += "   how sure the reader was: \(candidate.confidence.rawValue)\n"
             if candidate.askedFor {
-                out += "   asked for: the person asked out loud for this to be remembered\n"
+                out += "   asked for: the person asked for this to be remembered\n"
             }
         }
         return out

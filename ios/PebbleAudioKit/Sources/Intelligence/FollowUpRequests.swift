@@ -1,4 +1,5 @@
 import Foundation
+import SegmentStore
 import Transcription
 
 // The person asked, out loud, for something to be remembered.
@@ -16,14 +17,23 @@ import Transcription
 // rather than left to notice them; and a candidate drawn from beside one is marked, so curation
 // cannot drop it as vague or as someone else's job.
 
-/// A sentence in which the person asks for something to be remembered or followed up.
+/// A sentence in which the person asks for something to be remembered or followed up, or the
+/// words just before a moment they marked as important on the watch.
 public struct FollowUpRequest: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        /// Said out loud: "remind me to…".
+        case spoken
+        /// Marked on the watch (Mark Moment): `sentence` is what was said just before.
+        case marked
+    }
+
     public let segmentId: String
     /// The sentence, as transcribed.
     public let sentence: String
     /// The turn it is in, on the segment's media clock.
     public let startMs: Int64
     public let endMs: Int64
+    public var kind: Kind = .spoken
 }
 
 public enum FollowUpRequestDetector {
@@ -33,6 +43,12 @@ public enum FollowUpRequestDetector {
     public static let nearbyMs: Int64 = 90_000
     /// Most request sentences listed for the model per piece.
     static let maxLines = 8
+    /// What a mark on the watch is about: the words said in this long before it (and a moment
+    /// after, for the end of the sentence the button interrupted).
+    public static let markLookBackMs: Int64 = 45_000
+    static let markLookAheadMs: Int64 = 5_000
+    /// The most of those words shown to the model for one mark.
+    static let markTextChars = 320
 
     /// Asking for a reminder or a follow-up. Deliberately narrow: each phrase is a request to
     /// remember, not a request for information ("remind me what her name was") or a likeness
@@ -85,6 +101,36 @@ public enum FollowUpRequestDetector {
         return found
     }
 
+    /// One request per moment marked on the watch (`marksWallMs`, epoch ms) that falls inside
+    /// one of `parts`: the words said just before it.
+    public static func markedRequests(
+        _ marksWallMs: [Int64], parts: [FollowUpSourcePart], members: [SegmentMeta]
+    ) -> [FollowUpRequest] {
+        var found: [FollowUpRequest] = []
+        for mark in marksWallMs.sorted() {
+            for part in parts {
+                guard let meta = members.first(where: { $0.segmentId == part.segmentId })
+                else { continue }
+                let offset = mark - meta.startWallMs
+                guard offset >= 0, offset <= segmentWallSpanMs(meta) else { continue }
+                let media = SegmentMediaClock(meta).media(fromWall: offset)
+                let words = part.turns
+                    .filter {
+                        $0.endMs > media - markLookBackMs && $0.startMs <= media + markLookAheadMs
+                    }
+                    .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .joined(separator: " ")
+                guard !words.isEmpty else { continue }
+                found.append(
+                    FollowUpRequest(
+                        segmentId: part.segmentId, sentence: String(words.suffix(markTextChars)),
+                        startMs: media - markLookBackMs, endMs: media, kind: .marked))
+                break
+            }
+        }
+        return found
+    }
+
     /// Whether a quote found at `location` is what one of `requests` asked for: in the same
     /// recording, within `nearbyMs` of the request's turn.
     public static func isAskedFor(_ location: QuoteLocation, requests: [FollowUpRequest]) -> Bool {
@@ -101,17 +147,31 @@ public enum FollowUpRequestDetector {
     static func promptBlock(_ requests: [FollowUpRequest], in body: String) -> String? {
         let flat = FollowUpQuoteLocator.normalize(body)
         var seen = Set<String>()
-        let lines = requests.compactMap { request -> String? in
-            let normalized = FollowUpQuoteLocator.normalize(request.sentence)
-            guard flat.contains(normalized), seen.insert(normalized).inserted else { return nil }
-            return "- \"\(request.sentence)\""
+        func lines(_ kind: FollowUpRequest.Kind) -> [String] {
+            requests.filter { $0.kind == kind }.compactMap { request -> String? in
+                let normalized = FollowUpQuoteLocator.normalize(request.sentence)
+                // A mark's words may start mid-sentence: its end is what must be in this piece.
+                let probe = kind == .marked ? String(normalized.suffix(60)) : normalized
+                guard flat.contains(probe), seen.insert(normalized).inserted else { return nil }
+                return "- \"\(request.sentence)\""
+            }
         }
-        guard !lines.isEmpty else { return nil }
         // A recording that says "remind me" every minute is dictation, not a dozen requests;
         // the block stays small whatever the transcript does.
-        let shown = lines.prefix(maxLines)
-        return "Asked out loud to be remembered. The person said these, asking for a reminder "
-            + "or a follow-up:\n" + shown.joined(separator: "\n")
+        var blocks: [String] = []
+        let spoken = lines(.spoken).prefix(maxLines)
+        if !spoken.isEmpty {
+            blocks.append(
+                "Asked out loud to be remembered. The person said these, asking for a reminder "
+                    + "or a follow-up:\n" + spoken.joined(separator: "\n"))
+        }
+        let marked = lines(.marked).prefix(maxLines)
+        if !marked.isEmpty {
+            blocks.append(
+                "Marked as important on their watch, just after these words:\n"
+                    + marked.joined(separator: "\n"))
+        }
+        return blocks.isEmpty ? nil : blocks.joined(separator: "\n\n")
     }
 
     static func sentences(_ text: String) -> [String] {

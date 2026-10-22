@@ -175,6 +175,31 @@ enum TranscriptItems {
         return result
     }
 
+    /// `items` with a row for each moment marked on the watch, placed before the first row that
+    /// starts after it. Moments outside `[startMs, endMs)` are not this conversation's.
+    static func insertingMoments(
+        _ moments: [Moment], into items: [TranscriptItem], startMs: Int64, endMs: Int64,
+        timeZone: TimeZone
+    ) -> [TranscriptItem] {
+        let inside = moments.filter { $0.wallMs >= startMs && $0.wallMs < endMs }
+        guard !inside.isEmpty else { return items }
+        var result = items
+        for moment in inside.sorted(by: { $0.wallMs < $1.wallMs }) {
+            let at = Date(timeIntervalSince1970: Double(moment.wallMs) / 1000)
+            let marker = TranscriptMarker(
+                id: "moment-\(moment.id)",
+                text: Copy.Conversation.markedAt(TranscriptStamp.text(at, in: timeZone)),
+                startedAt: at)
+            let index =
+                result.firstIndex { item in
+                    guard let started = item.startedAt else { return false }
+                    return started > at
+                } ?? result.endIndex
+            result.insert(.moment(marker), at: index)
+        }
+        return result
+    }
+
     /// The opened form of a mixed interruption: each cause with the time it accounts for, and
     /// how many separate interruptions it covers when that is more than one — twelve brief
     /// dropouts and one long outage are different problems.

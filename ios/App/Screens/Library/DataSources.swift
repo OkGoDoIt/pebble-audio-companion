@@ -179,19 +179,23 @@ enum TranscriptItem: Equatable, Identifiable {
     case turn(TranscriptTurn)
     case quiet(TranscriptMarker)
     case missing(TranscriptMarker)
+    /// A moment the person marked as important on the watch.
+    case moment(TranscriptMarker)
 
     var id: String {
         switch self {
         case .turn(let turn): return turn.id
         case .quiet(let marker): return marker.id
         case .missing(let marker): return marker.id
+        case .moment(let marker): return marker.id
         }
     }
 
     var startedAt: Date? {
         switch self {
         case .turn(let turn): return turn.startedAt
-        case .quiet(let marker), .missing(let marker): return marker.startedAt
+        case .quiet(let marker), .missing(let marker), .moment(let marker):
+            return marker.startedAt
         }
     }
 }

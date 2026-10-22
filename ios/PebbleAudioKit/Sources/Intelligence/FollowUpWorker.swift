@@ -285,6 +285,8 @@ public final class FollowUpWorker: @unchecked Sendable {
     private let timeZone: @Sendable () -> TimeZone
     private let contextOf: @Sendable (String) async -> FollowUpConversationContext?
     private let transcriptVersionOf: @Sendable (String) -> String?
+    /// Moments marked on the watch between two wall times (epoch ms, `[from, to)`).
+    private let momentsBetween: @Sendable (Int64, Int64) async -> [Int64]
 
     /// The combined transcript length last computed for a conversation, by membership key.
     /// Freshness is judged on that length, and computing it means reading and JSON-decoding
@@ -310,8 +312,10 @@ public final class FollowUpWorker: @unchecked Sendable {
         timeZone: @escaping @Sendable () -> TimeZone = { .current },
         contextOf: @escaping @Sendable (String) async -> FollowUpConversationContext? =
             { _ in nil },
-        transcriptVersionOf: @escaping @Sendable (String) -> String? = { _ in nil }
+        transcriptVersionOf: @escaping @Sendable (String) -> String? = { _ in nil },
+        momentsBetween: @escaping @Sendable (Int64, Int64) async -> [Int64] = { _, _ in [] }
     ) {
+        self.momentsBetween = momentsBetween
         self.candidates = candidates
         self.state = state
         self.router = router
@@ -567,7 +571,13 @@ public final class FollowUpWorker: @unchecked Sendable {
         let pieceChars = min(
             Self.maxTranscriptChars - Self.pieceMarginChars,
             await router.firstStructuredCallInputChars() ?? Int.max)
-        let requests = FollowUpRequestDetector.requests(in: parts)
+        // What the person asked for out loud, and the words before each moment they marked.
+        let span = Self.wallSpan(of: conversation, parts: parts)
+        let marks = await momentsBetween(span.lowerBound, span.upperBound)
+        let requests =
+            FollowUpRequestDetector.requests(in: parts)
+            + FollowUpRequestDetector.markedRequests(
+                marks, parts: parts, members: conversation.members)
         let bodies = FollowUpTranscriptRenderer.renderChunks(
             parts: parts,
             title: context?.title,
@@ -731,6 +741,15 @@ public final class FollowUpWorker: @unchecked Sendable {
             clocks[location.segmentId] = clock
         }
         return clock.wallRange(ofMediaStartMs: startMs, endMs: location.endMs ?? startMs)
+    }
+
+    /// From the conversation's first words to the end of its last recording, epoch ms.
+    static func wallSpan(of conversation: EnrichmentConversation, parts: [FollowUpSourcePart])
+        -> Range<Int64>
+    {
+        let start = parts.first?.startedAtMs ?? conversation.members.first?.startWallMs ?? 0
+        let end = conversation.members.last.map { $0.startWallMs + segmentWallSpanMs($0) } ?? start
+        return start..<max(start + 1, end)
     }
 
     /// The zone a conversation's audio was recorded in: its first member that says. Nil for

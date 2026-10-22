@@ -483,6 +483,10 @@ final class MockWorld {
                 marker.startedAt = at
                 marker.segmentId = member(conversationId, offset < half ? 1 : 2)
                 return .missing(marker)
+            case .moment(var marker):
+                marker.startedAt = at
+                marker.segmentId = member(conversationId, offset < half ? 1 : 2)
+                return .moment(marker)
             }
         }
     }

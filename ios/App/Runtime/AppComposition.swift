@@ -792,7 +792,12 @@ final class AppComposition {
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
                 },
-                transcriptVersionOf: aiTranscriptVersion
+                transcriptVersionOf: aiTranscriptVersion,
+                momentsBetween: { from, to in
+                    let marked = try? await MomentStore(db: database).moments(
+                        fromWallMs: from, to: to)
+                    return marked?.map(\.wallMs) ?? []
+                }
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,
@@ -993,6 +998,20 @@ final class AppComposition {
             sessionWaitsForStoreRecovery: true
         )
         self.receiver = receiver
+
+        // Moments marked on the watch (Mark Moment) are kept as they arrive; the transcript and
+        // follow-up extraction read them from the database.
+        let moments = MomentStore(db: database)
+        Task {
+            await receiver.setMomentHandler { marked in
+                Task {
+                    _ = try? await moments.add(
+                        Moment(
+                            id: marked.id, wallMs: marked.wallMs,
+                            onAudioClock: marked.onAudioClock, createdAtMs: marked.receivedAtMs))
+                }
+            }
+        }
 
         let cascade = DeleteCascade(
             store: store,

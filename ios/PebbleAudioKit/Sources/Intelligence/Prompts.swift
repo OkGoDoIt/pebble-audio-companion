@@ -472,7 +472,10 @@ public enum AiPromptTemplates {
             a moment as important", never "Follow up on this". The quote is the run that names \
             that thing, which may be the sentence before or after the request. Return one \
             unless it was taken back, or an assistant can be heard taking it on ("OK, I'll \
-            remind you", "I've added that").
+            remind you", "I've added that"). A moment they marked as important on their watch is \
+            listed there too, with the words just before it: if those words hold something for \
+            them to do, it is the same kind of request; if they hold nothing to do (a thought, a \
+            fact, a joke), it is not a follow-up.
 
             NEVER RETURN THESE, however clearly they were said:
             - Narration of what is being done right now: "I'll grab my laptop", "I'll put it \
@@ -586,8 +589,9 @@ public enum AiPromptTemplates {
             this batch says it. Name the one it duplicates in the reason. Prefer the clearer \
             wording; a later, more specific version of a plan supersedes an earlier vaguer one.
 
-            ASKED FOR — a candidate marked "asked for" comes from a moment the person asked, out \
-            loud, for it to be remembered: "remind me to…", "create a follow-up for this". They \
+            ASKED FOR — a candidate marked "asked for" comes from a moment the person asked for \
+            it to be remembered: out loud ("remind me to…", "create a follow-up for this"), or \
+            by marking the moment on their watch. They \
             are counting on it. Keep it unless it duplicates something, or it was a one-off \
             whose time has gone by. Never drop it as vague, as needing the conversation, or as \
             an instruction to someone else: if its wording is weak, rewrite it from the quote.

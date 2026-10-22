@@ -105,6 +105,7 @@ public enum LocalFollowUpSift {
                 // The list of spoken requests above the transcript: the same sentences are
                 // read where they were said, with the turns around them.
                 && !trimmed.hasPrefix("Asked out loud") && !trimmed.hasPrefix("- \"")
+                && !trimmed.hasPrefix("Marked as important")
         }
         var out: [Candidate] = []
         var seen = Set<String>()
