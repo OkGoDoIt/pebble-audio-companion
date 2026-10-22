@@ -82,7 +82,12 @@ function dayView(d) {
   const spans = d.coverage?.spans || [];
   const starts = [...spans.map((s) => instant(s.startedAt)), ...conversations.map((c) => instant(c.startedAt))];
   const ends = [...spans.map((s) => instant(s.endedAt)), ...conversations.map((c) => instant(c.endedAt) || instant(c.startedAt) + c.minutes * 60000)];
-  if (!starts.length) return `<p class="w-kicker">${esc(longDay(d.day))}</p><div class="w-state"><p class="head">Nothing recorded</p></div>`;
+  if (!starts.length) return `<div id="day-content"><p class="w-kicker">${esc(longDay(d.day))}</p>
+    <h1 class="w-title">${esc(d.recap?.headline || (d.coverage?.recordedMinutes > 0 ? 'Day overview' : 'Nothing recorded'))}</h1>
+    ${summaryHtml(d.recap?.text || d.recap?.lineSummary || '')}
+    ${d.coverage?.recordedMinutes > 0 ? `<p class="w-line">${esc(duration(d.coverage.recordedMinutes * 60))} recorded</p>` : ''}
+    ${d.coverage?.spansOmitted ? '<p class="day-help">Open the day for detailed recording coverage.</p>' : ''}
+    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
   const first = hourStart(Math.min(...starts), tz);
   let last = hourStart(Math.max(...ends), tz);
   if (last < Math.max(...ends)) last += 3600000;
@@ -106,12 +111,13 @@ function dayView(d) {
   const talk = conversations.filter((c) => c.kind !== 'noConversation').length;
   const recorded = d.coverage?.recordedMinutes ?? conversations.reduce((a, c) => a + (c.recordedMinutes || 0), 0);
   const lost = d.coverage?.lostMinutes ?? conversations.reduce((a, c) => a + (c.lostMinutes || 0), 0);
-  const line = [`${talk} ${talk === 1 ? 'conversation' : 'conversations'}`, recorded ? `${duration(recorded * 60)} recorded` : ''].filter(Boolean).join(' · ');
+  const line = [`${talk} ${talk === 1 ? 'conversation' : 'conversations'}${d.truncated ? ' shown' : ''}`, recorded ? `${duration(recorded * 60)} recorded` : ''].filter(Boolean).join(' · ');
   return `
     <div id="day-content">
     <p class="w-kicker">${esc(longDay(d.day))} · ${esc(place(tz))} time</p>
     <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
     <p class="w-line">${esc(line)}${lost > 0 ? `<span class="loss"> · ${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
+    ${d.coverage?.spansOmitted ? '<p class="day-help">Conversation times shown. Open the day for detailed recording coverage.</p>' : ''}
     ${conversations.length ? '<p class="day-help">Choose a conversation on the timeline, or use the arrows below.</p>' : ''}
     ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div><div class="sel" id="sel"></div>` : `<div class="tlw">${laneHtml}</div>`}
     </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;

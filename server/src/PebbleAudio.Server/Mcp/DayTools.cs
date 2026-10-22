@@ -325,6 +325,13 @@ public sealed class DayTools
 						.Select(s => (s.Kind, Start: s.StartedAt > call.From ? s.StartedAt : call.From, End: s.EndedAt))
 						.Select(s => new CoverageSpanOut(s.Kind.ToWire(), Days.Local(s.Start, zone), Days.Local(s.End, zone), Days.Minutes(s.End - s.Start))),
 				]);
+		// A day can contain tens of thousands of sub-second transitions. Keep exact totals,
+		// but leave detailed coverage to the day view rather than crowding out every conversation.
+		if (coverageOut is not null && ToolJson.Length(coverageOut) > call.Settings.ToolMaxCharacters / 4)
+		{
+			coverageOut = coverageOut with { Spans = [], SpansOmitted = true };
+		}
+
 		var recapOut = recap is null
 			? null
 			: new RecapOut(ArchiveReader.Blank(recap.Headline), ArchiveReader.Blank(recap.LineSummary), Speak.Cap(ArchiveReader.Blank(recap.Text), call.Settings.ToolMaxCharacters / 3));

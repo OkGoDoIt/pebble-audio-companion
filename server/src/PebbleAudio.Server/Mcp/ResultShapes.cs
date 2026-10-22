@@ -153,7 +153,7 @@ public sealed record RecapOut(string? Headline, string? LineSummary, string? Tex
 
 public sealed record CoverageSpanOut(string Kind, DateTimeOffset StartedAt, DateTimeOffset EndedAt, double Minutes);
 
-public sealed record CoverageOut(double RecordedMinutes, double QuietMinutes, double LostMinutes, IReadOnlyList<CoverageSpanOut> Spans);
+public sealed record CoverageOut(double RecordedMinutes, double QuietMinutes, double LostMinutes, IReadOnlyList<CoverageSpanOut> Spans, bool SpansOmitted = false);
 
 public sealed record DayCandidate(DateOnly Day, string Weekday, string Url, string? Headline, int ConversationCount);
 

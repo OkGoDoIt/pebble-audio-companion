@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
@@ -271,6 +272,33 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Equal($"{Origin}/c/conv-kitchen?t=1260", (await ArchiveFixture.CallAsync(mcp, "fetch", new() { ["id"] = "followUp:fu-tiles" })).GetProperty("url").GetString());
 		var unknown = await mcp.CallToolAsync("fetch", new Dictionary<string, object?> { ["id"] = "conv-nowhere" });
 		Assert.True(unknown.IsError);
+	}
+
+	[Fact]
+	public async Task Dense_day_coverage_keeps_totals_and_conversations_within_the_answer_budget()
+	{
+		var (phone, fx) = await ArchiveFixture.SeedAsync(factory);
+		using var linked = phone;
+		var coverage = fx.Coverage(fx.Day);
+		var start = fx.At(9, 0);
+		coverage["spans"] = new JsonArray(Enumerable.Range(0, 4000).Select(i => (JsonNode)new JsonObject
+		{
+			["startedAt"] = Wire.T(start.AddSeconds(i)),
+			["endedAt"] = Wire.T(start.AddSeconds(i + 1)),
+			["kind"] = i % 2 == 0 ? "recorded" : "missing",
+		}).ToArray());
+		Assert.Single(Phone.Ids(await phone.BatchAsync(ArchiveFixture.Item("coverage", ArchiveFixture.Key(fx.Day), coverage, ArchiveFixture.V + 1)), "accepted"));
+		await using var mcp = await ArchiveFixture.ConnectAsync(factory, phone.UserId, TokenAccess.Read);
+		var day = await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(fx.Day) });
+		Assert.True(Length(day) <= ArchiveSettings.Defaults.ToolMaxCharacters);
+		Assert.Equal(4, day.GetProperty("conversations").GetArrayLength());
+		Assert.False(day.GetProperty("truncated").GetBoolean());
+		var detail = day.GetProperty("coverage");
+		Assert.True(detail.GetProperty("spansOmitted").GetBoolean());
+		Assert.Equal(0, detail.GetProperty("spans").GetArrayLength());
+		Assert.Equal(130, detail.GetProperty("recordedMinutes").GetDouble());
+		Assert.Equal(150, detail.GetProperty("quietMinutes").GetDouble());
+		Assert.Equal(2, detail.GetProperty("lostMinutes").GetDouble());
 	}
 
 	[Fact]
