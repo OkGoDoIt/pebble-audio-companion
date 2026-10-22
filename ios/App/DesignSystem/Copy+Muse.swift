@@ -145,7 +145,7 @@ extension Copy {
         // What Muse can do on the watch (D7b): a switch each, on once paired.
         static let actionsHeader = "What Muse can do on your watch"
         static let actionTimer = "Set timers"
-        static let actionAlarm = "Set alarms"
+        static let actionAlarm = "Manage alarms"
         static let actionMusic = "Control music"
         static let actionQuietTime = "Turn on Quiet Time"
         static let actionLaunchApp = "Open watch apps"
