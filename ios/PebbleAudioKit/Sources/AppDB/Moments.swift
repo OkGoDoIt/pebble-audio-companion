@@ -9,6 +9,8 @@ import GRDB
 
 public enum MomentOrigin: String, Sendable, Equatable {
     case watch
+    /// Muse was asked, from the watch, to mark the moment.
+    case muse
 }
 
 public struct Moment: Sendable, Equatable, Identifiable {

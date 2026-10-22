@@ -169,9 +169,6 @@ extension Copy {
         static let allowAccess = "Allow Access"
         static let openSettings = "Open Settings"
 
-        // A moment Muse marked, as it appears in Follow-ups.
-        static let markedMoment = "Marked moment"
-        static func marked(_ label: String) -> String { "Marked: \(label)" }
         static let actionsFooter = "Only while it's answering a question you asked. Only the outcome goes back."
 
         // Questions from the watch.
