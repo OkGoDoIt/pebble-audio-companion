@@ -68,11 +68,18 @@ public sealed partial class ViewerTests(ArchiveServerFactory factory)
 		}
 
 		using var browser = await SignedInAsync(phone.UserId);
+		// A follow-up the app noticed and the person has not reviewed: shown apart on its conversation, never on the day.
+		await phone.BatchAsync(ArchiveFixture.Item("followUp", "fu-grout", ArchiveFixture.FollowUp(
+			"Ask Sam which grout color", "conv-kitchen", ArchiveFixture.At(fixture.Day, 10, 30), ArchiveFixture.At(fixture.Day, 10, 45), stage: "suggested")));
 
 		// The kitchen conversation at 10:26 (t = 1260): the cited band sits on the turn said then.
 		var page = await PageAsync(browser, "/c/conv-kitchen?t=1260");
 		Assert.Contains("Kitchen tiles with Sam", page, StringComparison.Ordinal);
 		Assert.Contains("Alex and Sam", page, StringComparison.Ordinal);
+		Assert.True(
+			page.IndexOf(">Reminders</h2>", StringComparison.Ordinal) is var reminders and >= 0 &&
+			page.IndexOf(">Follow-ups to review</h2>", StringComparison.Ordinal) > reminders);
+		Assert.Contains("Ask Sam which grout color", page, StringComparison.Ordinal);
 		Assert.Contains("audio interrupted for 1 min", page, StringComparison.Ordinal);
 		Assert.Contains("quiet for 2 min", page, StringComparison.Ordinal);
 		Assert.Single(Regex.Matches(page, "The moment this cites"));
@@ -112,6 +119,8 @@ public sealed partial class ViewerTests(ArchiveServerFactory factory)
 		Assert.Contains("Tiles, teeth, and the launch", day, StringComparison.Ordinal);
 		Assert.Contains("Booking a dentist appointment", day, StringComparison.Ordinal);
 		Assert.Contains("Send Sam the tile samples", day, StringComparison.Ordinal);
+		Assert.DoesNotContain("Ask Sam which grout color", day, StringComparison.Ordinal);
+		Assert.Contains("3 reminders · 1 open", day, StringComparison.Ordinal);
 		var week = await PageAsync(browser, $"/b/week/{ArchiveFixture.Key(fixture.WeekStart)}");
 		Assert.Contains("A renovation taking shape", week, StringComparison.Ordinal);
 		var home = await PageAsync(browser, "/");

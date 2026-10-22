@@ -164,12 +164,18 @@
 		</div>
 	</section>
 
-	@if (v.FollowUps.Count > 0)
+	@foreach (var (stage, heading, headingId) in new[] { ("reminder", "Reminders", "fu-h"), ("suggested", "Follow-ups to review", "fu-review-h") })
 	{
-		<section class="card cv-extra" aria-labelledby="fu-h">
-			<h2 class="card-head" id="fu-h">Follow-ups</h2>
+		var listed = v.FollowUps.Where(f => f.Stage == stage).ToList();
+		if (listed.Count == 0)
+		{
+			continue;
+		}
+
+		<section class="card cv-extra" aria-labelledby="@headingId">
+			<h2 class="card-head" id="@headingId">@heading</h2>
 			<ul class="fu">
-				@foreach (var f in v.FollowUps)
+				@foreach (var f in listed)
 				{
 					var done = f.Status is "done" or "archived";
 					<li class="@(done ? "done" : null)">

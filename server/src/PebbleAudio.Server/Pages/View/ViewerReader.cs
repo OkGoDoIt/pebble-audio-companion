@@ -123,7 +123,11 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			turns.Add((bit.Lane, bit.S, bit.E));
 		}
 
-		var followUps = await archive.FollowUps(call).Where(f => f.SourceConversationId == id).OrderBy(f => f.SourceAt ?? f.CreatedAt).ToListAsync(cancellationToken);
+		// Reminders and the follow-ups waiting for review; a skipped one is the person's no and is on neither list.
+		var followUps = await archive.FollowUps(call)
+			.Where(f => f.SourceConversationId == id && f.Stage != FollowUpStage.Skipped)
+			.OrderBy(f => f.SourceAt ?? f.CreatedAt)
+			.ToListAsync(cancellationToken);
 		var notes = await archive.Notes(call).Where(n => n.ConversationId == id).OrderBy(n => n.CreatedAt).ToListAsync(cancellationToken);
 		var sameDay = await archive.Conversations(call)
 			.Where(x => x.DayKey == c.DayKey && x.Id != id)
@@ -587,8 +591,12 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 		var zoneId = coverage?.TimeZone ?? recap?.TimeZone ?? conversations.FirstOrDefault()?.TimeZone ?? call.Scope.TimeZoneId;
 		var zone = LogicalDays.Zone(zoneId);
 		var ids = conversations.Select(c => c.Id).ToList();
-		var followUps = await archive.FollowUps(call).Where(f => f.SourceConversationId != null && ids.Contains(f.SourceConversationId)).OrderBy(f => f.SourceAt ?? f.CreatedAt).ToListAsync(cancellationToken);
-		var followUpsBy = followUps.ToLookup(f => f.SourceConversationId!);
+		// A day shows its reminders only: a follow-up still waiting for review is not on the person's list.
+		var reminders = await archive.FollowUps(call)
+			.Where(f => f.SourceConversationId != null && ids.Contains(f.SourceConversationId) && f.Stage == FollowUpStage.Reminder)
+			.OrderBy(f => f.SourceAt ?? f.CreatedAt)
+			.ToListAsync(cancellationToken);
+		var remindersBy = reminders.ToLookup(f => f.SourceConversationId!);
 
 		// Coverage is only what the window holds: a day that starts before it is drawn from where it starts.
 		var spans = (coverage?.Spans ?? [])
@@ -597,7 +605,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			.OrderBy(s => s.StartedAt)
 			.ToList();
 
-		var cards = conversations.Select(c => Card(call, c, followUpsBy[c.Id])).ToList();
+		var cards = conversations.Select(c => Card(call, c, remindersBy[c.Id])).ToList();
 		var items = new List<TimelineItem>();
 		DateTimeOffset? lastEnd = spans.Count > 0 ? spans[0].StartedAt : null;
 		for (var i = 0; i < conversations.Count; i++)
@@ -629,8 +637,8 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			Strip(call, zone, spans, conversations),
 			Totals(coverage, spans, conversations, call),
 			items,
-			followUps.Count,
-			followUps.Count(f => ArchiveReader.FollowUpStatus(f, call.Now) == "open"),
+			reminders.Count,
+			reminders.Count(f => ArchiveReader.FollowUpStatus(f, call.Now) == FollowUpStatuses.Open),
 			previous,
 			next,
 			weekUrl,
@@ -650,7 +658,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 	private static DateTimeOffset End(Conversation c, ToolCall call) =>
 		c.EndedAt ?? (c.State == ConversationState.Live ? call.Now : c.StartedAt.AddMilliseconds(c.RecordedMs));
 
-	private CardView Card(ToolCall call, Conversation c, IEnumerable<FollowUp> followUps)
+	private CardView Card(ToolCall call, Conversation c, IEnumerable<FollowUp> reminders)
 	{
 		var zone = LogicalDays.Zone(c.TimeZone);
 		var start = Days.Local(c.StartedAt, zone);
@@ -672,7 +680,7 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			noConversation ? [] : c.Tags,
 			noConversation ? [] : [.. c.People.Select(p => ArchiveReader.Blank(p.Name)).OfType<string>().Distinct()],
 			noConversation || seconds < 180,
-			[.. followUps.Take(3).Select(f => (f.Text, f.Done || f.ArchivedAt is not null))]);
+			[.. reminders.Take(3).Select(f => (f.Text, f.Done || f.ArchivedAt is not null))]);
 	}
 
 	private enum Edge

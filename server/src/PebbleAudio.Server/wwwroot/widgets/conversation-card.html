@@ -81,7 +81,7 @@ function render({ structuredContent: c }) {
     </div>
     <div class="w-foot">
       ${expandButton('card-content', 'Read more', 'Show less')}
-      <span class="hint">${followUps ? esc(followUps === 1 ? '1 open follow-up' : `${followUps} open follow-ups`) : ''}</span>
+      <span class="hint">${followUps ? esc(followUps === 1 ? '1 open reminder' : `${followUps} open reminders`) : ''}</span>
       <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open conversation ${CHEVRON}</a>
     </div>`;
   loadExpandedSummaries(card);
