@@ -212,7 +212,7 @@ public actor MusePushToTalk: MuseWatchSide {
         connector: any MuseVoiceConnector,
         preferences: MusePreferencesStore,
         data: (any MuseDataProvider)? = nil,
-        eventKit: MuseEventKitSource = MuseEventKitSource(),
+        eventKit: any MuseEventKitAccess = MuseEventKitSource(),
         // MuseTools.holdLimitSeconds: a little under the 180 s Muse is given for a data call.
         toolHoldLimit: Duration = .seconds(170),
         messageRetryDelay: Duration = .seconds(20),
