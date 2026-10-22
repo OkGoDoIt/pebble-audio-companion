@@ -54,11 +54,11 @@ PAGE='''<!doctype html><html><meta charset="utf-8"><meta name="viewport" content
 body{font:15px/1.5 system-ui;margin:0;background:#f5f5f7;color:#202024}header{padding:20px 24px}h1{font-size:22px;margin:0}p{margin:4px 0 16px;color:#626269}
 nav{display:flex;gap:12px;flex-wrap:wrap}label{display:grid;gap:4px;font-size:13px}select{padding:8px;font:inherit}main{padding:0 20px 30px;overflow:auto}
 iframe{border:0;display:block;margin:0 auto;min-height:150px}#status{font-size:13px;margin:10px 0}body.dark{background:#121214;color:#eee}body.dark p{color:#aaa}
-</style><header><h1>Pebble Audio · Widget review</h1><p>Illustrative content. Current widget code, running with a simulated host.</p>
+</style><header><h1>Pebble Audio · Widget review</h1><p>Current widget code with a simulated host. “Local saved result” uses private captured data; other samples are illustrative.</p>
 <nav><label>Widget<select id="widget"><option value="conversation-card">Conversation</option><option value="day-timeline">Day timeline</option><option value="clip-player">Clip player</option></select></label>
 <label>Width<select id="width"><option>375</option><option selected>768</option><option>1100</option><option>320</option></select></label>
 <label>Theme<select id="theme"><option>light</option><option>dark</option></select></label>
-<label>Content<select id="scenario"><option value="normal">Typical</option><option value="long">Long summary</option><option value="days">Several days</option><option value="dense">Dense day coverage</option><option value="empty">Empty</option><option value="error">Tool unavailable</option><option value="ready">Ready clip (silent sample)</option></select></label>
+<label>Content<select id="scenario"><option value="normal">Typical</option><option value="long">Long summary</option><option value="days">Several days</option><option value="dense">Dense day coverage</option><option value="live">Local saved result</option><option value="legacy">Legacy transcript result</option><option value="empty">Empty</option><option value="error">Tool unavailable</option><option value="ready">Ready clip (silent sample)</option></select></label>
 <label>Version<select id="version"><option value="current">Proposed</option><option value="before">Before</option></select></label></nav><div id="status" role="status">Ready</div></header><main><iframe title="Widget preview"></iframe></main>
 <script>
 const frame=document.querySelector('iframe');
@@ -85,6 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             data={'conversation-card':C,'day-timeline':DAY,'clip-player':CLIP}[name].copy()
             scenario=q.get('scenario')
             meta={}
+            fixtures=json.loads(Path(args.fixtures).read_text()) if args.fixtures else {}
+            if scenario in ('live','legacy'): data=fixtures.get(name,data).copy()
+            if scenario=='legacy': data.pop('overview',None)
             if scenario=='ready' and name=='clip-player':
                 data=dict(CLIP, status='ready', title='Preview clip · silent sample', endedAt='2026-10-21T03:40:30+07:00')
                 meta={'pebbleaudio/audio':{'url':'http://localhost:'+str(args.port)+'/sample.wav'}}
@@ -96,13 +99,13 @@ class Handler(BaseHTTPRequestHandler):
             boot='''<script>
 window.addEventListener('error',e=>parent.postMessage({previewError:e.message},'*'));
 window.addEventListener('unhandledrejection',e=>parent.postMessage({previewError:String(e.reason)},'*'));
-window.openai={toolOutput:DATA,toolResponseMetadata:META,theme:THEME,notifyIntrinsicHeight:h=>parent.postMessage({method:'ui/notifications/size-changed',params:{height:h}},'*'),openExternal:({href})=>parent.postMessage({previewOpen:href},'*'),callTool:async(name)=>{if(ERROR)throw Error('Preview unavailable');if(name==='get_audio')return {structuredContent:CLIP};return {structuredContent:{found:true,overview:LONG,transcript:{items:[{kind:'turn',at:'2026-10-21T03:40:00+07:00',speaker:'1',text:'Could we make the summary easier to read?'},{kind:'turn',at:'2026-10-21T03:40:10+07:00',speaker:'2',text:'Yes. Give the description more room and label the times.'},{kind:'turn',at:'2026-10-21T03:40:20+07:00',speaker:'1',text:'Keep the recording details quiet and secondary.'}]}}};}};
-</script>'''.replace('DATA',json.dumps(data)).replace('META',json.dumps(meta)).replace('THEME',json.dumps(q.get('theme','light'))).replace('ERROR',str(scenario=='error').lower()).replace('CLIP',json.dumps(CLIP)).replace('LONG',json.dumps(LONG))
+window.openai={toolOutput:DATA,toolResponseMetadata:META,theme:THEME,notifyIntrinsicHeight:h=>parent.postMessage({method:'ui/notifications/size-changed',params:{height:h}},'*'),openExternal:({href})=>parent.postMessage({previewOpen:href},'*'),callTool:async(name)=>{if(ERROR)throw Error('Preview unavailable');if(name==='get_audio')return {structuredContent:CLIP};return {structuredContent:{found:true,overview:OVERVIEW_RESULT,transcript:{items:[{kind:'turn',at:'2026-10-21T03:40:00+07:00',speaker:'1',text:'Could we make the summary easier to read?'},{kind:'turn',at:'2026-10-21T03:40:10+07:00',speaker:'2',text:'Yes. Give the description more room and label the times.'},{kind:'turn',at:'2026-10-21T03:40:20+07:00',speaker:'1',text:'Keep the recording details quiet and secondary.'}]}}};}};
+</script>'''.replace('DATA',json.dumps(data)).replace('META',json.dumps(meta)).replace('THEME',json.dumps(q.get('theme','light'))).replace('ERROR',str(scenario=='error').lower()).replace('CLIP',json.dumps(CLIP)).replace('OVERVIEW_RESULT',json.dumps(fixtures.get('conversation-card',{}).get('overview',LONG) if scenario in ('live','legacy') else LONG))
             body=compose(root,name).replace('<script type="module">',boot+'<script type="module">')
         else: self.send_error(404); return
         self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.end_headers(); self.wfile.write(body.encode())
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--port',type=int,default=5099); parser.add_argument('--before'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--port',type=int,default=5099); parser.add_argument('--before'); parser.add_argument('--fixtures',help='Local JSON results for private review; never committed'); args=parser.parse_args()
     print(f'Widget review: http://localhost:{args.port}',flush=True)
     HTTPServer(('127.0.0.1',args.port),Handler).serve_forever()

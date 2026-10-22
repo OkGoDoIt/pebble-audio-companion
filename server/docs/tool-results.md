@@ -394,8 +394,8 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
 }
 ```
 
-`include: "summary"` leaves out `transcript`; `include: "transcript"` leaves out `overview`, `followUps`, and
-`notes`. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
+`include: "summary"` leaves out `transcript`; `include: "transcript"` leaves out `followUps` and `notes`. The conversation overview stays in every
+mode so the widget always explains what was discussed. `transcript` is absent when the conversation has none yet (`hasTranscript: false`); `itemCount` counts the
 window asked for (items with `from_time` ≤ `at` ≤ `to_time`), `shownCount` what fits. A time without an offset
 is read on the conversation's wall clock. `gaps` lists the rows the phone's transcript shows: every interruption
 with a line of its own and every quiet row; a briefer interruption counts in `lostMinutes`. The lists above the transcript

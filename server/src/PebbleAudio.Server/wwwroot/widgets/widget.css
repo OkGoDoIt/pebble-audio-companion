@@ -21,7 +21,7 @@ button { font: inherit; color: inherit; }
 .w-kicker .loss, .loss { color: var(--meta); white-space: nowrap; }
 .w-title { font-size: 18px; font-weight: 600; line-height: 1.3; color: var(--label); overflow-wrap: anywhere; }
 .w-title.untitled { color: var(--tertiary); }
-.w-sum { margin-top: 10px; max-width: 80ch; color: var(--secondary); line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.w-sum { margin-top: 10px; max-width: 80ch; color: var(--label); line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
 .summary-toggle { display: block; min-height: var(--target); padding: 4px 0; border: 0; background: none; color: var(--tint); font-size: var(--fs-footnote); cursor: pointer; }
 .summary-toggle:disabled { color: var(--meta); cursor: wait; }
 .summary-status { font-size: var(--fs-meta); color: var(--meta); }
@@ -80,16 +80,16 @@ button { font: inherit; color: inherit; }
 }
 
 /* The chat starts compact. The always-visible disclosure makes every clipped line recoverable. */
-.w:not(.is-expanded) .w-sum { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: normal; }
+.w:not(.is-expanded) .w-sum { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; white-space: normal; }
 .w:not(.is-expanded) .w-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.days-widget:not(.is-expanded) .w-summary,
 .w:not(.is-expanded) .loss,
 .w:not(.is-expanded) .coverage,
+.w:not(.is-expanded) .recording-details,
+.w:not(.is-expanded) .conversation-browser,
 .w:not(.is-expanded) .pills,
 .w:not(.is-expanded) .w-people,
 .w:not(.is-expanded) .tlw,
 .w:not(.is-expanded) .day-help,
-.w:not(.is-expanded) .summary-status,
 .clip-widget:not(.is-expanded) .pl-scrub,
 .clip-widget:not(.is-expanded) .pl-axis,
 .clip-widget:not(.is-expanded) .cp-caption,
@@ -97,3 +97,15 @@ button { font: inherit; color: inherit; }
 .w:not(.is-expanded) .days li:nth-child(n+4):not(:has([aria-pressed="true"])) { display: none; }
 .day-widget:not(.is-expanded) .sel { margin-top: 10px; }
 .w-foot .summary-toggle { margin-right: auto; font-weight: 500; }
+
+/* Reading is primary; recording diagnostics and browsing are deliberate secondary disclosures. */
+.recording-details, .conversation-browser { margin-top: 12px; border-top: 0.5px solid var(--hairline); }
+.recording-details > summary, .conversation-browser > summary { min-height: var(--target); padding-top: 12px; font-size: var(--fs-footnote); color: var(--meta); cursor: pointer; }
+.recording-details .coverage { margin-top: 8px; }
+.day-recap { margin: 4px 0 10px; }
+
+.days-widget:not(.is-expanded) .days { display: flex; flex-wrap: wrap; gap: 4px; }
+.days-widget:not(.is-expanded) .day-btn { display: block; width: auto; margin: 0; }
+.days-widget:not(.is-expanded) .mini { display: none; }
+
+.w:not(.is-expanded) .recap-full, .w.is-expanded .recap-short { display: none; }

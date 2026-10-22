@@ -150,7 +150,7 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		Assert.Contains("10:05 AM to 10:41 AM, 36 minutes, 1 minute of lost audio.", summary.GetProperty("summary").GetString());
 
 		var full = await ArchiveFixture.CallAsync(mcp, "get_conversation", new() { ["id"] = "conv-kitchen", ["include"] = "transcript" });
-		Assert.False(full.TryGetProperty("overview", out _));
+		Assert.Equal(summary.GetProperty("overview").GetString(), full.GetProperty("overview").GetString());
 		var items = full.GetProperty("transcript").GetProperty("items").EnumerateArray().ToList();
 		Assert.Equal(["turn", "turn", "lost", "turn", "quiet", "turn", "turn", "masked"], items.Select(i => i.GetProperty("kind").GetString()));
 		Assert.Equal((12, "Sam", 0.93), (items[0].GetProperty("t").GetInt32(), items[0].GetProperty("name").GetString(), items[0].GetProperty("confidence").GetDouble()));
