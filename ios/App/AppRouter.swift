@@ -42,6 +42,8 @@ final class AppRouter {
     var pendingAsk: Route?
     /// Which slice `companion://followups?scope=` asked for, read once by the list.
     var pendingFollowUpScope: String?
+    /// The follow-ups review, or the day's summary, over whichever tab is showing.
+    var reminderSheet: ReminderSheet?
     /// `companion://history`, or `companion://today` with a day that is not today.
     var pendingHistory: HistoryRequest?
     /// Today's logical-day key, to tell a past-dated `companion://today` from today.
@@ -99,6 +101,10 @@ final class AppRouter {
         case .followUp:
             selectedTab = .followUps
             followUpsPath = [route]
+        case .review(let summary):
+            selectedTab = .followUps
+            followUpsPath = []
+            reminderSheet = summary ? .summary : .review
         case .settings(let page):
             selectedTab = .settings
             settingsPath = page.map { [Route.settings($0)] } ?? []

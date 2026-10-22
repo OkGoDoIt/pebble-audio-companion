@@ -346,7 +346,7 @@ public actor RemindersHome {
         await alerts.remove(ids: Array(have))
         await alerts.schedule(
             id: id, title: title, body: body, at: Date(timeIntervalSince1970: Double(fire) / 1000),
-            route: toReview > 0 ? "review" : "reminders")
+            route: toReview > 0 ? "review" : "summary")
     }
 
     static func eveningTitle(toReview: Int, added: Int) -> String? {

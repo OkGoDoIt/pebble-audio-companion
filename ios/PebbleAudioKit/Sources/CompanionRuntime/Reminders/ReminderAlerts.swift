@@ -15,7 +15,8 @@ public protocol ReminderAlertScheduling: Sendable {
 }
 
 /// The key a reminders notification carries in `userInfo`, naming where a tap opens:
-/// `reminders` (the list) or `review` (the follow-ups to review).
+/// `reminders` (the list), `review` (the follow-ups to review), or `summary` (what today added,
+/// when nothing is left to review).
 public let reminderNotificationRouteKey = "reminders.route"
 
 public struct NotificationCenterAlerts: ReminderAlertScheduling {

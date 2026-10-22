@@ -68,6 +68,21 @@ struct RootView: View {
                 .noteJobDock()
             }
         }
+        // The follow-ups review and the day's summary, over whichever tab asked for them: the
+        // Reminders tab, Today, or the evening notification (`docs/reminders.md`).
+        .sheet(item: $router.reminderSheet) { sheet in
+            ReminderReviewSheet(start: sheet)
+        }
+        #if DEBUG
+        // `-reminderSheet review|summary`: opens on the review, for screenshots.
+        .task {
+            if let raw = UserDefaults.standard.string(forKey: "reminderSheet"),
+                let sheet = ReminderSheet(rawValue: raw)
+            {
+                router.navigate(to: .review(summary: sheet == .summary))
+            }
+        }
+        #endif
     }
 
     /// The tab selection: `$router.selectedTab`, except that a tap on the History tab while it

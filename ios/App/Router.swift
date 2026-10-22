@@ -83,11 +83,14 @@ enum Route: Equatable, Hashable, Identifiable {
     case followUps(scope: String?)
     /// One follow-up, opened on its own screen.
     case followUp(id: String)
+    /// The follow-ups review over the Reminders tab (`companion://review`), or straight to the
+    /// summary of what today added (`companion://review?show=summary`).
+    case review(summary: Bool)
     case note(id: String)
     case settings(SettingsPage?)
 
     enum SettingsPage: String, Equatable {
-        case watch, transcription, storage, privacy, aboutyou, diagnostics
+        case watch, transcription, storage, privacy, aboutyou, diagnostics, reminders
         /// The Pebble Audio server (the archive sync).
         case server
     }
@@ -135,6 +138,8 @@ enum Route: Equatable, Hashable, Identifiable {
         case "followup":
             guard let id = pathParts.first else { return nil }
             return .followUp(id: id)
+        case "review":
+            return .review(summary: query["show"] == "summary")
         case "note":
             guard let id = pathParts.first else { return nil }
             return .note(id: id)
@@ -200,6 +205,9 @@ enum Route: Equatable, Hashable, Identifiable {
         case .followUp(let id):
             components.host = "followup"
             components.path = "/\(id)"
+        case .review(let summary):
+            components.host = "review"
+            if summary { components.queryItems = [.init(name: "show", value: "summary")] }
         case .note(let id):
             components.host = "note"
             components.path = "/\(id)"

@@ -273,6 +273,15 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
 
     /// Pure: the route a notification payload points at, if any.
     nonisolated static func route(for userInfo: [AnyHashable: Any]) -> Route? {
+        // Reminders' own notifications (`RemindersHome`): a due date opens the list; the
+        // evening review opens the review, or today's summary when nothing is left to review.
+        if let reminders = userInfo[reminderNotificationRouteKey] as? String {
+            switch reminders {
+            case "review": return .review(summary: false)
+            case "summary": return .review(summary: true)
+            default: return .followUps(scope: nil)
+            }
+        }
         guard let raw = userInfo[UserNotificationLossNotifier.routeUserInfoKey] as? String,
             let url = URL(string: raw)
         else { return nil }
@@ -309,8 +318,12 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        // A reminder is an alert the person asked for: it shows even with the app open.
+        if notification.request.content.userInfo[reminderNotificationRouteKey] != nil {
+            return [.banner, .list, .sound]
+        }
         // In the foreground the coverage strip is already showing the gap, so this lands in
         // Notification Center instead of interrupting with a banner over the same information.
-        [.list]
+        return [.list]
     }
 }
