@@ -112,6 +112,7 @@ object MessageId {
     const val MUSE_SETUP_EVENT: Int = 0x48
     const val PTT_EVENT: Int = 0x49
     const val WATCH_ACTION_RESULT: Int = 0x4A
+    const val MOMENT_MARK: Int = 0x4B
 
     // Watch -> phone data notifications (0x80-0x9F).
     const val STREAM_START: Int = 0x80

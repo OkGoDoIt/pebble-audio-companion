@@ -1,0 +1,8 @@
+{
+  "channel": "control_out",
+  "description": "MOMENT_MARK one byte short of its 24",
+  "expect": "reject",
+  "fields": {},
+  "name": "moment_mark_truncated",
+  "size": 23
+}

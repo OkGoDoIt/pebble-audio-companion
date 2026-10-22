@@ -221,6 +221,16 @@ public enum AudioCompanionProtocol {
                 _ = r.u8()
                 return PttEvent(turn: r.u8(), eventRaw: UInt8(r.u8()), detail: UInt8(r.u8()), frameCount: r.u16(), maxSeconds: r.u16())
             }
+        case MessageId.momentMark:
+            return sized(bytes, 24) { r in
+                _ = r.u8()
+                let markId = r.u8()
+                let flags = UInt8(r.u8())
+                _ = r.u8()
+                return MomentMark(
+                    markId: markId, flags: flags, streamId: r.u32(), sampleIndex: r.u64(),
+                    wallMs: r.u64())
+            }
         case MessageId.watchActionResult:
             guard bytes.count >= 4 else {
                 return .malformed(reason: "WATCH_ACTION_RESULT too short: \(bytes.count) < 4")

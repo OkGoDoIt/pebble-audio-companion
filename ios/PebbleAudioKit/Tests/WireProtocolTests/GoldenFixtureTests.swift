@@ -218,6 +218,14 @@ import Testing
                 "frame_count": String(m.frameCount),
                 "max_seconds": String(m.maxSeconds),
             ]
+        case let m as MomentMark:
+            return [
+                "mark_id": String(m.markId),
+                "flags": String(m.flags),
+                "stream_id": String(m.streamId),
+                "sample_index": String(m.sampleIndex),
+                "wall_ms": String(m.wallMs),
+            ]
         case let m as WatchActionResult:
             var fields = [
                 "action_id": String(m.actionId),

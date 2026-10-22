@@ -113,6 +113,7 @@ public enum MessageId {
     public static let museSetupEvent: Int = 0x48
     public static let pttEvent: Int = 0x49
     public static let watchActionResult: Int = 0x4A
+    public static let momentMark: Int = 0x4B
 
     // Watch -> phone data notifications (0x80-0x9F).
     public static let streamStart: Int = 0x80

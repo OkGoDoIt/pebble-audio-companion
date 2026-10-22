@@ -215,6 +215,16 @@ object AudioCompanionProtocol {
                 r.u8()
                 PttEvent(turn = r.u8(), eventRaw = r.u8(), detail = r.u8(), frameCount = r.u16(), maxSeconds = r.u16())
             }
+            MessageId.MOMENT_MARK -> sized(bytes, 24) { r ->
+                r.u8()
+                val markId = r.u8()
+                val flags = r.u8()
+                r.u8()
+                MomentMark(
+                    markId = markId, flags = flags, streamId = r.u32(), sampleIndex = r.u64(),
+                    wallMs = r.u64(),
+                )
+            }
             MessageId.WATCH_ACTION_RESULT -> {
                 if (bytes.size < 4) return DecodeResult.Malformed("WATCH_ACTION_RESULT too short: ${bytes.size} < 4")
                 var text = ByteArray(0)

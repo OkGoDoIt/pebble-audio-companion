@@ -47,6 +47,7 @@ MSG_MUSE_SETUP_RX = 0x47
 MSG_MUSE_SETUP_EVENT = 0x48
 MSG_PTT_EVENT = 0x49
 MSG_WATCH_ACTION_RESULT = 0x4A
+MSG_MOMENT_MARK = 0x4B
 
 # Data message ids (watch -> phone)
 MSG_STREAM_START = 0x80
@@ -158,6 +159,14 @@ def assistant_update(token, turn, kind, detail, text: bytes) -> bytes:
 
 def watch_action(token, action_id, flags, payload: bytes) -> bytes:
     return struct.pack("<BBBBB", MSG_WATCH_ACTION, token, action_id, flags, len(payload)) + payload
+
+
+MOMENT_FLAG_RECORDING = 0x01
+
+
+def moment_mark(mark_id, flags, stream_id, sample_index, wall_ms) -> bytes:
+    return struct.pack(
+        "<BBBBIQQ", MSG_MOMENT_MARK, mark_id, flags, 0, stream_id, sample_index, wall_ms)
 
 
 def watch_action_result(action_id, status, value, text: bytes = b"") -> bytes:
@@ -999,6 +1008,33 @@ def build_fixtures():
         "parse",
         {"action_id": 6, "status": 1, "value": 0, "text": now_playing.decode("utf-8")},
         "Done, with text: what is playing (title, then artist)",
+    )
+    add(
+        "moment_mark_recording",
+        moment_mark(3, MOMENT_FLAG_RECORDING, 0x2A, 1_234_560, 1_788_193_751_778),
+        "control_out",
+        "parse",
+        {
+            "mark_id": 3, "flags": 1, "stream_id": 0x2A, "sample_index": 1_234_560,
+            "wall_ms": 1_788_193_751_778,
+        },
+        "A moment marked while recording: on the stream's own clock, and the watch's",
+    )
+    add(
+        "moment_mark_not_recording",
+        moment_mark(4, 0, 0, 0, 1_788_193_811_000),
+        "control_out",
+        "parse",
+        {"mark_id": 4, "flags": 0, "stream_id": 0, "sample_index": 0, "wall_ms": 1_788_193_811_000},
+        "A moment marked with nothing recording: the watch's clock alone",
+    )
+    add(
+        "moment_mark_truncated",
+        moment_mark(3, MOMENT_FLAG_RECORDING, 0x2A, 1_234_560, 1_788_193_751_778)[:-1],
+        "control_out",
+        "reject",
+        {},
+        "MOMENT_MARK one byte short of its 24",
     )
     add(
         "watch_action_result_text_truncated",

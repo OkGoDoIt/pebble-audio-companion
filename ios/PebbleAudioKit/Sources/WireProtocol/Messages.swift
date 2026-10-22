@@ -1266,6 +1266,43 @@ public enum WatchActionStatus: UInt8, Sendable {
     case unsupported = 5
 }
 
+/// The wearer marked a moment as important on the watch (Section 4.6).
+public struct MomentMark: ControlOutMessage, Equatable {
+    public static let flagRecording: UInt8 = 0x01
+
+    /// Counts marks on the watch, 1-255 and round again; with `wallMs`, names a mark sent twice.
+    public let markId: Int
+    public let flags: UInt8
+    /// The recording's stream and its next sample at the mark: the moment on the audio's own
+    /// clock. Both 0 when nothing was recording.
+    public let streamId: UInt32
+    public let sampleIndex: UInt64
+    /// The watch's clock at the mark, UTC ms.
+    public let wallMs: UInt64
+
+    public init(markId: Int, flags: UInt8, streamId: UInt32, sampleIndex: UInt64, wallMs: UInt64) {
+        self.markId = markId
+        self.flags = flags
+        self.streamId = streamId
+        self.sampleIndex = sampleIndex
+        self.wallMs = wallMs
+    }
+
+    public var whileRecording: Bool { flags & Self.flagRecording != 0 }
+
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 24)
+        w.u8(MessageId.momentMark)
+        w.u8(markId)
+        w.u8(Int(flags))
+        w.u8(0)
+        w.u32(streamId)
+        w.u64(sampleIndex)
+        w.u64(wallMs)
+        return w.toBytes()
+    }
+}
+
 /// How a watch action ended.
 public struct WatchActionResult: ControlOutMessage, Equatable {
     public let actionId: Int
