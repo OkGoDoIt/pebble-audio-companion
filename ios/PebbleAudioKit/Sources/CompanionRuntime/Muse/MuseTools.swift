@@ -330,6 +330,9 @@ actor MuseTools {
                     ["set": true, "smart": false, "time": .string(String(format: "%02d:%02d", hour, minute))]
                 }
             }
+            guard result != nil else {
+                return Self.error("The watch did not confirm this alarm. It may already exist; list alarms before trying again.")
+            }
             return Self.outcome(result) { result in
                 ["set": true, "id": .number(Double(result.value)), "smart": .bool(smart),
                  "time": .string(String(format: "%02d:%02d", hour, minute)),

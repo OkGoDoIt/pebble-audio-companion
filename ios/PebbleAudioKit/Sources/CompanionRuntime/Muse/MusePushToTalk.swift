@@ -211,6 +211,8 @@ public actor MusePushToTalk: MuseWatchSide {
     private let tools: MuseTools
     private let hasData: Bool
     private let handoff: (any MusePhoneHandoffPosting)?
+    private var activeActions: Set<Int> = []
+    private var earlyActionResults: [Int: WatchActionResult] = [:]
     private var actionWaiters: [Int: CheckedContinuation<WatchActionResult?, Never>] = [:]
 
     public init(
@@ -314,7 +316,11 @@ public actor MusePushToTalk: MuseWatchSide {
                 turn.frames[audio.firstFrame + offset] = Data(frame)
             }
         case .watchActionResult(let result):
-            actionWaiters.removeValue(forKey: result.actionId)?.resume(returning: result)
+            if let waiter = actionWaiters.removeValue(forKey: result.actionId) {
+                waiter.resume(returning: result)
+            } else if activeActions.contains(result.actionId) {
+                earlyActionResults[result.actionId] = result
+            }
         }
     }
 
@@ -1041,10 +1047,10 @@ public actor MusePushToTalk: MuseWatchSide {
             guard !outbox.isEmpty else { break }
             let item = coalesce()
             guard case .update(let turnID, let kind, let detail, let text) = item else { continue }
-            let delivered = await deliver(retryUnanswered: false) { token in
+            let delivered = await deliver(retryNotSent: false) { token in
                 AssistantUpdate(requestToken: token, turn: turnID, kind: kind, detail: detail, text: text).encode()
             }
-            if !delivered {
+            if delivered != .accepted {
                 log("question \(turnID): reply interrupted; retaining the whole answer and options for replay")
                 if turn?.id == turnID {
                     turn?.needsReplay = true
@@ -1070,25 +1076,29 @@ public actor MusePushToTalk: MuseWatchSide {
         return .update(turn: turnID, kind: kind, detail: 0, text: text)
     }
 
-    /// Sends one request, asking again while the watch is busy.
-    private func deliver(retryUnanswered: Bool = true, _ build: @escaping @Sendable (Int) -> [UInt8]) async -> Bool {
+    private enum Delivery { case accepted, unconfirmed, failed }
+
+    /// Retry only a known unsent write. A missing ACK may already have created an alarm.
+    private func deliver(retryNotSent: Bool = true, _ build: @escaping @Sendable (Int) -> [UInt8]) async -> Delivery {
         var unanswered = 0
         for _ in 0..<40 {
             switch await link.sendControlRequest(build) {
             case .ok:
-                return true
+                return .accepted
             case .busy:
                 try? await Task.sleep(for: .milliseconds(50))
-            case .notSent, .noAnswer:
-                guard retryUnanswered else { return false }
+            case .noAnswer:
+                return .unconfirmed
+            case .notSent:
+                guard retryNotSent else { return .failed }
                 unanswered += 1
-                if unanswered >= 3 { return false }
+                if unanswered >= 3 { return .failed }
                 try? await Task.sleep(for: .milliseconds(200))
             case .rejected, .badState, .other:
-                return false
+                return .failed
             }
         }
-        return false
+        return .failed
     }
 
     // MARK: - Watch actions and tools
@@ -1138,6 +1148,12 @@ public actor MusePushToTalk: MuseWatchSide {
     func runWatchAction(_ request: WatchActionRequest, wait: Duration) async -> WatchActionResult? {
         nextActionID = nextActionID % 255 + 1
         let actionID = nextActionID
+        activeActions.insert(actionID)
+        earlyActionResults.removeValue(forKey: actionID)
+        defer {
+            activeActions.remove(actionID)
+            earlyActionResults.removeValue(forKey: actionID)
+        }
         let messages: [WatchAction]
         do {
             messages = try request.messages(actionId: actionID) { 0 }
@@ -1150,10 +1166,13 @@ public actor MusePushToTalk: MuseWatchSide {
             let delivered = await deliver { token in
                 WatchAction(requestToken: token, actionId: message.actionId, flags: message.flags, payload: message.payload).encode()
             }
-            guard delivered else {
+            guard delivered != .failed else {
                 log("watch action \(actionID): the watch didn't take it")
                 return nil
             }
+            // Do not resend an uncertain fragment, or continue a possibly incomplete action.
+            // Its result may still arrive, including before the ACK timeout did.
+            if delivered == .unconfirmed { break }
         }
         let result = await waitForResult(actionID, wait)
         log("watch action \(actionID): \(result.map { $0.status.map { "\($0)" } ?? "\($0.statusRaw)" } ?? "no answer")")
@@ -1184,6 +1203,7 @@ public actor MusePushToTalk: MuseWatchSide {
     }
 
     private func waitForResult(_ actionID: Int, _ wait: Duration) async -> WatchActionResult? {
+        if let result = earlyActionResults.removeValue(forKey: actionID) { return result }
         let timer = Task { [weak self] in
             try? await Task.sleep(for: wait)
             guard !Task.isCancelled else { return }

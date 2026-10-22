@@ -65,6 +65,17 @@ struct MusePushToTalkTests {
         #expect(fx.link.actions().count == 1)
     }
 
+    @Test func alarmResultBeforeALostAckIsKeptWithoutCreatingTwice() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.link.resultBeforeAck = true
+        fx.link.scriptReplies([.noAnswer])
+        let result = await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 7, "minute": 30, "smart": true])
+        #expect(result["ok"]?.bool == true)
+        #expect(result["payload"]?["id"]?.number == 2)
+        #expect(fx.link.actions().count == 1)
+    }
+
     @Test func smartAlarmCreationAndEditsReachTheWatch() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
@@ -817,6 +828,11 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
     private var replies: [AudioReceiverSession.MuseSetupReply] = []
     private var token = 0
     private var _quietLink: [Bool] = []
+    private var _resultBeforeAck = false
+    var resultBeforeAck: Bool {
+        get { lock.withLock { _resultBeforeAck } }
+        set { lock.withLock { _resultBeforeAck = newValue } }
+    }
     private var _capabilities: UInt32? = ProtocolConstants.capabilityPushToTalk | ProtocolConstants.capabilityAnswerRestart
 
     var quietLink: [Bool] { lock.withLock { _quietLink } }
@@ -830,13 +846,22 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
     }
 
     func sendControlRequest(_ build: @escaping @Sendable (Int) -> [UInt8]) async -> AudioReceiverSession.MuseSetupReply {
-        lock.withLock {
+        let (reply, action): (AudioReceiverSession.MuseSetupReply, WatchAction?) = lock.withLock {
             token = token % 255 + 1
             let bytes = build(token)
             let reply = replies.isEmpty ? .ok : replies.removeFirst()
-            if reply == .ok { sent.append(bytes) }
-            return reply
+            if reply == .ok || _resultBeforeAck { sent.append(bytes) }
+            var action: WatchAction?
+            if _resultBeforeAck, case .decoded(let message) = AudioCompanionProtocol.decodeControlIn(bytes) {
+                action = message as? WatchAction
+            }
+            return (reply, action)
         }
+        if let action {
+            push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, value: 2)))
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return reply
     }
 
     func setAssistantHandler(_ handler: (@Sendable (AudioReceiverSession.AssistantInbound) -> Void)?) async {
