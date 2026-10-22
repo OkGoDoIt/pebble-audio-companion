@@ -71,6 +71,9 @@ public enum MuseQuestionFailure: Error, Equatable, Sendable {
     case unreachable
     /// Muse turned the question away (HTTP status).
     case refused(Int)
+    /// Muse would not take a message on this chat (HTTP 409): it holds the chat for something
+    /// still under way there. `approvalPending` when an approval was waiting on it.
+    case chatBusy(approvalPending: Bool)
 }
 
 /// A link to Muse kept for a run of questions: open at the press, reused for a follow-up.
@@ -202,7 +205,21 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
 
         let ack = try await send(session, chatID)
         trace?("message acknowledged: HTTP \(ack.status)")
-        guard ack.ok else { throw MuseQuestionFailure.refused(ack.status) }
+        guard ack.ok else {
+            // Meta's own words for why, when it gives any: the 409s of 2026-10-22 were read
+            // blind, with the body thrown away.
+            if let reason = Self.refusalReason(ack.response) { trace?("refused: \(reason)") }
+            guard ack.status == 409 else { throw MuseQuestionFailure.refused(ack.status) }
+            // Muse holds the chat. Its replay, already subscribed, says whether an approval is
+            // why: give it a moment to arrive.
+            let clock = ContinuousClock()
+            let until = clock.now + .seconds(1)
+            while subscribed, !(await follower.hasApprovalSnapshot()), clock.now < until {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            await follower.summarize()
+            throw MuseQuestionFailure.chatBusy(approvalPending: await follower.approvalsWaiting())
+        }
         if !subscribed { follow(try await session.subscribeChat(sessionID: chatID)) }
         try await follower.acknowledge(ack.response)
 
@@ -213,6 +230,21 @@ actor LiveMuseVoiceConversation: MuseVoiceConversation {
         }
         await follower.summarize()
         return await follower.isComplete()
+    }
+}
+
+extension LiveMuseVoiceConversation {
+    /// Why Muse refused a message, from its response body: an error's message or code, cut short.
+    static func refusalReason(_ response: MuseJSON?) -> String? {
+        guard let response else { return nil }
+        let error = response["error"]
+        let candidates: [String?] = [
+            error?["message"]?.string, error?["code"]?.string, error?.string,
+            response["message"]?.string, response["detail"]?.string, response["code"]?.string,
+        ]
+        guard let reason = candidates.lazy.compactMap({ $0 }).first(where: { !$0.isEmpty })
+        else { return nil }
+        return String(reason.prefix(200))
     }
 }
 
@@ -233,6 +265,8 @@ actor VoiceTurnFollower {
     private var knownApprovals: Set<String>?
     /// This question's approvals still waiting for the person.
     private var ownApprovals: Set<String> = []
+    /// Every approval waiting in Muse's latest snapshot, on any chat.
+    private var pendingApprovals: Set<String> = []
     /// Muse reacted to the question: an answer even with no words.
     private var reacted = false
     private var reactionShapes = 0
@@ -344,6 +378,7 @@ actor VoiceTurnFollower {
         }
         let appeared = knownApprovals.map { ids.subtracting($0) } ?? []
         knownApprovals = (knownApprovals ?? []).union(ids)
+        pendingApprovals = ids
         let waiting = !ownApprovals.isEmpty
         ownApprovals = ownApprovals.union(appeared).union(onThisChat).intersection(ids)
         if ownApprovals.isEmpty, waiting {
@@ -368,6 +403,12 @@ actor VoiceTurnFollower {
         heldUserMessages = []
         await emit(held)
     }
+
+    /// Muse's first approvals snapshot has arrived.
+    func hasApprovalSnapshot() -> Bool { knownApprovals != nil }
+
+    /// An approval is waiting for the person, on this chat or any.
+    func approvalsWaiting() -> Bool { !pendingApprovals.isEmpty }
 
     /// Muse has answered (in words, or with only a reaction) and isn't waiting on the person to
     /// approve something.

@@ -112,6 +112,47 @@ struct MusePushToTalkTests {
         #expect(fx.link.updates().last?.detail == AssistantError.unreachable.rawValue)
     }
 
+    // Muse refused every message on the watch's chat for an afternoon (HTTP 409) while the watch
+    // said "Can't reach Muse". A turn finishing is asked again; a chat that stays held is left
+    // for a new one, and the question is answered there.
+    @Test func aChatMuseHoldsBrieflyIsAskedAgain() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.muse.script = [.heard("what time is it"), .answer("Two.")]
+        fx.muse.askFailures = [.chatBusy(approvalPending: false)]
+        let chat = fx.preferences.watchChatID()
+        try fx.ask(turn: 7, seconds: 2)
+        #expect(await fx.waitUntil(seconds: 6) { fx.link.updates().last?.kind == .done })
+        #expect(fx.muse.notes.count == 1)
+        #expect(fx.muse.opens == 1)
+        #expect(fx.preferences.watchChatID() == chat)
+    }
+
+    @Test func aChatMuseKeepsHoldingIsLeftForANewOne() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.muse.script = [.heard("what time is it"), .answer("Two.")]
+        fx.muse.askFailures = [.chatBusy(approvalPending: false), .chatBusy(approvalPending: false)]
+        let chat = fx.preferences.watchChatID()
+        try fx.ask(turn: 8, seconds: 2)
+        #expect(await fx.waitUntil(seconds: 6) { fx.link.updates().last?.kind == .done })
+        #expect(fx.preferences.watchChatID() != chat)
+        #expect(fx.muse.chatIDs.last == fx.preferences.watchChatID())
+        #expect(fx.muse.notes.count == 1)
+    }
+
+    @Test func anApprovalHoldingTheChatSaysMuseIsBusyAndKeepsTheChat() async throws {
+        let fx = PushToTalkFixture()
+        await fx.start()
+        fx.muse.askFailures = [.chatBusy(approvalPending: true)]
+        let chat = fx.preferences.watchChatID()
+        try fx.ask(turn: 9, seconds: 2)
+        #expect(await fx.waitUntil { fx.link.updates().last?.kind == .error })
+        #expect(fx.link.updates().last?.detail == AssistantError.busy.rawValue)
+        #expect(fx.preferences.watchChatID() == chat)
+        #expect(fx.muse.opens == 1)
+    }
+
     @Test func silenceFromMuseIsNoAnswer() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
@@ -674,8 +715,8 @@ private final class PushToTalkFixture: @unchecked Sendable {
         link.push(.pttEvent(PttEvent(turn: turn, eventRaw: PttEventKind.end.rawValue, detail: PttEndReason.released.rawValue, frameCount: count)))
     }
 
-    func waitUntil(_ condition: () -> Bool) async -> Bool {
-        for _ in 0..<500 {
+    func waitUntil(seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
+        for _ in 0..<Int(seconds * 100) {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -753,6 +794,8 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     private var _done = true
     private var _chat: [([MuseChatMessage], Set<String>)] = []
     private var _following = 0
+    private var _askFailures: [MuseQuestionFailure] = []
+    private var _chatIDs: [String?] = []
 
     init(paired: Bool) { self.paired = paired }
 
@@ -793,6 +836,16 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         get { lock.withLock { _openFailure } }
         set { lock.withLock { _openFailure = newValue } }
     }
+    /// Thrown by the next asks, one each, before Muse takes a note.
+    var askFailures: [MuseQuestionFailure] {
+        get { lock.withLock { _askFailures } }
+        set { lock.withLock { _askFailures = newValue } }
+    }
+    /// The chat each link was opened on.
+    var chatIDs: [String?] { lock.withLock { _chatIDs } }
+    fileprivate func nextAskFailure() -> MuseQuestionFailure? {
+        lock.withLock { _askFailures.isEmpty ? nil : _askFailures.removeFirst() }
+    }
 
     func open(
         chatID: String?, commands: MuseJSON, handler: @escaping MuseLinkSession.CommandHandler
@@ -800,6 +853,7 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
         if let failure = openFailure { throw failure }
         lock.withLock {
             _opens += 1
+            _chatIDs.append(chatID)
             self.handler = handler
         }
         return Conversation(muse: self)
@@ -842,6 +896,7 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
             wav: Data, instructions: String, timeout: Duration,
             onEvent: @escaping @Sendable (MuseQuestionEvent) async -> Void
         ) async throws -> Bool {
+            if let failure = muse.nextAskFailure() { throw failure }
             await muse.callTool()
             for event in muse.took(wav) { await onEvent(event) }
             return muse.done
