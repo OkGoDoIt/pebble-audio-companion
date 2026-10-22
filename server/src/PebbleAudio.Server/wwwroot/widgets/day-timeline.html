@@ -23,7 +23,7 @@
 .k-missing { z-index: 3; min-width: 4px; background: var(--pat-missing), var(--missing-hatch-fill); box-shadow: inset 2px 0 0 var(--missing), inset -2px 0 0 var(--missing); }
 .blk { z-index: 2; min-width: 3px; border-radius: 3px; background: var(--tint); opacity: 0.7; box-shadow: 0 0 0 1px var(--surface); transition: opacity 0.15s ease; }
 .blk.bg { background: var(--background-audio); }
-.blk.on { opacity: 1; z-index: 4; box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--label); }
+.blk.on { opacity: 1; z-index: 2; box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--label); }
 .lane-axis { position: relative; height: 14px; margin-top: 5px; font-size: var(--fs-micro); color: var(--meta); font-variant-numeric: tabular-nums; }
 .lane-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .lane-axis span:first-child { transform: none; }
@@ -34,6 +34,8 @@
 .sel .pills { margin-top: 8px; }
 .sel .nav { margin-top: 4px; gap: 4px; }
 .sel .nav .w-open { margin-left: auto; }
+.tlw + .coverage-key { margin-top: 10px; }
+.day-help { margin-top: 10px; font-size: var(--fs-meta); color: var(--meta); }
 .days { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 2px; }
 .day-btn { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; min-height: var(--target); padding: 6px 8px; margin: 0 -8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
 .day-btn:hover { background: var(--tint-fill-10); }
@@ -49,10 +51,11 @@
 </style>
 </head>
 <body>
-<div class="w-root"><article class="w" id="widget" aria-live="polite"></article></div>
+<div class="w-root"><article class="w day-widget" id="widget" aria-live="polite"></article></div>
 <script type="module">
 // @include js/view/format.js
 // @include widgets/bridge.js
+// @include widgets/summary.js
 
 // The day timeline: get_day's conversations on the day's axis (tap or arrow to pick one, its card below), or
 // list_days' days as rows of recorded, quiet, and missing time.
@@ -94,9 +97,8 @@ function dayView(d) {
     conversations.forEach((c, i) => {
       band += piece(`blk${c.kind === 'noConversation' ? ' bg' : ''}`, instant(c.startedAt), instant(c.endedAt) || instant(c.startedAt) + c.minutes * 60000, lane, ` data-i="${i}"`);
     });
-    const step = (lane[1] - lane[0]) / 3600000 <= 4 ? 1 : (lane[1] - lane[0]) / 3600000 <= 8 ? 2 : 3;
     let axis = '';
-    for (let t = lane[0]; t <= lane[1]; t += step * 3600000) axis += `<span style="left:${pct(t, lane).toFixed(2)}%">${esc(clock(t, tz).replace(':00', ''))}</span>`;
+    for (const t of [lane[0], (lane[0] + lane[1]) / 2, lane[1]]) axis += `<span style="left:${pct(t, lane).toFixed(2)}%">${esc(clock(t, tz).replace(':00', ''))}</span>`;
     return `<div class="lane" data-a="${lane[0]}" data-b="${lane[1]}"><div class="lane-band">${band}</div><div class="lane-axis" aria-hidden="true">${axis}</div></div>`;
   }).join('');
 
@@ -105,11 +107,13 @@ function dayView(d) {
   const lost = d.coverage?.lostMinutes ?? conversations.reduce((a, c) => a + (c.lostMinutes || 0), 0);
   const line = [`${talk} ${talk === 1 ? 'conversation' : 'conversations'}`, recorded ? `${duration(recorded * 60)} recorded` : ''].filter(Boolean).join(' · ');
   return `
+    <div id="day-content">
     <p class="w-kicker">${esc(longDay(d.day))} · ${esc(place(tz))} time</p>
     <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
     <p class="w-line">${esc(line)}${lost > 0 ? `<span> · </span><span class="loss">${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
+    ${conversations.length ? '<p class="day-help">Choose a conversation on the timeline, or use the arrows below.</p>' : ''}
     ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div><div class="sel" id="sel"></div>` : `<div class="tlw">${laneHtml}</div>`}
-    <div class="w-foot"><span class="hint"></span><a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
 }
 
 function select(d, i) {
@@ -129,16 +133,17 @@ function select(d, i) {
   sel.innerHTML = `
     <p class="w-kicker">${esc(end ? range(start, end, tz) : clock(start, tz))} · ${esc(duration((c.minutes || 0) * 60))}${lost}</p>
     <p class="w-title${c.title ? '' : ' untitled'}">${esc(title)}</p>
-    ${c.overview ? `<p class="w-sum">${esc(c.overview)}</p>` : ''}
+    ${summaryHtml(c.overview, c.id)}
     ${(c.tags || []).length ? `<ul class="pills">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
     <div class="nav">
       <button type="button" class="step" data-step="-1" aria-label="Earlier conversation" ${selected === 0 ? 'disabled' : ''}>${CHEV(true)}</button>
       <span class="count">${selected + 1} of ${conversations.length}</span>
       <button type="button" class="step" data-step="1" aria-label="Later conversation" ${selected === conversations.length - 1 ? 'disabled' : ''}>${CHEV(false)}</button>
-      <a class="w-open filled" href="${esc(c.url)}" target="_blank" rel="noopener">Open</a>
+      <a class="w-open filled" href="${esc(c.url)}" target="_blank" rel="noopener">Open conversation</a>
     </div>`;
   sel.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => select(d, selected + Number(b.dataset.step))));
   linkify(sel.querySelector('.w-open'), c.url);
+  loadExpandedSummaries(root);
 }
 
 function bindDay(d) {
@@ -189,9 +194,10 @@ function daysView(r) {
     </button></li>`;
   }).join('');
   return `
-    <p class="w-kicker">${esc(shortDay(r.from))} – ${esc(shortDay(r.to))}</p>
+    <div id="days-content"><p class="w-kicker">${esc(shortDay(r.from))} – ${esc(shortDay(r.to))}</p>
     <h1 class="w-title">${days.length ? `${days.length} ${days.length === 1 ? 'day' : 'days'} with recordings` : 'Nothing recorded'}</h1>
-    ${days.length ? `<ul class="days">${rows}</ul><div class="sel" id="sel"></div>` : ''}`;
+    ${days.length ? `<ul class="days">${rows}</ul><div class="sel" id="sel"></div>` : ''}</div>
+    ${days.length ? `<div class="w-foot">${expandButton('days-content')}</div>` : ''}`;
 }
 
 function selectDay(r, i) {
@@ -202,16 +208,17 @@ function selectDay(r, i) {
   sel.innerHTML = `
     <p class="w-kicker">${esc(longDay(d.day))}</p>
     <p class="w-title${d.headline ? '' : ' untitled'}">${esc(d.headline || 'No summary yet')}</p>
-    ${d.lineSummary ? `<p class="w-sum">${esc(d.lineSummary)}</p>` : ''}
+    ${summaryHtml(d.lineSummary)}
     <div class="nav">
       <span class="count">${esc(`${d.conversationCount} ${d.conversationCount === 1 ? 'conversation' : 'conversations'} · ${duration(d.recordedMinutes * 60)} recorded`)}${lost}</span>
-      <a class="w-open filled" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a>
+      <a class="w-open filled" href="${esc(d.url)}" target="_blank" rel="noopener">Open day</a>
     </div>`;
   linkify(sel.querySelector('.w-open'), d.url);
 }
 
 function render({ structuredContent: r }) {
   if (!r) return;
+  root.classList.remove('is-expanded');
   if (Array.isArray(r.days)) {
     root.innerHTML = daysView(r);
     root.querySelectorAll('.day-btn').forEach((b) => b.addEventListener('click', () => selectDay(r, Number(b.dataset.i))));

@@ -3,7 +3,7 @@
    html and body are transparent, and the card draws its own surface. */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; background: transparent; }
-body { font-family: var(--font-sans, var(--font)); font-size: var(--fs-body); line-height: 1.4; color: var(--label); -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font-sans, var(--font)); font-size: 15px; line-height: 1.4; color: var(--label); -webkit-font-smoothing: antialiased; }
 h1, h2, p { margin: 0; }
 a { color: var(--tint); text-decoration: none; }
 button { font: inherit; color: inherit; }
@@ -15,13 +15,32 @@ button { font: inherit; color: inherit; }
 .w-root { container-type: inline-size; padding: 2px; }
 .w {
   background: var(--surface); border: 1px solid var(--card-border); border-radius: var(--radius-option);
-  padding: 14px 16px 6px; box-shadow: var(--shadow);
+  padding: 18px 20px 8px;
 }
 .w-kicker { margin: 0 0 2px; font-size: var(--fs-meta); color: var(--meta); font-variant-numeric: tabular-nums; }
-.w-kicker .loss, .loss { color: var(--missing-text); white-space: nowrap; }
-.w-title { font-size: var(--fs-row-title); font-weight: 600; line-height: 1.3; color: var(--label); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.w-kicker .loss, .loss { color: var(--meta); }
+.w-title { font-size: 18px; font-weight: 600; line-height: 1.3; color: var(--label); overflow-wrap: anywhere; }
 .w-title.untitled { color: var(--tertiary); }
-.w-sum { margin-top: 8px; color: var(--tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.w-sum { margin-top: 10px; max-width: 80ch; color: var(--secondary); line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.summary-toggle { display: block; min-height: var(--target); padding: 4px 0; border: 0; background: none; color: var(--tint); font-size: var(--fs-footnote); cursor: pointer; }
+.summary-toggle:disabled { color: var(--meta); cursor: wait; }
+.summary-status { font-size: var(--fs-meta); color: var(--meta); }
+.w-summary { min-width: 0; }
+/* Missing audio stays available, with the same quiet visual weight as other recording metadata. */
+.w { --missing: var(--meta-shape); --missing-text: var(--meta); --missing-hatch-fill: var(--track); --pat-missing: repeating-linear-gradient(135deg, var(--missing) 0 2px, transparent 2px 5px); }
+.w .pill { background: var(--chip-fill); color: var(--secondary); height: auto; min-height: var(--pill-h); white-space: normal; overflow-wrap: anywhere; padding: 4px 8px; line-height: 1.3; }
+.w-foot { flex-wrap: wrap; }
+.w-foot .hint { min-width: 0; }
+.coverage { margin-top: 18px; }
+.coverage-axis { display: flex; justify-content: space-between; margin-top: 5px; font-size: var(--fs-micro); color: var(--meta); font-variant-numeric: tabular-nums; }
+.coverage-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; font-size: var(--fs-micro); color: var(--meta); }
+.coverage-key span { display: inline-flex; align-items: center; gap: 5px; }
+.coverage-key i { display: inline-block; width: 12px; height: 6px; border-radius: 2px; background: var(--lane-0); }
+.coverage-key i.quiet { background: var(--pat-quiet) 0 50% / 6px 6px repeat-x; }
+.coverage-key i.paused { background: var(--pat-paused), var(--paused-ground); }
+.coverage-key i.lost { background: var(--pat-missing), var(--missing-hatch-fill); }
+.coverage-zone { margin-left: auto; }
+@container (max-width: 440px) { .coverage-axis .quarter { display: none; } }
 .w-people { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: var(--fs-footnote); color: var(--secondary); }
 .w-people svg { flex: none; color: var(--meta-shape); }
 .pills { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
@@ -30,7 +49,7 @@ button { font: inherit; color: inherit; }
 .w-foot .hint { font-size: var(--fs-meta); color: var(--meta); }
 .w-open {
   display: inline-flex; align-items: center; gap: 6px; min-height: var(--target); padding: 0 2px; margin-left: auto;
-  border: 0; background: none; cursor: pointer; font-size: var(--fs-card-head); font-weight: 600; color: var(--tint); white-space: nowrap;
+  border: 0; background: none; cursor: pointer; font-size: var(--fs-footnote); font-weight: 600; color: var(--tint); white-space: nowrap;
 }
 .w-open:hover { opacity: 0.85; }
 .w-open.filled { min-height: var(--target); padding: 0 16px; border-radius: var(--radius-option); background: var(--action); color: var(--on-tint); }
@@ -39,8 +58,8 @@ button { font: inherit; color: inherit; }
 .w-state .head { font-size: var(--fs-card-head); font-weight: 600; }
 .w-state .line { margin-top: 2px; color: var(--tertiary); }
 
-/* A conversation as a small shape: talk in tint, quiet as dots, paused as stripes, missing as the amber hatch. */
-.shape { position: relative; height: 12px; margin-top: 12px; border-radius: 4px; background: var(--lane-0); opacity: 0.9; overflow: hidden; }
+/* A conversation as a small shape: talk in tint, quiet as dots, paused as stripes, missing as a neutral hatch. */
+.shape { position: relative; height: 8px; margin-top: 0; border-radius: 4px; background: var(--lane-0); opacity: 0.9; overflow: hidden; }
 .shape i { position: absolute; top: 0; bottom: 0; }
 .shape .quiet { background: var(--pat-quiet) 2px 50% / 7px 7px repeat-x, var(--surface); }
 .shape .paused { background: var(--pat-paused), var(--paused-ground); }
@@ -57,5 +76,22 @@ button { font: inherit; color: inherit; }
 .count { font-size: var(--fs-meta); color: var(--meta); font-variant-numeric: tabular-nums; }
 
 @container (max-width: 440px) {
-  .w { padding: 12px 14px 4px; }
+  .w { padding: 16px 16px 6px; }
 }
+
+/* The chat starts compact. The always-visible disclosure makes every clipped line recoverable. */
+.w:not(.is-expanded) .w-sum { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: normal; }
+.w:not(.is-expanded) .w-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.w:not(.is-expanded) .coverage,
+.w:not(.is-expanded) .pills,
+.w:not(.is-expanded) .w-people,
+.w:not(.is-expanded) .tlw,
+.w:not(.is-expanded) .day-help,
+.w:not(.is-expanded) .summary-status,
+.clip-widget:not(.is-expanded) .pl-scrub,
+.clip-widget:not(.is-expanded) .pl-axis,
+.clip-widget:not(.is-expanded) .cp-caption,
+.clip-widget:not(.is-expanded) .cp-turns { display: none; }
+.w:not(.is-expanded) .days li:nth-child(n+4):not(:has([aria-pressed="true"])) { display: none; }
+.day-widget:not(.is-expanded) .sel { margin-top: 10px; }
+.w-foot .summary-toggle { margin-right: auto; font-weight: 500; }

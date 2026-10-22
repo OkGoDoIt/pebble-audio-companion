@@ -317,12 +317,14 @@ class PaPlayer extends HTMLElement {
     const wall0 = m.startMs + a * 1000, wall1 = m.startMs + b * 1000;
     const tickStep = span <= 180 ? 15 : span <= 600 ? 30 : span <= 1800 ? 60 : 300;
     const labelEvery = [60, 120, 300, 600, 900, 1800].find((s) => span / s <= Math.max(3, W / 90)) || 1800;
-    let ax = '';
+    // Endpoints keep short clips legible even when no whole-minute tick falls inside them.
+    const axisClock = (ms) => clock(ms, m.tz, { period: false, seconds: span < 120 });
+    let ax = `<span class="tick-label" style="left:0;transform:none">${axisClock(wall0)}</span><span class="tick-label" style="left:100%;transform:translateX(-100%)">${axisClock(wall1)}</span>`;
     for (let w = Math.ceil(wall0 / (tickStep * 1000)) * tickStep * 1000; w <= wall1; w += tickStep * 1000) {
       const x = ((w - wall0) / (wall1 - wall0)) * 100;
       const major = (w / 1000) % labelEvery === 0;
       ax += `<span class="tick${major ? ' major' : ''}" style="left:${x.toFixed(2)}%"></span>`;
-      if (major && x > 6 && x < 94) ax += `<span class="tick-label" style="left:${x.toFixed(2)}%">${clock(w, m.tz, { period: false })}</span>`;
+      if (major && x * W / 100 > 70 && (100 - x) * W / 100 > 70) ax += `<span class="tick-label" style="left:${x.toFixed(2)}%">${axisClock(w)}</span>`;
     }
     this.$.axis.innerHTML = ax;
     this.$.range.textContent = `${clock(wall0, m.tz)} – ${clock(wall1, m.tz)}`;
