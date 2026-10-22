@@ -553,7 +553,8 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		var followUp = added.GetProperty("followUp");
 		Assert.Equal(("assistant", true, "high"), (followUp.GetProperty("origin").GetString(), followUp.GetProperty("waitingForPhone").GetBoolean(), followUp.GetProperty("priority").GetString()));
 		Assert.Equal($"{Origin}/c/conv-kitchen?t=400", followUp.GetProperty("url").GetString());
-		Assert.Equal("Added a follow-up: Call the tile shop about grout. It reaches your phone on its next sync.", added.GetProperty("summary").GetString());
+		Assert.Equal("Added a reminder: Call the tile shop about grout. It reaches your phone on its next sync.", added.GetProperty("summary").GetString());
+		Assert.Equal("reminder", followUp.GetProperty("stage").GetString());
 		Assert.Contains(followUp.GetProperty("id").GetString(), Ids(await ArchiveFixture.CallAsync(mcp, "list_follow_ups"), "followUps"));
 
 		var done = await ArchiveFixture.CallAsync(mcp, "update_follow_up", new() { ["id"] = "fu-tiles", ["done"] = true, ["due_at"] = "none" });
@@ -605,6 +606,64 @@ public sealed class ToolTests(ArchiveServerFactory factory)
 		}
 
 		Assert.True(problems.Count == 0, string.Join("; ", problems));
+	}
+
+	[Fact]
+	public async Task Reminders_are_the_list_and_follow_ups_to_review_never_pass_for_them()
+	{
+		var (phone, fx) = await ArchiveFixture.SeedAsync(factory, edits: true);
+		using var linked = phone;
+		// Two follow-ups the app noticed in the launch meeting: one waiting for review, one the person skipped.
+		var answer = await phone.BatchAsync(
+			ArchiveFixture.Item("followUp", "fu-press", ArchiveFixture.FollowUp("Send Priya the press kit draft", "conv-launch", ArchiveFixture.At(fx.Day, 14, 13), ArchiveFixture.At(fx.Day, 15, 1), quote: "And the press kit is due Friday.", stage: "suggested")),
+			ArchiveFixture.Item("followUp", "fu-video", ArchiveFixture.FollowUp("Review Leo's demo video", "conv-launch", ArchiveFixture.At(fx.Day, 14, 12), ArchiveFixture.At(fx.Day, 15, 2), stage: "skipped")));
+		Assert.Equal(0, answer.GetProperty("rejected").GetArrayLength());
+		await using var mcp = await ArchiveFixture.ConnectAsync(factory, phone.UserId, TokenAccess.ReadWrite);
+
+		// The default is open reminders only: the fixture's rows came without a stage and read as reminders.
+		var open = await ArchiveFixture.CallAsync(mcp, "list_follow_ups");
+		Assert.Equal(["fu-tiles"], Ids(open, "followUps"));
+		Assert.Equal("reminder", open.GetProperty("followUps")[0].GetProperty("stage").GetString());
+		Assert.StartsWith("You have 1 open reminder;", open.GetProperty("summary").GetString());
+
+		var toReview = await ArchiveFixture.CallAsync(mcp, "list_follow_ups", new() { ["status"] = "to_review" });
+		Assert.Equal(["fu-press"], Ids(toReview, "followUps"));
+		Assert.Equal(("suggested", "to_review"), (toReview.GetProperty("followUps")[0].GetProperty("stage").GetString(), toReview.GetProperty("followUps")[0].GetProperty("status").GetString()));
+		Assert.Equal("You have 1 follow-up to review; the first: Send Priya the press kit draft.", toReview.GetProperty("summary").GetString());
+		Assert.Equal(["fu-video"], Ids(await ArchiveFixture.CallAsync(mcp, "list_follow_ups", new() { ["status"] = "skipped" }), "followUps"));
+		Assert.Empty(Ids(await ArchiveFixture.CallAsync(mcp, "list_follow_ups", new() { ["status"] = "archived" }), "followUps"));
+		var all = (await ArchiveFixture.CallAsync(mcp, "list_follow_ups", new() { ["status"] = "all" })).GetProperty("followUps").EnumerateArray()
+			.ToDictionary(f => f.GetProperty("id").GetString()!, f => f.GetProperty("stage").GetString());
+		Assert.Equal(("suggested", "skipped", "reminder", "reminder"), (all["fu-press"], all["fu-video"], all["fu-tiles"], all["fu-dentist"]));
+		Assert.True((await mcp.CallToolAsync("list_follow_ups", new Dictionary<string, object?> { ["status"] = "promised" })).IsError);
+
+		// A day lists its reminders and what waits for review, never what was skipped; the day resource keeps them apart.
+		var day = await ArchiveFixture.CallAsync(mcp, "get_day", new() { ["date"] = ArchiveFixture.Key(fx.Day) });
+		Assert.DoesNotContain("fu-video", Ids(day, "followUps"));
+		Assert.Contains("fu-press", Ids(day, "followUps"));
+		var resource = await mcp.ReadResourceAsync($"day://{ArchiveFixture.Key(fx.Day)}");
+		var markdown = Assert.IsType<TextResourceContents>(Assert.Single(resource.Contents)).Text;
+		Assert.True(markdown.IndexOf("## Reminders", StringComparison.Ordinal) < markdown.IndexOf("## Follow-ups to review", StringComparison.Ordinal));
+		Assert.DoesNotContain("Review Leo's demo video", markdown);
+
+		// Search and fetch say which is which.
+		var found = await ArchiveFixture.CallAsync(mcp, "search", new() { ["query"] = "press kit", ["kinds"] = new[] { "followUp" } });
+		Assert.Equal("suggested", Assert.Single(found.GetProperty("results").EnumerateArray()).GetProperty("stage").GetString());
+		var fetched = await ArchiveFixture.CallAsync(mcp, "fetch", new() { ["id"] = "followUp:fu-press" });
+		Assert.Equal("suggested", fetched.GetProperty("metadata").GetProperty("stage").GetString());
+		Assert.DoesNotContain("A reminder", fetched.GetProperty("summary").GetString());
+
+		// Only the person's yes makes it a reminder: the change travels to the phone as a stage.
+		var yes = await ArchiveFixture.CallAsync(mcp, "update_follow_up", new() { ["id"] = "fu-press", ["stage"] = "reminder" });
+		Assert.Equal(("updated", "reminder", "open"), (yes.GetProperty("status").GetString(), yes.GetProperty("followUp").GetProperty("stage").GetString(), yes.GetProperty("followUp").GetProperty("status").GetString()));
+		Assert.Equal("Added to your reminders: Send Priya the press kit draft. It reaches your phone on its next sync.", yes.GetProperty("summary").GetString());
+		Assert.Contains("fu-press", Ids(await ArchiveFixture.CallAsync(mcp, "list_follow_ups"), "followUps"));
+		Assert.Equal("unchanged", (await ArchiveFixture.CallAsync(mcp, "update_follow_up", new() { ["id"] = "fu-press", ["stage"] = "reminder" })).GetProperty("status").GetString());
+		Assert.True((await mcp.CallToolAsync("update_follow_up", new Dictionary<string, object?> { ["id"] = "fu-press", ["stage"] = "suggested" })).IsError);
+		var request = Assert.Single((await phone.GetJsonAsync("/sync/requests")).GetProperty("requests").EnumerateArray());
+		Assert.Equal("followUp.update", request.GetProperty("kind").GetString());
+		Assert.Equal(["id", "stage"], request.GetProperty("payload").EnumerateObject().Select(p => p.Name).Order());
+		Assert.Equal("reminder", request.GetProperty("payload").GetProperty("stage").GetString());
 	}
 
 	/// <summary>A result's length as the model reads it: the JSON text of <c>content</c>, written like the server writes it.</summary>

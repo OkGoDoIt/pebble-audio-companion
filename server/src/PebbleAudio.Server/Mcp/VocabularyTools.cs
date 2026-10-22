@@ -8,39 +8,45 @@ using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Mcp;
 
-/// <summary>Follow-ups, people, and tags: <c>list_follow_ups</c>, <c>get_people</c>, <c>get_tags</c>.</summary>
+/// <summary>Reminders and follow-ups, people, and tags: <c>list_follow_ups</c>, <c>get_people</c>, <c>get_tags</c>.</summary>
 [McpServerToolType]
 public sealed class VocabularyTools
 {
 	[McpServerTool(
 		Name = "list_follow_ups",
-		Title = "List follow-ups",
+		Title = "List reminders",
 		ReadOnly = true,
 		Destructive = false,
 		Idempotent = true,
 		OpenWorld = false,
 		UseStructuredContent = true,
 		OutputSchemaType = typeof(ListFollowUpsResult))]
-	[McpMeta("openai/toolInvocation/invoking", "Checking your follow-ups…")]
-	[McpMeta("openai/toolInvocation/invoked", "Checked your follow-ups")]
+	[McpMeta("openai/toolInvocation/invoking", "Checking your reminders…")]
+	[McpMeta("openai/toolInvocation/invoked", "Checked your reminders")]
 	[Description(
-		"Things the person said they would do (found by the app, written by them, or added by an assistant), with " +
-		"the quote, why, due date, priority, and a link to the moment it was said. Open ones come soonest due first. " +
-		"Use it for \"what did I promise\" and \"what is on my plate\".")]
+		"The person's reminders, and the follow-ups waiting for their review. A reminder is something they asked to " +
+		"be reminded of or said yes to: their list, and what they committed to. A follow-up to review is something " +
+		"the app noticed in a conversation that they might act on; they have not said yes to it, so never present " +
+		"one as a promise or a commitment. Skipped ones (they said no) are left out unless asked for. Each item has " +
+		"its stage, the quote, why, due date, priority, and a link to the moment it was said. The default lists open " +
+		"reminders, soonest due first: use it for \"what is on my list\" and \"what did I promise\".")]
 	public static async Task<CallToolResult> ListFollowUps(
 		RequestContext<CallToolRequestParams> context,
 		ArchiveReader archive,
-		[Description("open (default), done, snoozed, archived, or all.")] string status = "open",
+		[Description(
+			"open (default): open reminders. to_review: follow-ups waiting for the person's review. done, snoozed, " +
+			"archived, skipped, or all (everything, each with its stage).")] string status = FollowUpStatuses.Open,
 		[Description("Only those said or created on or after this day: yyyy-MM-dd, today, or yesterday.")] string? from = null,
 		[Description("Only those said or created on or before this day: yyyy-MM-dd, today, or yesterday.")] string? to = null,
 		[Description("The cursor from a previous result's next.")] string? cursor = null,
 		CancellationToken cancellationToken = default)
 	{
 		var call = await archive.BeginAsync(context.User, cancellationToken);
-		var wanted = status?.Trim().ToLowerInvariant();
-		if (wanted is not ("open" or "done" or "snoozed" or "archived" or "all"))
+		var wanted = status?.Trim().ToLowerInvariant().Replace(' ', '_').Replace('-', '_');
+		if (wanted is not (FollowUpStatuses.Open or FollowUpStatuses.ToReview or FollowUpStatuses.Done or FollowUpStatuses.Snoozed
+			or FollowUpStatuses.Archived or FollowUpStatuses.Skipped or FollowUpStatuses.All))
 		{
-			return ToolResults.Error("status is open, done, snoozed, archived, or all.");
+			return ToolResults.Error("status is open, to_review, done, snoozed, archived, skipped, or all.");
 		}
 
 		var query = archive.FollowUps(call);
@@ -69,18 +75,14 @@ public sealed class VocabularyTools
 			query = query.Where(f => (f.SourceAt ?? f.CreatedAt) < end);
 		}
 
-		var now = call.Now;
+		query = ArchiveReader.WithStatus(query, wanted, call.Now);
 		query = wanted switch
 		{
-			"open" => query.Where(f => !f.Done && f.ArchivedAt == null && (f.SnoozedUntil == null || f.SnoozedUntil <= now)),
-			"done" => query.Where(f => f.Done && f.ArchivedAt == null),
-			"snoozed" => query.Where(f => !f.Done && f.ArchivedAt == null && f.SnoozedUntil > now),
-			"archived" => query.Where(f => f.ArchivedAt != null),
-			_ => query,
+			FollowUpStatuses.Open => query.OrderBy(f => f.DueAt == null).ThenBy(f => f.DueAt).ThenByDescending(f => f.CreatedAt).ThenBy(f => f.Id),
+			// As the review reads them: in the order they were said.
+			FollowUpStatuses.ToReview => query.OrderBy(f => f.SourceAt ?? f.CreatedAt).ThenBy(f => f.Id),
+			_ => query.OrderByDescending(f => f.CreatedAt).ThenBy(f => f.Id),
 		};
-		query = wanted == "open"
-			? query.OrderBy(f => f.DueAt == null).ThenBy(f => f.DueAt).ThenByDescending(f => f.CreatedAt).ThenBy(f => f.Id)
-			: query.OrderByDescending(f => f.CreatedAt).ThenBy(f => f.Id);
 
 		var offset = 0;
 		if (!string.IsNullOrWhiteSpace(cursor) && !int.TryParse(cursor, NumberStyles.None, CultureInfo.InvariantCulture, out offset))
@@ -91,25 +93,27 @@ public sealed class VocabularyTools
 		var total = await query.CountAsync(cancellationToken);
 		var rows = await query.Skip(offset).Take(call.Settings.ToolMaxResults).ToListAsync(cancellationToken);
 		var followUps = await archive.FollowUpsAsync(call, rows, cancellationToken);
+		var (one, many) = FollowUpNouns(wanted);
 
 		ListFollowUpsResult Build(int n)
 		{
 			var shown = followUps.GetRange(0, n);
 			var more = offset + n < total;
-			var label = wanted == "all" ? "" : $"{wanted} ";
 			string summary;
 			if (total == 0)
 			{
-				summary = $"You have no {label}follow-ups{Range(first, last, call)}.";
+				summary = $"You have no {many}{Range(first, last, call)}.";
 			}
 			else
 			{
-				summary = $"You have {Speak.Count(total, $"{label}follow-up", $"{label}follow-ups")}{Range(first, last, call)}";
+				summary = $"You have {Speak.Count(total, one, many)}{Range(first, last, call)}";
 				var lead = shown.FirstOrDefault();
 				summary += lead is null ? "."
-					: wanted == "open" && lead.DueAt is { } due
+					: wanted == FollowUpStatuses.Open && lead.DueAt is { } due
 						? $"; the next is due {Speak.Day(DateOnly.FromDateTime(due.DateTime), call.Today)}: {Speak.Clause(lead.Text)}."
-						: $"; the {(wanted == "open" ? "newest" : "latest")}: {Speak.Clause(lead.Text)}.";
+						: wanted == FollowUpStatuses.ToReview
+							? $"; the first: {Speak.Clause(lead.Text)}."
+							: $"; the {(wanted == FollowUpStatuses.Open ? "newest" : "latest")}: {Speak.Clause(lead.Text)}.";
 			}
 
 			NextCall? next = null;
@@ -136,6 +140,19 @@ public sealed class VocabularyTools
 		await archive.LogAsync(call, "list_follow_ups", result.FollowUps.Select(f => f.Id), cancellationToken);
 		return ToolResults.Of(result);
 	}
+
+	/// <summary>What a list of each status is called, one and many: reminders are the person's list; the rest are
+	/// follow-ups, which they have not said yes to.</summary>
+	private static (string One, string Many) FollowUpNouns(string status) => status switch
+	{
+		FollowUpStatuses.Open => ("open reminder", "open reminders"),
+		FollowUpStatuses.Done => ("done reminder", "done reminders"),
+		FollowUpStatuses.Snoozed => ("snoozed reminder", "snoozed reminders"),
+		FollowUpStatuses.ToReview => ("follow-up to review", "follow-ups to review"),
+		FollowUpStatuses.Skipped => ("skipped follow-up", "skipped follow-ups"),
+		FollowUpStatuses.Archived => ("archived follow-up", "archived follow-ups"),
+		_ => ("reminder or follow-up", "reminders and follow-ups"),
+	};
 
 	[McpServerTool(
 		Name = "get_people",

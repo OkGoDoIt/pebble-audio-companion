@@ -24,8 +24,8 @@ public sealed class StatusTools
 	[McpMeta("openai/toolInvocation/invoked", "Checked your archive")]
 	[Description(
 		"What the archive holds and how fresh it is: counts of conversations, transcripts, day recaps, briefs, " +
-		"follow-ups, notes, and people; the first and last day on record; when the phone last synced; what the " +
-		"person shares (all, since a date, or the last N days) and allows (audio clips, adding follow-ups and notes). " +
+		"reminders and follow-ups, notes, and people; the first and last day on record; when the phone last synced; what the " +
+		"person shares (all, since a date, or the last N days) and allows (audio clips, adding reminders and notes). " +
 		"Call it when freshness matters or before saying something is not in the archive.")]
 	public static async Task<CallToolResult> GetStatus(
 		RequestContext<CallToolRequestParams> context,

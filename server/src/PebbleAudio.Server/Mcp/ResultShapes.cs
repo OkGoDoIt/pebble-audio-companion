@@ -68,11 +68,24 @@ public sealed record TranscriptItemOut(
 	public double? MissingMinutes { get; init; }
 }
 
+/// <summary>The <c>status</c> values of a follow-up (<see cref="ArchiveReader.FollowUpStatus"/>).</summary>
+public static class FollowUpStatuses
+{
+	public const string Open = "open";
+	public const string ToReview = "to_review";
+	public const string Done = "done";
+	public const string Snoozed = "snoozed";
+	public const string Archived = "archived";
+	public const string Skipped = "skipped";
+	public const string All = "all";
+}
+
 public sealed record FollowUpSourceOut(string ConversationId, string? Title, DateTimeOffset? At, int? T, string Url, bool Approximate);
 
 public sealed record FollowUpOut(
 	string Id,
 	string Text,
+	string Stage,
 	string Url,
 	string? Quote,
 	string? Why,
@@ -257,7 +270,11 @@ public sealed record SearchHit(
 	string Kind,
 	DateOnly? Day,
 	DateTimeOffset? At,
-	string? Snippet);
+	string? Snippet)
+{
+	/// <summary>A follow-up's stage: <c>reminder</c>, <c>suggested</c>, or <c>skipped</c>.</summary>
+	public string? Stage { get; init; }
+}
 
 public sealed record SearchResult(
 	string Summary,

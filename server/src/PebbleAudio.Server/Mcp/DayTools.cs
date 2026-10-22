@@ -99,8 +99,8 @@ public sealed class DayTools
 	[McpMeta(Widgets.OutputTemplateKey, Widgets.DayTimeline)]
 	[Description(
 		"One day: the app's recap of it, how it was covered (recorded, quiet, missing, paused, off), every " +
-		"conversation in time order (title, times, overview, tags, people, quiet and lost minutes), and the follow-ups " +
-		"said that day. Start here for \"what happened on…\". Days roll over at 5 AM. An ambiguous date such as " +
+		"conversation in time order (title, times, overview, tags, people, quiet and lost minutes), and the reminders " +
+		"and follow-ups to review from that day (each with its stage). Start here for \"what happened on…\". Days roll over at 5 AM. An ambiguous date such as " +
 		"\"Tuesday\" answers with candidates to choose from.")]
 	public static async Task<CallToolResult> GetDay(
 		RequestContext<CallToolRequestParams> context,
@@ -302,8 +302,9 @@ public sealed class DayTools
 		}
 
 		var ids = conversations.Select(c => c.Id).ToList();
+		// Skipped ones are the person's no: on no list, found by search or in their conversation.
 		var followUps = await archive.FollowUps(call)
-			.Where(f => f.SourceConversationId != null && ids.Contains(f.SourceConversationId))
+			.Where(f => f.SourceConversationId != null && ids.Contains(f.SourceConversationId) && f.Stage != FollowUpStage.Skipped)
 			.OrderBy(f => f.SourceAt ?? f.CreatedAt)
 			.Take(call.Settings.ToolMaxResults)
 			.ToListAsync(cancellationToken);

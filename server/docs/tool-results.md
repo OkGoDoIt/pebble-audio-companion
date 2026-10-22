@@ -174,6 +174,7 @@ In time order. Turns and markers share the list; the markers are the conversatio
 {
   "id": "fu-tiles",
   "text": "Send Sam the tile samples",
+  "stage": "reminder",
   "url": "https://pebbleaudio.okgodoit.com/c/conv-kitchen?t=1260",
   "quote": "I'll send you the samples tonight.",
   "why": "Sam needs them before ordering.",
@@ -190,8 +191,9 @@ In time order. Turns and markers share the list; the markers are the conversatio
 
 | Field | Meaning |
 | --- | --- |
+| `stage` | `reminder` (the person said yes to it or asked for it: their list), `suggested` (the app noticed it in a conversation and it waits for the person's review; never a promise), or `skipped` (the person said no). |
 | `priority` | `low`, `normal`, or `high`. |
-| `status` | `open`, `done`, `snoozed` (until `snoozedUntil`, still in the future), or `archived`. `completedAt`, `snoozedUntil`, `archivedAt` are present when set. |
+| `status` | For a reminder `open`, `done`, or `snoozed` (until `snoozedUntil`, still in the future); `to_review` for a suggested one; `skipped`; `archived` for one filed away. Only `open` is on the person's list. `completedAt`, `snoozedUntil`, `archivedAt` are present when set. |
 | `origin` | `ai` (the app found it), `user` (the person wrote it), or `assistant` (an assistant added it with `create_follow_up`). |
 | `source` | Where it was said; absent when it has none (or its conversation was deleted). `approximate` means the time is the app's best guess. |
 | `waitingForPhone` | True for an assistant's follow-up the phone has not confirmed yet. If the phone refuses it or never answers, it disappears. |
@@ -302,7 +304,7 @@ Argument: `date` (`yyyy-MM-dd`, `today`, or `yesterday`).
     "spans": [ { "kind": "recorded", "startedAt": "2026-10-14T09:00:00+07:00", "endedAt": "2026-10-14T12:00:00+07:00", "minutes": 180.0 } ]
   },
   "conversations": [ { "…": "conversation card" } ],
-  "followUps": [ { "…": "follow-ups said in this day's conversations" } ],
+  "followUps": [ { "…": "reminders and follow-ups to review from this day's conversations; skipped ones are left out" } ],
   "truncated": false
 }
 ```
@@ -378,7 +380,7 @@ seconds from the start) to read a window; `max_chars` (default the *Transcript r
   "found": true,
   "…": "every conversation card field, with the whole overview",
   "gaps": [ { "…": "gap" } ],
-  "followUps": [ { "…": "follow-ups said in it" } ],
+  "followUps": [ { "…": "reminders and follow-ups from it, skipped ones too, each with its stage" } ],
   "notes": [ { "…": "notes on it" } ],
   "transcript": {
     "from": "2026-10-14T10:05:00+07:00",
@@ -436,7 +438,7 @@ follow-ups, and notes, best first. ChatGPT's canonical search shape is the `resu
 | `conversation` | the conversation id | the first transcript turn that matches (`?t=`), else the conversation |
 | `recap` | `recap:{day}` | the day |
 | `brief` | `brief:week:{startDay}` or `brief:month:{yyyy-MM}` | the brief |
-| `followUp` | `followUp:{id}` | where it was said, else its day |
+| `followUp` | `followUp:{id}` | where it was said, else its day; the hit also has `stage` |
 | `note` | `note:{id}` | its conversation, else its day |
 
 `snippet` marks matched words with `**`. `at` is the matching moment when there is one. `truncated: true`
@@ -478,19 +480,22 @@ an error result (ChatGPT's fetch has no "not found" shape).
 
 ### `list_follow_ups`
 
-Arguments: `status` (`open` (default), `done`, `snoozed`, `archived`, or `all`); optional `from`, `to` (days, by
-when it was said or created); `cursor` (from `next`).
+Reminders, and the follow-ups waiting for review. Arguments: `status` (`open` (default: open reminders),
+`to_review` (follow-ups waiting for the person's review), `done`, `snoozed`, `archived`, `skipped`, or `all`
+(everything, each with its `stage`)); optional `from`, `to` (days, by when it was said or created); `cursor` (from
+`next`).
 
 ```json
 {
-  "summary": "You have 2 open follow-ups; the next is due Friday, October 16: Send Sam the tile samples.",
+  "summary": "You have 2 open reminders; the next is due Friday, October 16: Send Sam the tile samples.",
   "status": "open",
   "followUps": [ { "…": "follow-up" } ],
   "truncated": false
 }
 ```
 
-Open ones come by due date (soonest first, undated after), then newest; the others newest first. A further page:
+Open reminders come by due date (soonest first, undated after), then newest; follow-ups to review in the order
+they were said; the others newest first. A further page:
 `truncated: true` and `next.arguments.cursor`.
 
 ### `get_people`
@@ -567,12 +572,12 @@ setting. When ready, the same link is also in the result's `_meta` for widgets (
 
 ### `create_follow_up` (write)
 
-Arguments: `text`; optional `why`, `quote`, `due_at` (an instant), `priority` (`low`, `normal`, `high`),
+Adds a reminder (stage `reminder`). Arguments: `text`; optional `why`, `quote`, `due_at` (an instant), `priority` (`low`, `normal`, `high`),
 `source_conversation_id`, `source_at` (instant or seconds from that conversation's start).
 
 ```json
 {
-  "summary": "Added a follow-up: Call the tile shop about grout. It reaches your phone on its next sync.",
+  "summary": "Added a reminder: Call the tile shop about grout. It reaches your phone on its next sync.",
   "status": "added",
   "followUp": { "…": "follow-up, origin assistant, waitingForPhone true" },
   "requestId": "0199f6a0-…"
@@ -582,7 +587,8 @@ Arguments: `text`; optional `why`, `quote`, `due_at` (an instant), `priority` (`
 ### `update_follow_up` (write)
 
 Arguments: `id`; optional `done` (boolean), `text`, `due_at`, `snoozed_until` (instants, or `none` to clear),
-`archived` (boolean).
+`archived` (boolean), `stage` (`reminder` or `skipped`: the person's answer to a follow-up to review, only when
+they give it). A new stage brings the item back out of the archive, as the person's own answer on the phone does.
 
 ```json
 { "summary": "Marked done: Send Sam the tile samples.", "status": "updated", "followUp": { "…": "follow-up" }, "requestId": "…" }
@@ -609,12 +615,12 @@ For clients that use them (Claude's composer menu, for one):
 | URI template | Contents |
 | --- | --- |
 | `conversation://{id}` | `text/markdown`: the conversation as `fetch` renders it, capped like `fetch` |
-| `day://{date}` | `text/markdown`: the day's recap, coverage, and conversation list as `get_day` gives them |
+| `day://{date}` | `text/markdown`: the day's recap, coverage, and conversation list as `get_day` gives them, then its reminders and its follow-ups to review under headings of their own |
 
 | Prompt | Arguments | Asks the assistant to |
 | --- | --- | --- |
 | `brief_me_on_a_day` ("Brief me on a day") | `date` (optional, default yesterday) | read `get_day`, open what matters, and brief in five lines with links |
-| `what_did_i_promise_this_week` ("What did I promise this week") | none | read `list_follow_ups` for this week and the conversations behind them, and list promises with links |
+| `what_did_i_promise_this_week` ("What did I promise this week") | none | read the week's reminders (`list_follow_ups` open, then done) and search the person's own words for promises; follow-ups waiting for review are left out; list them with links |
 
 Every tool call and resource read is logged to the AI-read log (client, tool, the ids it returned), which the
 phone shows.

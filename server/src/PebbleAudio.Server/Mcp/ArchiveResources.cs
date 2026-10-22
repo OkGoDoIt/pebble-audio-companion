@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using PebbleAudio.Server.Data;
 
 namespace PebbleAudio.Server.Mcp;
 
@@ -96,10 +97,25 @@ public sealed class ArchiveResources
 
 		if (result.FollowUps.Count > 0)
 		{
-			text.Append("\n## Follow-ups\n\n");
-			foreach (var followUp in result.FollowUps)
+			// Reminders are the person's list; a follow-up to review is only something the app noticed.
+			var reminders = result.FollowUps.Where(f => f.Stage == FollowUpStage.Reminder.ToWire()).ToList();
+			var toReview = result.FollowUps.Where(f => f.Stage == FollowUpStage.Suggested.ToWire()).ToList();
+			if (reminders.Count > 0)
 			{
-				text.Append($"- [{followUp.Text}]({followUp.Url}) ({followUp.Status})\n");
+				text.Append("\n## Reminders\n\n");
+				foreach (var followUp in reminders)
+				{
+					text.Append($"- [{followUp.Text}]({followUp.Url}) ({followUp.Status})\n");
+				}
+			}
+
+			if (toReview.Count > 0)
+			{
+				text.Append("\n## Follow-ups to review\n\n");
+				foreach (var followUp in toReview)
+				{
+					text.Append($"- [{followUp.Text}]({followUp.Url})\n");
+				}
 			}
 		}
 
@@ -125,18 +141,19 @@ public sealed class ArchivePrompts
 		var day = string.IsNullOrWhiteSpace(date) ? "yesterday" : date.Trim();
 		return new ChatMessage(
 			ChatRole.User,
-			$"Using Pebble Audio, brief me on {day} in five lines: what I did, who I talked with, decisions, open follow-ups, " +
+			$"Using Pebble Audio, brief me on {day} in five lines: what I did, who I talked with, decisions, open reminders, " +
 			"and anything I said I would do next. Start with get_day; open a conversation with get_conversation only when " +
 			"the recap leaves something unclear. Put the link after each item, and say if any of the day's audio was lost.");
 	}
 
 	[McpServerPrompt(Name = "what_did_i_promise_this_week", Title = "What did I promise this week")]
-	[Description("The promises and follow-ups from the last seven days, with where each was said.")]
+	[Description("The reminders from the last seven days, with where each was said.")]
 	public static ChatMessage WhatDidIPromiseThisWeek() =>
 		new(
 			ChatRole.User,
-			"Using Pebble Audio, list what I promised or said I would do in the last seven days. Use list_follow_ups with " +
-			"status all and from six days ago, then search for promises the app may have missed (\"I'll\", \"I will\", " +
-			"\"let me\") over the same days. For each: what, to whom, when it is due, whether it is done, and the link to " +
-			"the moment. Say which days you read.");
+			"Using Pebble Audio, list what I promised or said I would do in the last seven days. Start with my reminders: " +
+			"list_follow_ups with status open, then with status done, both from six days ago. Then search the same days " +
+			"for promises in my own words that are not reminders (\"I'll\", \"I will\", \"let me\"). Follow-ups waiting " +
+			"for my review are things the app noticed, not promises; leave them out. For each: what, to whom, when it is " +
+			"due, whether it is done, and the link to the moment. Say which days you read.");
 }

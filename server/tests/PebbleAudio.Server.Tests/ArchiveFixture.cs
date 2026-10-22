@@ -367,7 +367,10 @@ internal sealed class ArchiveFixture
 		bool done = false,
 		DateTimeOffset? completedAt = null,
 		DateTimeOffset? snoozedUntil = null,
-		string origin = "ai") => new()
+		string origin = "ai",
+		string? stage = null)
+	{
+		var followUp = new JsonObject
 		{
 			["archivedAt"] = null,
 			["completedAt"] = completedAt is { } c ? Wire.T(c) : null,
@@ -386,6 +389,15 @@ internal sealed class ArchiveFixture
 			["text"] = text,
 			["why"] = why,
 		};
+
+		// A phone from before stages sends none; the fixture's own rows are written that way.
+		if (stage is not null)
+		{
+			followUp["stage"] = stage;
+		}
+
+		return followUp;
+	}
 
 	public static JsonObject Note(string? conversationId, string title, string body, DateTimeOffset citedAt, DateTimeOffset createdAt) => new()
 	{
