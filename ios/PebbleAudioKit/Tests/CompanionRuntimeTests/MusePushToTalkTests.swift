@@ -73,10 +73,10 @@ struct MusePushToTalkTests {
         let fx = PushToTalkFixture()
         await fx.start()
         fx.muse.script = [.answer("Yes.")]
-        try fx.ask(turn: 3, seconds: 1, dropping: [10, 11, 12])
+        try fx.ask(turn: 3, seconds: 2, dropping: [10, 11, 12])
         #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
         let note = try #require(fx.muse.notes.first)
-        #expect(note.count == PcmWav.headerBytes + 50 * 320 * 2)
+        #expect(note.count == PcmWav.headerBytes + 100 * 320 * 2)
         #expect(fx.service.lastQuestion.value?.missingFrames == 3)
     }
 
@@ -94,7 +94,8 @@ struct MusePushToTalkTests {
     @Test func aBlipIsNotAQuestion() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
-        try fx.ask(turn: 4, seconds: 0.1)
+        // A hold that only opened Muse: under a second, press included.
+        try fx.ask(turn: 4, seconds: 0.9)
         #expect(await fx.waitUntil { !fx.link.updates().isEmpty })
         #expect(fx.link.updates().first?.kind == .error)
         #expect(fx.link.updates().first?.detail == AssistantError.didNotCatch.rawValue)

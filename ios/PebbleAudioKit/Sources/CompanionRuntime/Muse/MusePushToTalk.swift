@@ -101,8 +101,11 @@ public actor MusePushToTalk: MuseWatchSide {
     static let choiceQuestion = "Your answer"
     /// Beside a single button: not picking it.
     static let leaveIt = "Not now"
-    /// Fewer frames than this (0.2 s) is not a question.
-    static let minimumFrames = 10
+    /// Fewer frames than this (1 s, the press included) is not a question: it is a hold that
+    /// only meant to open Muse. Two of those reached Muse as questions on 2026-10-22 (0.8 s and
+    /// 0.9 s); the shortest real question that day was 2.4 s. Firmware since v4.40.0-352 drops
+    /// them on the watch; this is for a watch that still sends them.
+    static let minimumFrames = 50
     /// The watch keeps 1536 bytes of an answer; past that it shows an ellipsis.
     static let watchAnswerBytes = 1_536
 
