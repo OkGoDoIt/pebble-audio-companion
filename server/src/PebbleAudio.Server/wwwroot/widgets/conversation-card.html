@@ -74,16 +74,17 @@ function render({ structuredContent: c }) {
     <div id="card-content">
     <h1 class="w-title${c.title ? '' : ' untitled'}">${esc(c.title || 'Not summarized yet')}</h1>
     <p class="w-kicker" style="margin-top:5px">${when}</p>
-    ${summaryHtml(c.overview)}
+    ${summaryHtml(c.overview, c.id)}
     ${people ? `<p class="w-people">${PERSON}<span>${esc(people)}</span></p>` : ''}
     ${(c.tags || []).length ? `<ul class="pills" aria-label="Topics">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
-    ${shapeOf(c)}
+    <details class="recording-details"><summary>Recording details</summary>${shapeOf(c)}</details>
     </div>
     <div class="w-foot">
-      ${expandButton('card-content')}
+      ${expandButton('card-content', 'Read more', 'Show less')}
       <span class="hint">${followUps ? esc(followUps === 1 ? '1 open follow-up' : `${followUps} open follow-ups`) : ''}</span>
       <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open conversation ${CHEVRON}</a>
     </div>`;
+  loadExpandedSummaries(card);
   card.querySelector('.w-open').addEventListener('click', (e) => { e.preventDefault(); openLink(c.url); });
 }
 

@@ -42,3 +42,33 @@ test('changed content or a renewed signed audio link still reaches the widget', 
   h.events.get('openai:set_globals')();
   assert.equal(h.renders.length, 3);
 });
+
+const summary = readFileSync(new URL('../src/PebbleAudio.Server/wwwroot/widgets/summary.js', import.meta.url), 'utf8');
+test('a legacy transcript result retrieves its missing summary while still collapsed', async () => {
+  const paragraph = { textContent: 'Loading summary…' }, status = { hidden: true };
+  let missing = true, calls = 0;
+  const wrap = {
+    dataset: { conversation: 'conversation-id' }, isConnected: true,
+    querySelector: selector => selector === '.w-sum' ? paragraph : status,
+    removeAttribute: () => { missing = false; },
+  };
+  const root = {
+    classList: { contains: () => false },
+    querySelectorAll: selector => missing && selector.includes('data-summary-missing') ? [wrap] : [],
+  };
+  const context = {
+    document: { addEventListener() {} }, root,
+    callTool: async (name, args) => {
+      calls++;
+      assert.equal(name, 'get_conversation');
+      assert.equal(args.include, 'summary');
+      assert.equal(args.id, 'conversation-id');
+      return { structuredContent: { found: true, overview: 'The useful conversation summary.' } };
+    },
+  };
+  await runInNewContext(summary + '\nloadExpandedSummaries(root)', context);
+  assert.equal(paragraph.textContent, 'The useful conversation summary.');
+  assert.equal(status.hidden, true);
+  await runInNewContext(summary + '\nloadExpandedSummaries(root)', context);
+  assert.equal(calls, 1);
+});

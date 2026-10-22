@@ -76,6 +76,12 @@ function linkify(el, url) {
   el.addEventListener('click', (e) => { e.preventDefault(); openLink(url); });
 }
 
+function recapHtml(recap) {
+  const brief = recap?.lineSummary, full = recap?.text;
+  if (brief && full && brief !== full) return `<div class="recap-short">${summaryHtml(brief)}</div><div class="recap-full">${summaryHtml(full)}</div>`;
+  return summaryHtml(full || brief || 'A day recap isn’t available yet.');
+}
+
 function dayView(d) {
   const tz = d.timeZone;
   const conversations = d.conversations || [];
@@ -84,10 +90,10 @@ function dayView(d) {
   const ends = [...spans.map((s) => instant(s.endedAt)), ...conversations.map((c) => instant(c.endedAt) || instant(c.startedAt) + c.minutes * 60000)];
   if (!starts.length) return `<div id="day-content"><p class="w-kicker">${esc(longDay(d.day))}</p>
     <h1 class="w-title">${esc(d.recap?.headline || (d.coverage?.recordedMinutes > 0 ? 'Day overview' : 'Nothing recorded'))}</h1>
-    ${summaryHtml(d.recap?.text || d.recap?.lineSummary || '')}
+    ${d.recap ? recapHtml(d.recap) : ''}
     ${d.coverage?.recordedMinutes > 0 ? `<p class="w-line">${esc(duration(d.coverage.recordedMinutes * 60))} recorded</p>` : ''}
     ${d.coverage?.spansOmitted ? '<p class="day-help">Open the day for detailed recording coverage.</p>' : ''}
-    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+    </div><div class="w-foot">${expandButton('day-content', 'Read more', 'Show less')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
   const first = hourStart(Math.min(...starts), tz);
   let last = hourStart(Math.max(...ends), tz);
   if (last < Math.max(...ends)) last += 3600000;
@@ -116,11 +122,15 @@ function dayView(d) {
     <div id="day-content">
     <p class="w-kicker">${esc(longDay(d.day))} · ${esc(place(tz))} time</p>
     <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
-    <p class="w-line">${esc(line)}${lost > 0 ? `<span class="loss"> · ${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
+    <p class="w-line">${esc(line)}</p>
+    <div class="day-recap">${recapHtml(d.recap)}</div>
+    ${conversations.length ? `<details class="conversation-browser"><summary>Browse ${conversations.length} conversations${d.truncated ? ' shown' : ''}</summary><div class="sel" id="sel"></div></details>` : ''}
+    <details class="recording-details"><summary>Recording details</summary>
+    <p class="day-help">${esc(duration(recorded * 60))} recorded${d.coverage?.quietMinutes > 0 ? ` · ${esc(duration(d.coverage.quietMinutes * 60))} quiet` : ''}${lost > 0 ? ` · ${esc(duration(lost * 60, { seconds: true }))} missing` : ''}</p>
     ${d.coverage?.spansOmitted ? '<p class="day-help">Conversation times shown. Open the day for detailed recording coverage.</p>' : ''}
-    ${conversations.length ? '<p class="day-help">Choose a conversation on the timeline, or use the arrows below.</p>' : ''}
-    ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div><div class="sel" id="sel"></div>` : `<div class="tlw">${laneHtml}</div>`}
-    </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
+    ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div>` : `<div class="tlw">${laneHtml}</div>`}
+    </details>
+    </div><div class="w-foot">${expandButton('day-content', 'Read more', 'Show less')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
 }
 
 function select(d, i) {
@@ -183,7 +193,7 @@ function bindDay(d) {
     if (e.key === 'Home') { e.preventDefault(); select(d, 0); }
     if (e.key === 'End') { e.preventDefault(); select(d, conversations.length - 1); }
   });
-  select(d, 0);
+  select(d, Math.max(0, conversations.findIndex(c => c.overview?.trim())));
 }
 
 function daysView(r) {

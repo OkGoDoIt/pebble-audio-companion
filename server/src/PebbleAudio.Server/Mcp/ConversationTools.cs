@@ -348,7 +348,7 @@ public sealed class ConversationTools
 			card.TimeZone,
 			card.Minutes,
 			card.RecordedMinutes,
-			withSummary ? card.Overview : null,
+			card.Overview,
 			card.Tags,
 			card.People,
 			card.Kind,
