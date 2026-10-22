@@ -77,10 +77,10 @@ function render({ structuredContent: c }) {
     ${summaryHtml(c.overview, c.id)}
     ${people ? `<p class="w-people">${PERSON}<span>${esc(people)}</span></p>` : ''}
     ${(c.tags || []).length ? `<ul class="pills" aria-label="Topics">${c.tags.map((t) => `<li class="pill">${esc(t)}</li>`).join('')}</ul>` : ''}
-    <details class="recording-details"><summary>Recording details</summary>${shapeOf(c)}</details>
+    <section class="recording-details" aria-label="Recording details"><h2 class="section-label">Recording details</h2>${shapeOf(c)}</section>
     </div>
     <div class="w-foot">
-      ${expandButton('card-content', 'Read more', 'Show less')}
+      ${expandButton('card-content')}
       <span class="hint">${followUps ? esc(followUps === 1 ? '1 open follow-up' : `${followUps} open follow-ups`) : ''}</span>
       <a class="w-open" href="${esc(c.url)}" target="_blank" rel="noopener">Open conversation ${CHEVRON}</a>
     </div>`;
