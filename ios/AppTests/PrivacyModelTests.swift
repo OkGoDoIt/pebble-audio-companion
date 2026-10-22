@@ -262,12 +262,21 @@ struct PrivacyModelTests {
         #expect(line.contains("When you ask, Muse can also read your conversations and your reminders to answer. What it reads goes to Meta."))
         #expect(line.contains("Muse asks on your watch before it reads your health data and your calendar."))
         #expect(line.contains("Your conversations can include what other people said."))
-        #expect(line.contains("Muse can add events and reminders you ask for. It never deletes them."))
+        #expect(line.contains("Muse can add events and reminders you ask for. It can change or delete reminders too, never events."))
+        #expect(!line.contains("before it changes"))
         #expect(mix.destinations.first?.chips.map(\.label) == ["Your questions", "Conversations", "Reminders"])
         #expect(mix.placeCount == 1)
 
         let three = muse([.calendar: .allowed, .reminders: .allowed, .followUps: .allowed])
-        #expect(three.whereItGoesFooters.first?.contains("Muse can add events, reminders, and follow-ups you ask for. It never deletes them.") == true)
+        #expect(
+            three.whereItGoesFooters.first?.contains(
+                "Muse can add events, reminders, and follow-ups you ask for. It can change or delete reminders too, never events or follow-ups."
+            ) == true)
+
+        // Reminders alone, Ask first: changes are asked about once per question.
+        let reminders = muse([.reminders: .ask]).whereItGoesFooters.first ?? ""
+        #expect(reminders.contains("Muse can add reminders you ask for. It can change or delete them too."))
+        #expect(reminders.hasSuffix("Muse asks on your watch before it changes your reminders, once per question."))
 
         // Music on or off.
         #expect(muse([:], music: true).whereItGoesFooters.first?.hasSuffix("When you ask what's playing, the song's title and artist go to Meta.") == true)

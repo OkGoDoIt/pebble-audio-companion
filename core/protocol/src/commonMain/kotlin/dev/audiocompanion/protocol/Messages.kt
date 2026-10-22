@@ -734,6 +734,34 @@ class WatchAction(
  * How a watch action ended: 1 done, 2 declined, 3 timed out, 4 failed, 5 unsupported. `text` is
  * what is playing, the app that was opened, or health numbers (Section 4.5); empty for none.
  */
+/** The wearer marked a moment as important on the watch (Section 4.6). */
+data class MomentMark(
+    /** Counts marks on the watch, 1-255 and round again; with [wallMs], names a mark sent twice. */
+    val markId: Int,
+    val flags: Int,
+    /** The recording's stream and its next sample at the mark; both 0 when nothing was recording. */
+    val streamId: UInt,
+    val sampleIndex: ULong,
+    /** The watch's clock at the mark, UTC ms. */
+    val wallMs: ULong,
+) : ControlOutMessage {
+    val whileRecording: Boolean get() = flags and FLAG_RECORDING != 0
+
+    override fun encode(): ByteArray = WireWriter(24)
+        .u8(MessageId.MOMENT_MARK)
+        .u8(markId)
+        .u8(flags)
+        .u8(0)
+        .u32(streamId)
+        .u64(sampleIndex)
+        .u64(wallMs)
+        .toByteArray()
+
+    companion object {
+        const val FLAG_RECORDING: Int = 0x01
+    }
+}
+
 class WatchActionResult(
     val actionId: Int,
     val statusRaw: Int,

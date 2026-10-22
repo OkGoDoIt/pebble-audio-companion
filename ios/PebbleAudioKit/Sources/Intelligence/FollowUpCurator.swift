@@ -117,7 +117,11 @@ public final class FollowUpCurator: @unchecked Sendable {
         guard !batch.isEmpty else { return [] }
         guard await router.isAvailable() else { return [] }
 
-        let open = try await followUps.list(scope: .open, nowMs: now)
+        // Waiting for review counts as already on the list: a duplicate of a suggestion is a
+        // duplicate.
+        let open =
+            try await followUps.list(scope: .open, nowMs: now)
+            + followUps.list(scope: .suggested, nowMs: now)
         var titles: [String: String] = [:]
         for candidate in batch where titles[candidate.conversationId] == nil {
             if let title = await titleOf(candidate.conversationId), !title.isEmpty {
@@ -254,7 +258,11 @@ public final class FollowUpCurator: @unchecked Sendable {
             model: candidate.model,
             // When the words were said, computed when the quote was located. Carried, never
             // recomputed here: curation has no segment clock in hand.
-            sourceWall: candidate.sourceWall)
+            sourceWall: candidate.sourceWall,
+            // Asked for out loud, or marked on the watch: a reminder at once. Anything else the
+            // app noticed waits for the person's review (`docs/reminders.md`).
+            stage: candidate.askedFor ? .reminder : .suggested,
+            decidedAtMs: candidate.askedFor ? now : nil)
     }
 
     // MARK: - Prompt body
@@ -301,6 +309,9 @@ public final class FollowUpCurator: @unchecked Sendable {
                 out += "   proposed due: \(dayLabel(dueDate, in: recordedZone))\n"
             }
             out += "   how sure the reader was: \(candidate.confidence.rawValue)\n"
+            if candidate.askedFor {
+                out += "   asked for: the person asked for this to be remembered\n"
+            }
         }
         return out
     }

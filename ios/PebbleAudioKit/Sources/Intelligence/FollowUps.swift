@@ -243,17 +243,23 @@ public enum FollowUpTranscriptRenderer {
         summary: String?,
         recordedAt: Date,
         timeZone: TimeZone,
-        maxChars: Int
+        maxChars: Int,
+        requests: [FollowUpRequest] = []
     ) -> String {
         var out = "Recorded: \(dayLabel(recordedAt, timeZone))\n"
         if let title, !title.isEmpty { out += "Conversation: \(title)\n" }
         if let summary, !summary.isEmpty { out += "Summary so far: \(summary)\n" }
         out += "\n"
+        var transcript = ""
         for part in parts {
             let started = Date(timeIntervalSince1970: Double(part.startedAtMs) / 1000)
-            out += "--- \(clockLabel(started, timeZone)) ---\n"
-            out += speakerLines(part) + "\n\n"
+            transcript += "--- \(clockLabel(started, timeZone)) ---\n"
+            transcript += speakerLines(part) + "\n\n"
         }
+        if let asked = FollowUpRequestDetector.promptBlock(requests, in: transcript) {
+            out += asked + "\n\n"
+        }
+        out += transcript
         let body = out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard body.count > maxChars else { return body }
         // Keep the END. A conversation's later parts are what close its open loops, and
@@ -277,11 +283,12 @@ public enum FollowUpTranscriptRenderer {
         summary: String?,
         recordedAt: Date,
         timeZone: TimeZone,
-        maxChars: Int
+        maxChars: Int,
+        requests: [FollowUpRequest] = []
     ) -> [String] {
         let whole = render(
             parts: parts, title: title, summary: summary, recordedAt: recordedAt,
-            timeZone: timeZone, maxChars: Int.max)
+            timeZone: timeZone, maxChars: Int.max, requests: requests)
         guard whole.count > maxChars else { return [whole] }
 
         var header = "Recorded: \(dayLabel(recordedAt, timeZone))\n"
@@ -323,9 +330,11 @@ public enum FollowUpTranscriptRenderer {
         if !current.isEmpty { chunks.append(current) }
 
         return chunks.enumerated().map { index, body in
-            header
+            let asked = FollowUpRequestDetector.promptBlock(requests, in: body).map { $0 + "\n\n" }
+            return header
                 + "Part \(index + 1) of \(chunks.count) of this conversation, in order. The other "
                 + "parts are read separately; report only what is in this part.\n\n"
+                + (asked ?? "")
                 + body.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }

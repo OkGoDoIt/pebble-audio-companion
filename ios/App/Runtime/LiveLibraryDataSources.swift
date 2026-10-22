@@ -399,7 +399,12 @@ extension LiveWorld: ConversationDataSource {
 
         let walked = await Self.walkMembers(
             pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments)
-        let transcript = walked.transcript
+        let marked =
+            (try? await MomentStore(db: composition.database).moments(
+                fromWallMs: source.startMs, to: source.endMs + 1)) ?? []
+        let transcript = TranscriptItems.insertingMoments(
+            marked, into: walked.transcript, startMs: source.startMs, endMs: source.endMs + 1,
+            timeZone: walked.zone ?? .current)
         let missingTicks = walked.missingTicks
         let provider = walked.provider
         let transcribedAtMs = walked.transcribedAtMs

@@ -369,7 +369,20 @@ enum PrivacyModel {
         }
         let adds = readable.compactMap(\.addName)
         if !adds.isEmpty {
-            lines.append("Muse can add \(Copy.list(adds)) you ask for. It never deletes them.")
+            // Reminders can also be changed and deleted (D7d); events and follow-ups never are.
+            let others = readable.filter { $0 != .reminders }.compactMap(\.addName)
+            let changes: String
+            if !readable.contains(.reminders) {
+                changes = "It never deletes them."
+            } else if others.isEmpty {
+                changes = "It can change or delete them too."
+            } else {
+                changes = "It can change or delete reminders too, never \(Copy.list(others, conjunction: "or"))."
+            }
+            lines.append("Muse can add \(Copy.list(adds)) you ask for. \(changes)")
+        }
+        if muse.access(.reminders) == .ask {
+            lines.append("Muse asks on your watch before it changes your reminders, once per question.")
         }
         if muse.watchActions.contains(.music) {
             lines.append("When you ask what's playing, the song's title and artist go to Meta.")

@@ -420,7 +420,9 @@ struct SettingsMuseScreen: View {
                 sourceRow(.conversations, Copy.Muse.seeConversations, subtitle: Copy.Muse.seeConversationsSubtitle)
                 sourceRow(.health, Copy.Muse.seeHealth)
                 sourceRow(.calendar, Copy.Muse.seeCalendar, phone: model.calendarPermission)
-                sourceRow(.reminders, Copy.Muse.seeReminders, phone: model.remindersPermission)
+                sourceRow(
+                    .reminders, Copy.Muse.seeReminders, subtitle: Copy.Muse.seeRemindersSubtitle,
+                    phone: model.remindersPermission, askFooter: Copy.Muse.accessAskFooterReminders)
                 sourceRow(.followUps, Copy.Muse.seeFollowUps)
             }
             SettingsFooter(text: Copy.Muse.seeFooter)
@@ -430,7 +432,7 @@ struct SettingsMuseScreen: View {
 
     private func sourceRow(
         _ source: MuseSource, _ title: String, subtitle: String? = nil,
-        phone: MuseScreenModel.PhonePermission = .granted
+        phone: MuseScreenModel.PhonePermission = .granted, askFooter: String = Copy.Muse.accessAskFooter
     ) -> some View {
         let access = model.preferences.access(source)
         // iOS said no: the row says so whatever Muse is set to, and offers the way to fix it.
@@ -447,7 +449,7 @@ struct SettingsMuseScreen: View {
                         .init(value: MuseSourceAccess.off, label: Copy.Muse.accessOff),
                     ],
                     selection: Binding(get: { model.preferences.access(source) }, set: { model.setAccess(source, $0) }),
-                    footer: Copy.Muse.accessAskFooter)
+                    footer: askFooter)
             } label: {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {

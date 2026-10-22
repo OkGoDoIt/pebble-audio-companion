@@ -191,6 +191,13 @@ class GoldenFixtureTest {
             "frame_count" to message.frameCount.toString(),
             "max_seconds" to message.maxSeconds.toString(),
         )
+        is MomentMark -> mapOf(
+            "mark_id" to message.markId.toString(),
+            "flags" to message.flags.toString(),
+            "stream_id" to message.streamId.toString(),
+            "sample_index" to message.sampleIndex.toString(),
+            "wall_ms" to message.wallMs.toString(),
+        )
         is WatchActionResult -> buildMap {
             put("action_id", message.actionId.toString())
             put("status", message.statusRaw.toString())

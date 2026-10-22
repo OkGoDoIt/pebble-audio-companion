@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "A moment marked while recording: on the stream's own clock, and the watch's",
+  "expect": "parse",
+  "fields": {
+    "flags": 1,
+    "mark_id": 3,
+    "sample_index": 1234560,
+    "stream_id": 42,
+    "wall_ms": 1788193751778
+  },
+  "name": "moment_mark_recording",
+  "size": 24
+}

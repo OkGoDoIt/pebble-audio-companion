@@ -1,0 +1,14 @@
+{
+  "channel": "control_out",
+  "description": "A moment marked with nothing recording: the watch's clock alone",
+  "expect": "parse",
+  "fields": {
+    "flags": 0,
+    "mark_id": 4,
+    "sample_index": 0,
+    "stream_id": 0,
+    "wall_ms": 1788193811000
+  },
+  "name": "moment_mark_not_recording",
+  "size": 24
+}

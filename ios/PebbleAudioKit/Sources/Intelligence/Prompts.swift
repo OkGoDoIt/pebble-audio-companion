@@ -395,6 +395,11 @@ public enum AiPromptTemplates {
     // Do not soften them without re-running the panel. The one thing this feature cannot
     // afford is a plausible wrong item; a missed one costs nothing, because the recording is
     // still there and Ask can still find it.
+    //
+    // The exception is a request: "remind me to…", "create a follow-up for this". A missed one
+    // breaks the one promise the person relied on, and the dictation rules above rejected
+    // three in a row on 2026-10-22. They count now, and `FollowUpRequestDetector` lists them
+    // above the transcript rather than leaving the model to notice them.
 
     public static let followUpExtraction = AiPromptTemplate(
         id: "follow-up-extraction",
@@ -429,7 +434,8 @@ public enum AiPromptTemplates {
             2. THEIRS TO DO. This person is the one who still has to do it. Reject anything \
             where somebody else is the one acting — a request they made OF someone else, an \
             instruction they gave to an assistant or a tool, advice they were giving another \
-            person, anything they said another person had agreed to handle. There is never an \
+            person, anything they said another person had agreed to handle. A request to be \
+            reminded is theirs: the reminder is for them, and they are the one who will act. There is never an \
             "owner" other than this person; an item that needs one is not an item.
 
             3. STILL OPEN AT THE END. Read to the end before deciding. Drop it if it was done, \
@@ -456,6 +462,20 @@ public enum AiPromptTemplates {
             often sit completely alone with nothing before or after them about the same \
             subject; that is normal, not a reason to doubt them.
             - Something to bring, book, sign, pay, cancel, collect or return by a stated time.
+            - A request to be reminded, said out loud: "remind me to…", "help me remember to \
+            follow up on this", "create a follow-up for that", "don't let me forget…", "note to \
+            self". The person is asking this recording to hold the thing for them, and nothing \
+            else will; these are the items they most expect to find, and the transcript is \
+            headed by a list of them when there are any. Each request is its own item, even \
+            when several come in a row. The task is the thing they want remembered, written \
+            from what they described around the request — "Add a watch quick action that marks \
+            a moment as important", never "Follow up on this". The quote is the run that names \
+            that thing, which may be the sentence before or after the request. Return one \
+            unless it was taken back, or an assistant can be heard taking it on ("OK, I'll \
+            remind you", "I've added that"). A moment they marked as important on their watch is \
+            listed there too, with the words just before it: if those words hold something for \
+            them to do, it is the same kind of request; if they hold nothing to do (a thought, a \
+            fact, a joke), it is not a follow-up.
 
             NEVER RETURN THESE, however clearly they were said:
             - Narration of what is being done right now: "I'll grab my laptop", "I'll put it \
@@ -467,7 +487,8 @@ public enum AiPromptTemplates {
             aimed at a worker ("don't be lazy", "think about this properly", "go ahead and", \
             "please look into"). Those words are already written down somewhere the speaker \
             controls, and are often finished by the time you read them. This is different from a \
-            first-person note to self, which does count.
+            first-person note to self, which does count, and from a request to be reminded, which \
+            counts whoever it seems to be addressed to.
             - A project the speaker is describing as already underway: "I've been working on", \
             "what I'm publishing", "we're building". Status is not a commitment.
             - Wishes, hedges and half-plans: "maybe", "we could", "sometime", "or something", \
@@ -567,6 +588,13 @@ public enum AiPromptTemplates {
             DUPLICATE — the same intent is already on their open list, or another candidate in \
             this batch says it. Name the one it duplicates in the reason. Prefer the clearer \
             wording; a later, more specific version of a plan supersedes an earlier vaguer one.
+
+            ASKED FOR — a candidate marked "asked for" comes from a moment the person asked for \
+            it to be remembered: out loud ("remind me to…", "create a follow-up for this"), or \
+            by marking the moment on their watch. They \
+            are counting on it. Keep it unless it duplicates something, or it was a one-off \
+            whose time has gone by. Never drop it as vague, as needing the conversation, or as \
+            an instruction to someone else: if its wording is weak, rewrite it from the quote.
 
             DROP — anything else. Be willing to drop most of a batch. Drop it when:
             - the quote does not actually contain the commitment, or needs the missing \

@@ -35,6 +35,7 @@ struct TranscriptLayout: Equatable {
             case turn(TranscriptTurn, opensRun: Bool)
             case quiet(TranscriptMarker)
             case missing(TranscriptMarker)
+            case moment(TranscriptMarker)
             /// A cited stretch, drawn whole. `playFromMs` is where its first speech sits on the
             /// scrubber, for the band's "Play from here".
             case band([TranscriptBlock], playFromMs: Int64?)
@@ -135,6 +136,13 @@ struct TranscriptLayout: Equatable {
                 closeBand()
                 runTurn = nil
                 rows.append(Row(id: marker.id, content: .missing(marker)))
+                gaps.append(Self.blockGap)
+            case .moment(let marker):
+                // Its own row even inside a cited stretch: a mark is the person's, not part of
+                // what was quoted.
+                closeBand()
+                runTurn = nil
+                rows.append(Row(id: marker.id, content: .moment(marker)))
                 gaps.append(Self.blockGap)
             }
         }

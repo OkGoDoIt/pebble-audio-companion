@@ -94,6 +94,8 @@ public actor MusePushToTalk: MuseWatchSide {
     static let answerTimeout: Duration = .seconds(240)
     /// A link to Muse stays open this long after an answer, for a follow-up.
     static let followUpWindow: Duration = .seconds(60)
+    /// The pause before asking again on a chat Muse held (HTTP 409).
+    static let busyRetryDelay: Duration = .seconds(2)
     /// How long the watch shows a choice Muse offered, and how many in a row it follows.
     static let choiceSeconds = 120
     static let maxChoiceRounds = 5
@@ -101,8 +103,11 @@ public actor MusePushToTalk: MuseWatchSide {
     static let choiceQuestion = "Your answer"
     /// Beside a single button: not picking it.
     static let leaveIt = "Not now"
-    /// Fewer frames than this (0.2 s) is not a question.
-    static let minimumFrames = 10
+    /// Fewer frames than this (1 s, the press included) is not a question: it is a hold that
+    /// only meant to open Muse. Two of those reached Muse as questions on 2026-10-22 (0.8 s and
+    /// 0.9 s); the shortest real question that day was 2.4 s. Firmware since v4.40.0-352 drops
+    /// them on the watch; this is for a watch that still sends them.
+    static let minimumFrames = 50
     /// The watch keeps 1536 bytes of an answer; past that it shows an ellipsis.
     static let watchAnswerBytes = 1_536
 
@@ -212,7 +217,7 @@ public actor MusePushToTalk: MuseWatchSide {
         connector: any MuseVoiceConnector,
         preferences: MusePreferencesStore,
         data: (any MuseDataProvider)? = nil,
-        eventKit: MuseEventKitSource = MuseEventKitSource(),
+        eventKit: any MuseEventKitAccess = MuseEventKitSource(),
         // MuseTools.holdLimitSeconds: a little under the 180 s Muse is given for a data call.
         toolHoldLimit: Duration = .seconds(170),
         messageRetryDelay: Duration = .seconds(20),
@@ -396,15 +401,14 @@ public actor MusePushToTalk: MuseWatchSide {
         let done: Bool
         let serial = current.serial
         do {
-            done = try await conversation.ask(
-                wav: wav, instructions: Self.instructions, timeout: Self.answerTimeout
-            ) { [weak self] event in
-                await self?.relay(event, serial: serial)
-            }
+            done = try await askRecovering(current, on: conversation, wav: wav, serial: serial)
         } catch {
             log("question \(current.id): \(error)")
-            self.conversation = nil
-            await conversation.close()
+            // A chat Muse holds is no fault of the link: keep it, and Muse's own messages with it.
+            if case MuseQuestionFailure.chatBusy = error {} else {
+                self.conversation = nil
+                await conversation.close()
+            }
             fail(current, Self.assistantError(error), seconds: level.durationSeconds, missing: missing, level: level)
             return
         }
@@ -428,6 +432,49 @@ public actor MusePushToTalk: MuseWatchSide {
         }
         scheduleIdleClose()
         await deliverPending()
+    }
+
+    /// Asks, and gets past a watch chat Muse holds (HTTP 409).
+    ///
+    /// On 2026-10-22 Muse refused every message on the watch's chat from 14:15, through new links
+    /// and an app restart, while subscribing to it still worked; the watch said "Can't reach
+    /// Muse" each time and nothing would ever have changed. Now: once more after a pause, in case
+    /// it was a turn finishing; then the watch's questions move to a new chat, and this one is
+    /// asked there. Never while an approval is waiting: that holds the chat for the person, who
+    /// answers it on the phone.
+    private func askRecovering(
+        _ current: Turn, on first: any MuseVoiceConversation, wav: Data, serial: Int
+    ) async throws -> Bool {
+        var conversation = first
+        var attempt = 0
+        while true {
+            do {
+                return try await conversation.ask(
+                    wav: wav, instructions: Self.instructions, timeout: Self.answerTimeout
+                ) { [weak self] event in
+                    await self?.relay(event, serial: serial)
+                }
+            } catch MuseQuestionFailure.chatBusy(let approvalPending)
+                where !approvalPending && attempt < 2 && turn === current
+            {
+                attempt += 1
+                if attempt == 1 {
+                    log("question \(current.id): Muse is holding the watch's chat; asking again")
+                    try await Task.sleep(for: Self.busyRetryDelay)
+                    continue
+                }
+                guard preferences.current.value.chatPlace == .watchChat else {
+                    throw MuseQuestionFailure.chatBusy(approvalPending: false)
+                }
+                let old = preferences.watchChatID()
+                let new = preferences.rotateWatchChatID()
+                log("question \(current.id): Muse still holds the watch's chat; the watch moves to a"
+                    + " new one (\(old.prefix(8)) -> \(new.prefix(8)))")
+                self.conversation = nil
+                await conversation.close()
+                conversation = try await readyConversation()
+            }
+        }
     }
 
     /// Why a question got no words: nothing heard, Muse still at work (its answer will come as a
@@ -887,7 +934,7 @@ public actor MusePushToTalk: MuseWatchSide {
             switch failure {
             case .notSetUp: return .notSetUp
             case .unreachable: return .unreachable
-            case .refused(429): return .busy
+            case .refused(429), .chatBusy: return .busy
             case .refused(401), .refused(403): return .notSetUp
             case .refused: return .unreachable
             }

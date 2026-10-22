@@ -90,6 +90,10 @@ struct TranscriptView: View {
             quietRow(marker)
         case .missing(let marker):
             missingRow(marker)
+        case .moment(let marker):
+            TranscriptMarkerRow(
+                marker: marker, color: Tokens.tint, rule: Tokens.tintSoft, timeZone: timeZone,
+                symbol: "pin.fill")
         case .band(let blocks, let playFromMs):
             citedBand(blocks, playFromMs: playFromMs)
         case .provenance(let text):
@@ -466,17 +470,20 @@ struct TranscriptMarkerRow: View {
     let color: Color
     let rule: Color
     var timeZone: TimeZone = .current
+    /// An SF Symbol before the text: a marked moment's pin.
+    var symbol: String?
 
     @State private var isOpen: Bool
 
     init(
         marker: TranscriptMarker, color: Color, rule: Color, timeZone: TimeZone = .current,
-        isOpen: Bool = false
+        symbol: String? = nil, isOpen: Bool = false
     ) {
         self.marker = marker
         self.color = color
         self.rule = rule
         self.timeZone = timeZone
+        self.symbol = symbol
         _isOpen = State(initialValue: isOpen)
     }
 
@@ -529,6 +536,12 @@ struct TranscriptMarkerRow: View {
 
     private func markerText(chevron: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(color)
+                    .accessibilityHidden(true)
+            }
             Text(marker.text)
                 .font(.system(size: 12))
                 .foregroundStyle(color)

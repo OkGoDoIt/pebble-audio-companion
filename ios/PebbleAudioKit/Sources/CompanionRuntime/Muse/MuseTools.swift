@@ -61,7 +61,7 @@ protocol MuseWatchSide: Sendable {
 actor MuseTools {
     private let preferences: MusePreferencesStore
     private let data: (any MuseDataProvider)?
-    private let eventKit: MuseEventKitSource
+    private let eventKit: any MuseEventKitAccess
     private let log: @Sendable (String) -> Void
     private var prompting = false
     private let clock: @Sendable () -> Date
@@ -69,6 +69,10 @@ actor MuseTools {
     /// Sources allowed once, for the question being answered: Muse often reads a source several
     /// times for one answer (steps, then distance, then heart rate).
     private var allowedOnce: [MuseSource: Date] = [:]
+    /// Changes allowed once for the question being answered: when, and how many are left.
+    private var changesAllowedOnce: [MuseSource: (at: Date, left: Int)] = [:]
+    /// Not Now on a change: no more changes, and no more asking, for this question.
+    private var changesDeclined: [MuseSource: Date] = [:]
     /// Calls that change something, and how they went, for a repeat that comes soon after.
     private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
     /// A call that changes something, repeated within this, gets the first one's result: Muse
@@ -76,7 +80,7 @@ actor MuseTools {
     static let repeatWindow: TimeInterval = 180
 
     init(
-        preferences: MusePreferencesStore, data: (any MuseDataProvider)?, eventKit: MuseEventKitSource = MuseEventKitSource(),
+        preferences: MusePreferencesStore, data: (any MuseDataProvider)?, eventKit: any MuseEventKitAccess = MuseEventKitSource(),
         clock: @escaping @Sendable () -> Date = { Date() }, holdLimit: Duration = .seconds(MuseTools.holdLimitSeconds),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -208,12 +212,20 @@ actor MuseTools {
         }
         if prefs.access(.reminders) != .off {
             c[remindersCommand] = [
-                "description": "The user's reminders on their phone: list the ones not done yet, or add one.",
-                "required": ["action": param("string", "list or add.")],
+                "description":
+                    "The user's reminders on their phone, in all of their lists (like Groceries or Work). lists returns the list names and which one is the default; read returns reminders not done yet, each with its id, from one list or all of them; add adds one to a list by name; edit changes one by id: its title, due date, notes, list (to move it), or whether it is done; delete removes one by id. Each reply says what is now true, including the list the reminder is in.",
+                "required": ["action": param("string", "One of: lists, read, add, edit, delete.")],
                 "optional": [
-                    "title": param("string", "With add: what to be reminded of."),
-                    "due": param("string", "With add: when, \(date)."),
-                    "list": param("string", "The reminders list to use, by name. The default list if not given."),
+                    "list": param(
+                        "string",
+                        "A list's name, from lists. With read: only this list (all lists if not given). With add: the list to add to (the default list if not given). With edit: move the reminder to this list. A name that matches no list is an error that names the lists; nothing is added elsewhere."
+                    ),
+                    "id": param("string", "With edit and delete: the reminder's id, from read or add."),
+                    "title": param("string", "With add: what to be reminded of. With edit: the new title."),
+                    "due": param("string", "With add or edit: when it is due, \(date). With edit, none removes it."),
+                    "notes": param("string", "With add or edit: notes. With edit, none removes them."),
+                    "completed": param("string", "With edit: true marks it done, false marks it not done."),
+                    "include_completed": param("string", "With read: true also includes reminders completed in the last 30 days."),
                 ],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
@@ -251,6 +263,8 @@ actor MuseTools {
     /// A new question from the watch: what was allowed once is asked about again.
     func questionBegan() {
         allowedOnce.removeAll()
+        changesAllowedOnce.removeAll()
+        changesDeclined.removeAll()
     }
 
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
@@ -266,13 +280,18 @@ actor MuseTools {
         return result
     }
 
-    /// What identifies a call that changes something (a timer, an alarm, a new reminder or
-    /// follow-up, a calendar event): its command and parameters. Nil for a call that only reads.
+    /// What identifies a call that changes something (a timer, an alarm, a new or deleted
+    /// reminder, a new follow-up, a calendar event): its command and parameters. Nil for a call
+    /// that only reads.
     static func changeKey(_ command: String, _ params: MuseJSON) -> String? {
         switch command {
         case timerCommand, alarmCommand:
             break
-        case remindersCommand, followUpsCommand, calendarCommand:
+        case remindersCommand:
+            // An edit sets fields, so doing it twice is harmless, and a later edit may undo an
+            // earlier one: only adds and deletes are answered from the first call.
+            guard let action = MuseReminders.Action(params["action"]?.string), action == .add || action == .delete else { return nil }
+        case followUpsCommand, calendarCommand:
             guard let action = params["action"]?.string, ["add", "create", "complete"].contains(action) else { return nil }
         default:
             return nil
@@ -341,8 +360,7 @@ actor MuseTools {
             if let refusal = await phoneAccess(.calendar, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
             return calendar(params)
         case Self.remindersCommand:
-            if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
-            return await reminders(params)
+            return await reminders(params, prefs: prefs, watch: watch, deadline: deadline)
         case Self.conversationsCommand:
             guard let data else { return Self.turnedOff }
             if let refusal = await permission(.conversations, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
@@ -361,16 +379,18 @@ actor MuseTools {
     /// Calendar and Reminders also need iOS's permission, which only an app on screen can ask
     /// for. Nil when the source may be read now; otherwise what to tell Muse, after telling the
     /// wearer on the watch what to do.
+    /// `change`: the call changes something (see `permission`).
     private func phoneAccess(
-        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
+        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
+        change: Bool = false
     ) async -> MuseJSON? {
         let what = source == .calendar ? "calendar" : "reminders"
-        if Self.phoneRefused(source) {
+        if phoneRefused(source) {
             _ = await watch.runWatchAction(.notice(Self.refusedNotice(what)), wait: .seconds(5))
             return Self.reply(.phoneRefused, source)
         }
-        if let refusal = await permission(source, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
-        guard !Self.phoneAuthorized(source) else { return nil }
+        if let refusal = await permission(source, prefs: prefs, watch: watch, deadline: deadline, change: change) { return refusal }
+        guard !phoneAuthorized(source) else { return nil }
         // Allowed on the watch, but iOS hasn't been asked: the app asks the next time it is
         // opened, once. The call is held open meanwhile, so the read goes on if the person does
         // it now.
@@ -380,11 +400,11 @@ actor MuseTools {
         var lastStatus = ContinuousClock.now
         await watch.showStatus("Waiting for your iPhone")
         while ContinuousClock.now < deadline {
-            if Self.phoneAuthorized(source) {
+            if phoneAuthorized(source) {
                 log("\(source.rawValue): iOS access given")
                 return nil
             }
-            if Self.phoneRefused(source) { return Self.reply(.phoneRefused, source) }
+            if phoneRefused(source) { return Self.reply(.phoneRefused, source) }
             if ContinuousClock.now - lastStatus > .seconds(30) {
                 // Keeps the watch's screen from deciding Muse went quiet.
                 lastStatus = ContinuousClock.now
@@ -395,12 +415,12 @@ actor MuseTools {
         return Self.reply(.notAnswered, source)
     }
 
-    static func phoneAuthorized(_ source: MuseSource) -> Bool {
-        source == .calendar ? MuseEventKitSource.calendarAuthorized : MuseEventKitSource.remindersAuthorized
+    private func phoneAuthorized(_ source: MuseSource) -> Bool {
+        source == .calendar ? eventKit.calendarAuthorized : eventKit.remindersAuthorized
     }
 
-    static func phoneRefused(_ source: MuseSource) -> Bool {
-        source == .calendar ? MuseEventKitSource.calendarRefused : MuseEventKitSource.remindersRefused
+    private func phoneRefused(_ source: MuseSource) -> Bool {
+        source == .calendar ? eventKit.calendarRefused : eventKit.remindersRefused
     }
 
     /// Word for word from docs/privacy-model.md.
@@ -414,8 +434,8 @@ actor MuseTools {
 
     // MARK: - Asking first
 
-    /// The question the watch asks the first time Muse wants a source.
-    /// Word for word from docs/privacy-model.md (D7a, D7c-e).
+    /// The question the watch asks the first time Muse wants to read a source. A change asks
+    /// `changeQuestion` instead. Word for word from docs/privacy-model.md (D7a, D7c-e).
     static func consentQuestion(_ source: MuseSource) -> String {
         switch source {
         case .conversations:
@@ -433,6 +453,20 @@ actor MuseTools {
     /// How long an Allow Once lasts at most, if no new question ends it first.
     static let allowedOnceFor: TimeInterval = 10 * 60
 
+    /// The question the watch asks the first time in a question that Muse wants to change a
+    /// source, under Ask first. General, not about one item, and it covers reading too, so one
+    /// "add eggs to my grocery list" is one prompt (Roger, 2026-10-22). Word for word from
+    /// docs/privacy-model.md, section 4.
+    static func changeQuestion(_ source: MuseSource) -> String {
+        "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
+    }
+
+    /// How many changes one Allow Once covers; past that the watch asks again.
+    static let changesPerAllowOnce = 10
+    /// How long a change Allow Once or Not Now lasts at most, if no new question ends it first:
+    /// the window in which Muse may act for a question asked on the watch.
+    static let changeSession: TimeInterval = MusePushToTalk.toolWindow
+
     /// How a data call ended without reading anything. Each tells Muse plainly what happened, so
     /// it neither retries a refusal nor gives up on something still pending
     /// (docs/privacy-model.md, section 4, "What Muse is told"). Outcomes only: no data goes with
@@ -442,6 +476,8 @@ actor MuseTools {
         case notNow
         case phoneRefused
         case notAnswered
+        /// Not Now on the watch's question about changes: for the rest of this question.
+        case changeDeclined
     }
 
     static func reply(_ refusal: Refusal, _ source: MuseSource) -> MuseJSON {
@@ -456,20 +492,32 @@ actor MuseTools {
                 "Pebble Audio has no access to the person's \(name) in iPhone Settings. They can allow it there. Do not ask again until they do.")
         case .notAnswered:
             return error("The person has not answered yet. You can ask again later.")
+        case .changeDeclined:
+            return error(
+                "The person said not now to changing their \(name), so nothing was changed. Do not try another change in this conversation.")
         }
     }
 
     /// Nil when `source` may be used now: allowed already, or the wearer allows it on the watch.
     /// The call is held open while the watch asks, up to `deadline`.
+    ///
+    /// `change`: the call changes something. Under Ask first the watch asks `changeQuestion`
+    /// once for the question being answered, even when reading was allowed once: Allow Once
+    /// then lets through `changesPerAllowOnce` changes and the question's reads, and asks again
+    /// after them; Not Now refuses every change for the rest of the question without asking
+    /// again (reads are unaffected); Always Allow makes the source Allowed, Never Allow turns it
+    /// off.
     private func permission(
-        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
+        _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
+        change: Bool = false
     ) async -> MuseJSON? {
         switch prefs.access(source) {
         case .allowed: return nil
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
-        if let since = allowedOnce[source], clock().timeIntervalSince(since) < Self.allowedOnceFor { return nil }
+        if change, let answer = changeAnswered(source) { return answer.refusal }
+        if !change, mayReadOnce(source) { return nil }
         // One question on the watch at a time; a second source waits its turn.
         while prompting {
             guard ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
@@ -481,22 +529,27 @@ actor MuseTools {
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
-        if let since = allowedOnce[source], clock().timeIntervalSince(since) < Self.allowedOnceFor { return nil }
+        if change, let answer = changeAnswered(source) { return answer.refusal }
+        if !change, mayReadOnce(source) { return nil }
         prompting = true
         defer { prompting = false }
         let left = Int((deadline - ContinuousClock.now).components.seconds)
         guard left >= 1 else { return Self.reply(.notAnswered, source) }
-        log("asking the wearer about \(source.rawValue)")
+        log("asking the wearer about \(change ? "changing" : "reading") \(source.rawValue)")
         await watch.showStatus("Asking you first")
         // The watch keeps the question up until a few seconds before the call's own limit.
         let shown = min(max(left - 10, 10), 300)
         let result = await watch.runWatchAction(
-            .choose(question: Self.consentQuestion(source), options: Self.consentOptions, timeoutSeconds: shown),
+            .choose(
+                question: change ? Self.changeQuestion(source) : Self.consentQuestion(source), options: Self.consentOptions,
+                timeoutSeconds: shown),
             wait: .seconds(shown + 8))
         switch (result?.status, result?.value) {
         case (.done?, 0?):
             allowedOnce[source] = clock()
-            log("\(source.rawValue): allowed once on the watch")
+            // This change is the first of the ones allowed.
+            if change { changesAllowedOnce[source] = (clock(), Self.changesPerAllowOnce - 1) }
+            log("\(source.rawValue): \(change ? "changes" : "reading") allowed once on the watch")
             return nil
         case (.done?, 1?):
             preferences.update { $0.dataAccess[source] = .allowed }
@@ -507,12 +560,38 @@ actor MuseTools {
             log("\(source.rawValue): turned off on the watch")
             return Self.reply(.notAllowed, source)
         case (.done?, _), (.declined?, _):
-            log("\(source.rawValue): not now")
-            return Self.reply(.notNow, source)
+            log("\(source.rawValue): not now\(change ? " to changes" : "")")
+            if change { changesDeclined[source] = clock() }
+            return Self.reply(change ? .changeDeclined : .notNow, source)
         default:
             log("\(source.rawValue): no answer on the watch")
             return Self.reply(.notAnswered, source)
         }
+    }
+
+    private struct ChangeAnswer {
+        /// Nil: go ahead.
+        let refusal: MuseJSON?
+    }
+
+    /// How the wearer already answered about changes in this question: nil when the watch must
+    /// ask. An allowed change uses up one of those Allow Once let through.
+    private func changeAnswered(_ source: MuseSource) -> ChangeAnswer? {
+        let now = clock()
+        if let since = changesDeclined[source], now.timeIntervalSince(since) < Self.changeSession {
+            return ChangeAnswer(refusal: Self.reply(.changeDeclined, source))
+        }
+        if let grant = changesAllowedOnce[source], now.timeIntervalSince(grant.at) < Self.changeSession, grant.left > 0 {
+            changesAllowedOnce[source] = (grant.at, grant.left - 1)
+            return ChangeAnswer(refusal: nil)
+        }
+        return nil
+    }
+
+    /// Allowed once on the watch for the question being answered.
+    private func mayReadOnce(_ source: MuseSource) -> Bool {
+        guard let since = allowedOnce[source] else { return false }
+        return clock().timeIntervalSince(since) < Self.allowedOnceFor
     }
 
     // MARK: - Sources
@@ -609,23 +688,170 @@ actor MuseTools {
         }
     }
 
-    private func reminders(_ params: MuseJSON) async -> MuseJSON {
-        switch params["action"]?.string?.lowercased() {
-        case "list"?, nil:
-            let found = await eventKit.reminders(list: params["list"]?.string, limit: 40)
-            return ["ok": true, "payload": ["reminders": .array(found.map { Self.json($0) })]]
-        case "add"?:
-            guard let title = params["title"]?.string, !title.isEmpty else { return Self.error("add needs a title") }
-            let due = Self.date(params["due"]?.string)
-            do {
-                let reminder = try eventKit.addReminder(title: title, due: due?.date, dueHasTime: due?.hasTime ?? false, list: params["list"]?.string)
-                return ["ok": true, "payload": ["added": Self.json(reminder)]]
-            } catch {
-                return Self.error("The reminder couldn't be added.")
-            }
-        default:
-            return Self.error("action must be list or add")
+    // MARK: - Reminders
+
+    /// Reading asks the way every source does. Changes (add, edit, delete) are asked about once
+    /// per question under Ask first (see `permission`); a list Muse names that isn't there is an
+    /// error naming the lists, never an add to another list.
+    private func reminders(
+        _ params: MuseJSON, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant
+    ) async -> MuseJSON {
+        guard let action = MuseReminders.Action(params["action"]?.string) else {
+            return Self.error("action must be lists, read, add, edit or delete")
         }
+        guard action.changes else {
+            if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
+            return action == .lists ? reminderLists() : await readReminders(params)
+        }
+        let request: MuseReminders.Request
+        switch MuseReminders.request(action, params) {
+        case .invalid(let message): return Self.error(message)
+        case .request(let parsed): request = parsed
+        }
+        guard prefs.access(.reminders) != .off else { return Self.reply(.notAllowed, .reminders) }
+        if eventKit.remindersAuthorized {
+            // A call that can't happen (no such list or reminder) isn't asked about on the
+            // watch. Lists' names go to Muse only when it may read the reminders already.
+            let namesAllowed = prefs.access(.reminders) == .allowed || mayReadOnce(.reminders)
+            if case .failed(let reply) = resolve(request, namesAllowed: namesAllowed) { return reply }
+        }
+        if let refusal = await phoneAccess(.reminders, prefs: prefs, watch: watch, deadline: deadline, change: true) {
+            return refusal
+        }
+        // Again: the person may have taken a while, and iOS access may be new.
+        switch resolve(request, namesAllowed: true) {
+        case .failed(let reply): return reply
+        case .ready(let ready): return apply(ready)
+        }
+    }
+
+    private struct ReadyChange {
+        let request: MuseReminders.Request
+        /// Edit and delete: the reminder as it is.
+        let existing: MuseEventKitSource.Reminder?
+        /// Add: the list it goes to. Edit: the list it moves to.
+        let list: MuseEventKitSource.ReminderList?
+    }
+
+    private enum Resolution {
+        case ready(ReadyChange)
+        case failed(MuseJSON)
+    }
+
+    /// The list and the reminder a change means, from the phone as it is now.
+    private func resolve(_ request: MuseReminders.Request, namesAllowed: Bool) -> Resolution {
+        let lists = eventKit.reminderLists()
+        var list: MuseEventKitSource.ReminderList?
+        if let name = request.list {
+            switch MuseReminders.match(name, in: lists) {
+            case .found(let found): list = found
+            case .ambiguous(let candidates): return .failed(MuseReminders.ambiguousList(name, candidates, namesAllowed: namesAllowed))
+            case .notFound: return .failed(MuseReminders.noSuchList(name, lists, namesAllowed: namesAllowed))
+            }
+        } else if request.action == .add {
+            guard let fallback = lists.first(where: \.isDefault) else {
+                return .failed(Self.error("There is no default reminders list. Name the list to add to."))
+            }
+            list = fallback
+        }
+        if let list, !list.canChange { return .failed(MuseReminders.listCannotChange(list.name)) }
+        var existing: MuseEventKitSource.Reminder?
+        if request.action != .add {
+            guard let id = request.id, let found = eventKit.reminder(id: id) else { return .failed(MuseReminders.noSuchReminder) }
+            if lists.first(where: { $0.id == found.listID })?.canChange == false {
+                return .failed(MuseReminders.listCannotChange(found.list))
+            }
+            existing = found
+        }
+        return .ready(ReadyChange(request: request, existing: existing, list: list))
+    }
+
+    /// Makes the change and says what is now true.
+    private func apply(_ ready: ReadyChange) -> MuseJSON {
+        let request = ready.request
+        do {
+            switch request.action {
+            case .add:
+                var due: (Date, Bool)?
+                if case .set(let date, let hasTime)? = request.due { due = (date, hasTime) }
+                let added = try eventKit.addReminder(
+                    title: request.title ?? "", due: due?.0, dueHasTime: due?.1 ?? false, notes: request.notes,
+                    listID: ready.list?.id)
+                log("reminders: added to a list")
+                return ["ok": true, "payload": ["added": MuseReminders.json(added)]]
+            case .edit:
+                guard let before = ready.existing else { return MuseReminders.noSuchReminder }
+                var change = MuseEventKitSource.ReminderChange(
+                    title: request.title, notes: request.notes, listID: ready.list?.id, completed: request.completed)
+                switch request.due {
+                case .set(let date, let hasTime)?: change.due = .set(date, hasTime: hasTime)
+                case .clear?: change.due = .clear
+                case nil: break
+                }
+                let after = try eventKit.updateReminder(id: before.id, change)
+                log("reminders: edited one")
+                var payload: [String: MuseJSON] = [
+                    "updated": MuseReminders.json(after),
+                    "changed": .array(MuseReminders.changedFields(from: before, to: after).map { .string($0) }),
+                ]
+                if after.listID != before.listID { payload["moved_from"] = .string(before.list) }
+                if request.completed == true, !after.completed {
+                    // A repeating reminder marked done comes back as its next time.
+                    payload["note"] = "It repeats: this time is done, and it is now due again at the date shown."
+                }
+                return ["ok": true, "payload": .object(payload)]
+            case .delete:
+                guard let before = ready.existing else { return MuseReminders.noSuchReminder }
+                let deleted = try eventKit.deleteReminder(id: before.id)
+                log("reminders: deleted one")
+                return ["ok": true, "payload": ["deleted": MuseReminders.json(deleted)]]
+            case .lists, .read:
+                return Self.error("action must be lists, read, add, edit or delete")
+            }
+        } catch MuseEventKitSource.Failure.noSuchReminder {
+            return MuseReminders.noSuchReminder
+        } catch MuseEventKitSource.Failure.listCannotChange {
+            return MuseReminders.listCannotChange(ready.list?.name ?? ready.existing?.list ?? "")
+        } catch {
+            switch request.action {
+            case .add: return Self.error("The reminder couldn't be added. Nothing was changed.")
+            case .delete: return Self.error("The reminder couldn't be deleted.")
+            default: return Self.error("The reminder couldn't be changed.")
+            }
+        }
+    }
+
+    private func reminderLists() -> MuseJSON {
+        let lists = eventKit.reminderLists()
+        guard !lists.isEmpty else { return Self.error("There are no reminders lists on the phone.") }
+        var payload: [String: MuseJSON] = ["lists": .array(lists.map { MuseReminders.json($0) })]
+        if let fallback = lists.first(where: \.isDefault) { payload["default_list"] = .string(fallback.name) }
+        return ["ok": true, "payload": .object(payload)]
+    }
+
+    /// The most reminders one read sends.
+    static let remindersPerRead = 60
+
+    private func readReminders(_ params: MuseJSON) async -> MuseJSON {
+        var listIDs: [String]?
+        var listName: String?
+        if let name = params["list"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            let lists = eventKit.reminderLists()
+            switch MuseReminders.match(name, in: lists) {
+            case .found(let list):
+                listIDs = [list.id]
+                listName = list.name
+            case .ambiguous(let candidates): return MuseReminders.ambiguousList(name, candidates, namesAllowed: true)
+            case .notFound: return MuseReminders.noSuchList(name, lists, namesAllowed: true)
+            }
+        }
+        let since = MuseReminders.bool(params["include_completed"]) == true ? clock().addingTimeInterval(-30 * 24 * 60 * 60) : nil
+        let found = MuseReminders.ordered(await eventKit.reminders(inLists: listIDs, completedSince: since))
+        let shown = found.prefix(Self.remindersPerRead)
+        var payload: [String: MuseJSON] = ["reminders": .array(shown.map { MuseReminders.json($0) })]
+        if let listName { payload["list"] = .string(listName) }
+        if found.count > shown.count { payload["not_shown"] = .number(Double(found.count - shown.count)) }
+        return ["ok": true, "payload": .object(payload)]
     }
 
     private func conversations(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
@@ -708,7 +934,7 @@ actor MuseTools {
         let message = result["error"]?.string ?? ""
         if message == turnedOff["error"]?.string { return .declined }
         for source in MuseSource.allCases {
-            if [Refusal.notAllowed, .notNow, .phoneRefused].contains(where: { reply($0, source)["error"]?.string == message }) {
+            if [Refusal.notAllowed, .notNow, .phoneRefused, .changeDeclined].contains(where: { reply($0, source)["error"]?.string == message }) {
                 return .declined
             }
         }
@@ -816,12 +1042,6 @@ actor MuseTools {
             "calendar": .string(event.calendar),
         ]
         if let location = event.location { entry["location"] = .string(location) }
-        return .object(entry)
-    }
-
-    static func json(_ reminder: MuseEventKitSource.Reminder) -> MuseJSON {
-        var entry: [String: MuseJSON] = ["title": .string(reminder.title), "list": .string(reminder.list)]
-        if let due = reminder.due { entry["due"] = .string(isoFormatter.string(from: due)) }
         return .object(entry)
     }
 

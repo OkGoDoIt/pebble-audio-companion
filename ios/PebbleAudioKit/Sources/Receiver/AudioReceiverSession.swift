@@ -1424,9 +1424,57 @@ public actor AudioReceiverSession {
             assistantHandler?(.pttEvent(event))
         case let result as WatchActionResult:
             assistantHandler?(.watchActionResult(result))
+        case let mark as MomentMark:
+            let moment = markedMoment(mark)
+            log("moment \(mark.markId) marked on the watch"
+                + (moment.onAudioClock ? "" : " (watch clock)"))
+            momentHandler?(moment)
         default:
             break
         }
+    }
+
+    // --- Marked moments (protocol Section 4.6) ------------------------------------------------
+
+    /// A moment the wearer marked as important on the watch, placed on the wall clock.
+    public struct MarkedMoment: Sendable, Equatable {
+        /// The watch's own name for it: its counter with its clock at the mark.
+        public let id: String
+        /// When it was marked (epoch ms): on the recording's own clock when the stream it names
+        /// is the one open here, which is the clock its transcript is on; the watch's otherwise.
+        public let wallMs: Int64
+        public let onAudioClock: Bool
+        public let receivedAtMs: Int64
+    }
+
+    private var momentHandler: (@Sendable (MarkedMoment) -> Void)?
+
+    /// Receives every MOMENT_MARK, on the session's executor: hand the value on and return.
+    public func setMomentHandler(_ handler: (@Sendable (MarkedMoment) -> Void)?) {
+        momentHandler = handler
+    }
+
+    private func markedMoment(_ mark: MomentMark) -> MarkedMoment {
+        let now = clock.nowMs
+        var wallMs = Int64(clamping: mark.wallMs)
+        var onAudioClock = false
+        if mark.whileRecording, let stream, stream.streamId == mark.streamId,
+            stream.sampleRateHz > 0
+        {
+            wallMs = Int64(clamping: stream.start.startTimeMs)
+                + Int64(clamping: mark.sampleIndex * 1000 / stream.sampleRateHz)
+            onAudioClock = true
+        }
+        // A watch whose clock was never set counts from 2010 (`SegmentMeta.sampleClockAnchorMs`);
+        // a mark is never older than the minute or so the watch holds it, so it is placed at
+        // its arrival.
+        if wallMs < SegmentMeta.earliestPlausibleWallMs {
+            wallMs = now
+            onAudioClock = false
+        }
+        return MarkedMoment(
+            id: "watch-\(mark.wallMs)-\(mark.markId)", wallMs: wallMs, onAudioClock: onAudioClock,
+            receivedAtMs: now)
     }
 
     // --- Push-to-talk and watch actions (protocol Sections 4.4 and 4.5) --------------------------

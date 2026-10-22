@@ -137,6 +137,71 @@ import Testing
         #expect(try await store.list(scope: .open, nowMs: now).map(\.id) == [live.id, deferred.id])
     }
 
+    /// Reminders and the review (`docs/reminders.md`): a suggestion is not on the working list
+    /// until the person says yes; skipping keeps it; the day's summary lists both.
+    @Test func aSuggestionIsARemindAwayAndSkippingKeepsIt() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = FollowUpStore(db: db)
+        let now: Int64 = 1_788_000_000_000
+        for id in ["a", "b"] {
+            try await store.upsertExtracted(
+                FollowUp(
+                    id: id, text: "task \(id)", done: false, sourceConversationId: "c",
+                    sourceSegmentId: nil, createdAtMs: now - 1_000, stage: .suggested))
+        }
+        #expect(try await store.suggestedCount() == 2)
+        #expect(try await store.list(scope: .open, nowMs: now).isEmpty)
+        #expect(try await store.openCount(nowMs: now) == 0)
+
+        try await store.setStage(id: "a", .reminder, nowMs: now)
+        try await store.setStage(id: "b", .skipped, nowMs: now)
+        #expect(try await store.suggestedCount() == 0)
+        #expect(try await store.list(scope: .open, nowMs: now).map(\.id) == ["a"])
+        #expect(try await store.load(id: "b")?.archivedAtMs == nil, "skipped is kept")
+        let day = try await store.decided(fromMs: now - 60_000, toMs: now + 60_000)
+        #expect(day.map(\.id).sorted() == ["a", "b"])
+
+        // A second extraction of the same follow-up never undoes the person's answer.
+        try await store.upsertExtracted(
+            FollowUp(
+                id: "b", text: "task b", done: false, sourceConversationId: "c",
+                sourceSegmentId: nil, createdAtMs: now - 1_000, stage: .suggested))
+        #expect(try await store.load(id: "b")?.stage == .skipped)
+    }
+
+    /// The re-extraction of 2026-10-21 put several follow-ups on the list twice, reworded.
+    @Test func copiesOfOneFollowUpAreFiledAwayOldestKept() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = FollowUpStore(db: db)
+        func put(_ id: String, _ text: String, _ quote: String?, _ conversation: String?, _ at: Int64)
+            async throws
+        {
+            try await store.upsertExtracted(
+                FollowUp(
+                    id: id, text: text, done: false, sourceConversationId: conversation,
+                    sourceSegmentId: nil, createdAtMs: at, quote: quote))
+        }
+        try await put("desk-1", "Get a computer desk and chair.", "I need a desk", "c1", 1)
+        try await put("desk-2", "Buy a computer desk and chair.", "I need a desk", "c1", 2)
+        try await put("shirt-1", "Buy a black shirt", nil, nil, 3)
+        try await put("shirt-2", "buy a black shirt.", nil, nil, 4)
+        try await put("other", "Call the plumber", "call the plumber", "c2", 5)
+        let filed = try await db.writer.write { try FollowUpStore.fileAwayCopies($0, nowMs: 9) }
+        #expect(filed == 2)
+        let open = try await store.list(scope: .open, nowMs: 10).map(\.id).sorted()
+        #expect(open == ["desk-1", "other", "shirt-1"])
+    }
+
+    /// What an assistant was asked to add is a reminder at once.
+    @Test func anAssistantsItemIsAReminder() async throws {
+        let store = FollowUpStore(db: try AppDatabase.inMemory())
+        try await store.insertFromAssistant(
+            FollowUp(
+                id: "m", text: "Buy eggs", done: false, sourceConversationId: nil,
+                sourceSegmentId: nil, createdAtMs: 5, stage: .suggested))
+        #expect(try await store.load(id: "m")?.stage == .reminder)
+    }
+
     /// The age rule's memory of the person: anything they have answered is theirs, not a
     /// clock's. Restore used to leave no trace, so the next pass filed the row away again.
     @Test func anythingThePersonTouchesIsOffTheAgeRule() async throws {
@@ -148,7 +213,7 @@ import Testing
             try await store.upsertExtracted(
                 FollowUp(
                     id: id, text: id, done: false, sourceConversationId: nil,
-                    sourceSegmentId: nil, createdAtMs: old))
+                    sourceSegmentId: nil, createdAtMs: old, stage: .suggested))
         }
         try await store.setArchived(id: "a", true, nowMs: now)
         try await store.setArchived(id: "a", false, nowMs: now)

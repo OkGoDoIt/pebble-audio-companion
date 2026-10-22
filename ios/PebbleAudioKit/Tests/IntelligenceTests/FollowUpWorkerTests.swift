@@ -281,6 +281,84 @@ private final class LoadCounter: @unchecked Sendable {
         #expect(settled?.itemCount == 0)
     }
 
+    /// Synthetic: a person asking the recording, with nobody answering, to remember a
+    /// project idea described just before the request.
+    private static let askedText =
+        String(repeating: "We talked about the week and what is left to do. ", count: 4)
+        + "I want to add a dark mode to the garden planner app. "
+        + "Please help me remember to follow up on this. Create a follow-up, okay? "
+        + String(repeating: "Then the conversation moved on to other things. ", count: 4)
+
+    private static let askedItem = """
+        {"items": [
+          {"task": "Add a dark mode to the garden planner app",
+           "quote": "I want to add a dark mode to the garden planner app.",
+           "ifForgotten": "the idea is lost", "dueDate": "", "confidence": "high"}
+        ]}
+        """
+
+    /// The length the worker measures a one-member conversation at: its text, trimmed.
+    private static func combined(_ text: String) -> Int {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).count
+    }
+
+    // A spoken request is listed for the model above the transcript, and what it finds beside
+    // one is marked as asked for, so curation keeps it.
+    @Test func aSpokenRequestIsNamedToTheModelAndItsItemMarked() async throws {
+        let provider = ScriptedAiProvider(response: Self.askedItem)
+        _ = try await worker(provider).extract(
+            [conversation("conv-1", members: [meta("seg-1")])],
+            transcriptOf: { self.transcript($0, text: Self.askedText) })
+        let body = provider.requests.first?.transcripts.first?.text ?? ""
+        #expect(body.contains("Asked out loud to be remembered"))
+        #expect(body.contains("\"Please help me remember to follow up on this.\""))
+        #expect(body.contains("\"Create a follow-up, okay?\""))
+        let rows = try await candidates.list(conversationId: "conv-1")
+        #expect(rows.map(\.askedFor) == [true])
+
+        // An ordinary conversation says nothing of the kind, and marks nothing.
+        let plain = ScriptedAiProvider(response: Self.twoItems)
+        _ = try await worker(plain).extract(
+            [conversation("conv-2", members: [meta("seg-2")])],
+            transcriptOf: { self.transcript($0) })
+        let plainBody = plain.requests.first?.transcripts.first?.text ?? ""
+        #expect(plainBody.contains("Recorded:"))
+        #expect(plainBody.contains("Asked out loud") == false)
+        #expect(try await candidates.list(conversationId: "conv-2").allSatisfy { !$0.askedFor })
+    }
+
+    // Settled with nothing found before the prompt knew about spoken requests: read once more
+    // if a request is in it, and never again either way.
+    @Test func aConversationSettledBeforeRequestsCountedIsReadOnceMore() async throws {
+        let old = FollowUpExtractionState(
+            conversationId: "conv-asked", sourceCharCount: Self.combined(Self.askedText),
+            settled: true,
+            itemCount: 0, updatedAtMs: clock.now - 60_000, requestsChecked: false)
+        try await state.save(old)
+        try await state.save(
+            FollowUpExtractionState(
+                conversationId: "conv-plain", sourceCharCount: Self.combined(Self.longText),
+                settled: true, itemCount: 0, updatedAtMs: clock.now - 60_000,
+                requestsChecked: false))
+        let provider = ScriptedAiProvider(response: Self.askedItem)
+        let worker = worker(provider)
+        let convs = [
+            conversation("conv-asked", members: [meta("seg-asked")]),
+            conversation("conv-plain", members: [meta("seg-plain")]),
+        ]
+        let transcriptOf: (String) -> SegmentTranscript? = {
+            self.transcript($0, text: $0 == "seg-asked" ? Self.askedText : Self.longText)
+        }
+        for _ in 0..<3 {
+            _ = try await worker.extract(convs, transcriptOf: transcriptOf)
+        }
+        #expect(provider.runCount == 1)
+        #expect(try await candidates.list(conversationId: "conv-asked").count == 1)
+        #expect(try await state.load("conv-asked")?.requestsChecked == true)
+        #expect(try await state.load("conv-plain")?.requestsChecked == true)
+        #expect(try await state.load("conv-plain")?.settled == true)
+    }
+
     @Test func aShortTranscriptSettlesWithoutACall() async throws {
         let provider = ScriptedAiProvider(response: Self.twoItems)
         _ = try await worker(provider).extract(

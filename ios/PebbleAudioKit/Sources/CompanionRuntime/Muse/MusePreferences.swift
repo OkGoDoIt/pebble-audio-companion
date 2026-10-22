@@ -139,6 +139,17 @@ public final class MusePreferencesStore: @unchecked Sendable {
         }
     }
 
+    /// Starts the watch's questions on a new chat, for when Muse will no longer take messages on
+    /// the old one. Returns the new id.
+    @discardableResult
+    public func rotateWatchChatID() -> String {
+        lock.withLock {
+            let id = UUID().uuidString.lowercased()
+            defaults.set(id, forKey: Key.watchChatID)
+            return id
+        }
+    }
+
     private static func load(_ defaults: UserDefaults) -> MusePreferences {
         var value = MusePreferences()
         if defaults.object(forKey: Key.voiceLevel) != nil {

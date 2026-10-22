@@ -608,6 +608,8 @@ enum Copy {
         // Inline markers — interruptions render where they happened, never as banners.
         /// e.g. "quiet for 40 sec" / "quiet for 2 min".
         static func quietFor(_ duration: String) -> String { "quiet for \(duration)" }
+        /// A moment marked on the watch, in the transcript where it falls.
+        static func markedAt(_ time: String) -> String { "marked at \(time)" }
         /// e.g. "2 sec missing · Bluetooth hiccup".
         static func missingMarker(_ duration: String) -> String {
             "\(duration) missing · Bluetooth hiccup"
