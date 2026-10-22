@@ -270,8 +270,19 @@ struct PrivacyModelTests {
         let three = muse([.calendar: .allowed, .reminders: .allowed, .followUps: .allowed])
         #expect(
             three.whereItGoesFooters.first?.contains(
-                "Muse can add events, reminders, and follow-ups you ask for. It can change or delete reminders too, never events or follow-ups."
+                "Muse can add events and reminders you ask for. It can change or delete reminders too, never events."
             ) == true)
+        #expect(three.whereItGoesFooters.first?.contains("Muse can turn follow-ups into reminders or skip them when you ask.") == true)
+        #expect(three.whereItGoesFooters.first?.contains("before it changes") == false)
+
+        // Follow-ups alone, Ask first: nothing to add, only to decide, asked once per question.
+        let followUps = muse([.followUps: .ask]).whereItGoesFooters.first ?? ""
+        #expect(!followUps.contains("Muse can add"))
+        #expect(followUps.hasSuffix(
+            "Muse can turn follow-ups into reminders or skip them when you ask. "
+                + "Muse asks on your watch before it changes your follow-ups, once per question."))
+        let both = muse([.reminders: .ask, .followUps: .ask]).whereItGoesFooters.first ?? ""
+        #expect(both.contains("Muse asks on your watch before it changes your reminders or your follow-ups, once per question."))
 
         // Reminders alone, Ask first: changes are asked about once per question.
         let reminders = muse([.reminders: .ask]).whereItGoesFooters.first ?? ""

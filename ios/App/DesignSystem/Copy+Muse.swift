@@ -159,8 +159,9 @@ extension Copy {
         static let seeHealth = "Health"
         static let seeCalendar = "Calendar"
         static let seeReminders = "Reminders"
-        static let seeRemindersSubtitle = "Muse can also add, change, and delete them."
+        static let seeRemindersSubtitle = "In Pebble Audio and Apple Reminders. Muse can also add, change, and delete them."
         static let seeFollowUps = "Follow-ups"
+        static let seeFollowUpsSubtitle = "Waiting for your review. Muse can turn one into a reminder or skip it."
         static let accessAsk = "Ask first"
         static let accessAllowed = "Allowed"
         static let accessOff = "Off"
@@ -168,6 +169,8 @@ extension Copy {
         static let accessAskFooter = "The first time Muse wants it, your watch asks you."
         static let accessAskFooterReminders =
             "The first time Muse wants to read them, your watch asks you. It also asks once per question before changing them."
+        static let accessAskFooterFollowUps =
+            "The first time Muse wants to read them, your watch asks you. It also asks once per question before turning them into reminders or skipping them."
         static let noPhoneAccess = "No access in iPhone Settings"
         static let allowAccess = "Allow Access"
         static let openSettings = "Open Settings"

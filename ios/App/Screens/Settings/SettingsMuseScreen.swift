@@ -423,7 +423,9 @@ struct SettingsMuseScreen: View {
                 sourceRow(
                     .reminders, Copy.Muse.seeReminders, subtitle: Copy.Muse.seeRemindersSubtitle,
                     phone: model.remindersPermission, askFooter: Copy.Muse.accessAskFooterReminders)
-                sourceRow(.followUps, Copy.Muse.seeFollowUps)
+                sourceRow(
+                    .followUps, Copy.Muse.seeFollowUps, subtitle: Copy.Muse.seeFollowUpsSubtitle,
+                    askFooter: Copy.Muse.accessAskFooterFollowUps)
             }
             SettingsFooter(text: Copy.Muse.seeFooter)
         }
