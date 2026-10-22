@@ -31,9 +31,9 @@ DAY = dict(found=True, day=C['day'], timeZone=C['timeZone'], weekday='Wednesday'
            coverage=dict(recordedMinutes=38, lostMinutes=.4, spans=[dict(kind='recorded', startedAt=C['startedAt'], endedAt=C['endedAt']),
              dict(kind='off', startedAt=C['endedAt'], endedAt=SECOND['startedAt']),
              dict(kind='recorded', startedAt=SECOND['startedAt'], endedAt=SECOND['endedAt'])]))
-DAYS = dict(from_='2026-10-19', to='2026-10-21', days=[dict(day=f'2026-10-{n}', headline='Plans and conversations',
+DAYS = dict(from_='2026-10-15', to='2026-10-21', days=[dict(day=f'2026-10-{n}', headline='Plans and conversations',
             lineSummary=OVERVIEW, conversationCount=4, recordedMinutes=65+n, quietMinutes=14, lostMinutes=.4 if n==21 else 0,
-            url='https://example.invalid/day') for n in (19,20,21)])
+            url='https://example.invalid/day') for n in range(15,22)])
 DAYS['from']=DAYS.pop('from_')
 CLIP = dict(status='requested', conversationId='preview', title=C['title'], startedAt=C['startedAt'],
             endedAt=C['endedAt'], timeZone=C['timeZone'], url=C['url'])
@@ -91,6 +91,7 @@ class Handler(BaseHTTPRequestHandler):
             if scenario=='long': data['overview']=LONG
             if scenario=='days' and name=='day-timeline': data=DAYS
             if scenario=='empty': data=dict(found=False, status='unavailable', reason='notFound', summary='No conversation was found.', day=C['day'])
+            if scenario=='empty' and name=='day-timeline': data=dict(DAY, conversations=[], coverage={'spans':[]})
             boot='''<script>
 window.addEventListener('error',e=>parent.postMessage({previewError:e.message},'*'));
 window.addEventListener('unhandledrejection',e=>parent.postMessage({previewError:String(e.reason)},'*'));

@@ -51,10 +51,17 @@ function hostApply(context = {}) {
 
 export function connectHost({ name, onResult }) {
   let rendered = false;
+  let lastResult = null;
   const render = (result) => {
     if (!result) return;
+    const value = { structuredContent: result.structuredContent ?? null, _meta: result._meta ?? {}, content: result.content ?? [] };
+    // Host theme/size updates may repeat the current result. Keep expansion, selection, and
+    // audio playback intact unless the tool's data actually changed.
+    const key = JSON.stringify(value);
+    if (key === lastResult) return;
+    lastResult = key;
     rendered = true;
-    onResult({ structuredContent: result.structuredContent ?? null, _meta: result._meta ?? {}, content: result.content ?? [] });
+    onResult(value);
   };
 
   window.addEventListener('message', (event) => {

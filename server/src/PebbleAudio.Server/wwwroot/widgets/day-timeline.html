@@ -72,6 +72,7 @@ const hourStart = (ms, tz) => {
 let selected = 0;
 
 function linkify(el, url) {
+  if (!el) return;
   el.addEventListener('click', (e) => { e.preventDefault(); openLink(url); });
 }
 
@@ -110,7 +111,7 @@ function dayView(d) {
     <div id="day-content">
     <p class="w-kicker">${esc(longDay(d.day))} · ${esc(place(tz))} time</p>
     <h1 class="w-title">${esc(d.recap?.headline || d.recap?.lineSummary || `${d.weekday || 'The day'}`)}</h1>
-    <p class="w-line">${esc(line)}${lost > 0 ? `<span> · </span><span class="loss">${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
+    <p class="w-line">${esc(line)}${lost > 0 ? `<span class="loss"> · ${esc(duration(lost * 60, { seconds: true }))} missing</span>` : ''}</p>
     ${conversations.length ? '<p class="day-help">Choose a conversation on the timeline, or use the arrows below.</p>' : ''}
     ${conversations.length ? `<div class="tlw" role="slider" tabindex="0" aria-label="Conversations through the day" aria-valuemin="1" aria-valuemax="${conversations.length}">${laneHtml}</div><div class="sel" id="sel"></div>` : `<div class="tlw">${laneHtml}</div>`}
     </div><div class="w-foot">${expandButton('day-content')}<a class="w-open" id="open-day" href="${esc(d.url)}" target="_blank" rel="noopener">Open the day ${OPEN}</a></div>`;
@@ -124,7 +125,7 @@ function select(d, i) {
   root.querySelectorAll('.blk').forEach((b) => b.classList.toggle('on', Number(b.dataset.i) === selected));
   const tz = c.timeZone || d.timeZone;
   const start = instant(c.startedAt), end = instant(c.endedAt);
-  const lost = c.lostMinutes > 0 ? `<span> · </span><span class="loss">${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
+  const lost = c.lostMinutes > 0 ? `<span class="loss"> · ${esc(duration(c.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
   const title = c.title || (c.kind === 'noConversation' ? (c.descriptor ? c.descriptor[0].toUpperCase() + c.descriptor.slice(1) : 'No conversation') : 'Not summarized yet');
   const slider = root.querySelector('.tlw');
   slider.setAttribute('aria-valuenow', String(selected + 1));
@@ -203,7 +204,7 @@ function daysView(r) {
 function selectDay(r, i) {
   const d = r.days[i];
   root.querySelectorAll('.day-btn').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.i) === i)));
-  const lost = d.lostMinutes > 0 ? `<span> · </span><span class="loss">${esc(duration(d.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
+  const lost = d.lostMinutes > 0 ? `<span class="loss"> · ${esc(duration(d.lostMinutes * 60, { seconds: true }))} missing</span>` : '';
   const sel = root.querySelector('#sel');
   sel.innerHTML = `
     <p class="w-kicker">${esc(longDay(d.day))}</p>
@@ -219,6 +220,7 @@ function selectDay(r, i) {
 function render({ structuredContent: r }) {
   if (!r) return;
   root.classList.remove('is-expanded');
+  root.classList.toggle('days-widget', Array.isArray(r.days));
   if (Array.isArray(r.days)) {
     root.innerHTML = daysView(r);
     root.querySelectorAll('.day-btn').forEach((b) => b.addEventListener('click', () => selectDay(r, Number(b.dataset.i))));

@@ -1,9 +1,9 @@
-# Compact chat widgets — local review candidate
+# Compact chat widgets — design of record
 
 Roger reported an unlabeled conversation strip and a useful summary cut off with no way to read
 it. He then clarified two priorities: recording gaps should be quieter, and widgets should stay
-small until deliberately expanded. This candidate follows those corrections. It is not deployed
-or an approved replacement for the existing design yet.
+small until deliberately expanded. Roger authorized completing and shipping this direction after our own visual review on October 22.
+Compact by default with deliberate expansion is the widget design of record.
 
 ## Behavior
 
@@ -16,6 +16,8 @@ or an approved replacement for the existing design yet.
   tags, and full summary. Day results truncate summaries at the server, so expansion fetches the
   full `get_conversation` summary on demand. A failed fetch retains the preview, offers retry and
   the existing Open action. Detached selections cannot be overwritten by late results.
+- Multi-day: compact mode shows three day rows and the selected day’s title/count; expansion
+  reveals all rows and the recap.
 - Clip: compact playback controls; expansion reveals the scrubber and transcript. The transcript
   has a visible explanation of its click-to-play action. Short clips now have endpoint labels
   and seconds in their header. Missing-date results render their unavailable message safely.
@@ -53,5 +55,9 @@ session's original snapshot is `/tmp/pebble-widget-review-before/wwwroot`.
   no source URL; the widget sources contain no MutationObserver call. This is not a live-host
   integration check.
 - Screenshots are under `server/artifacts/widget-review-2026-10-22/` (local ignored artifacts).
-- Not merged, pushed, deployed, or tested inside a live assistant's widget sandbox. Widget URI
-  versions should be bumped when shipping so hosts fetch the new design.
+- Release preparation: v2 resource URIs with working v1 aliases for existing chats. The existing
+  MCP integration test checks both versions. Two Node behavior tests cover repeated host updates
+  preserving the view and changed tool results still rendering; both CI workflows run them.
+- Final review additionally covered 320 px width. Empty days with no timeline data render safely;
+  repeated tool output on theme/size updates no longer resets expansion or audio playback.
+- Deployment outcome is recorded in the workspace implementation progress log.
