@@ -367,8 +367,9 @@ enum Copy {
     enum Tabs {
         static let today = "Today"
         static let library = "Library"
-        /// "Follow-ups" everywhere — never "Actions", never "Tasks" (Copy.Conversation rule).
-        static let followUps = "Follow-ups"
+        /// The working list is reminders (`docs/reminders.md`): a follow-up is what the app
+        /// noticed, a reminder what the person kept. Never "Actions", never "Tasks".
+        static let followUps = "Reminders"
         static let ask = "Ask"
         static let settings = "Settings"
     }
@@ -452,7 +453,7 @@ enum Copy {
         // Empty states. Each says which kind of empty this is; "All caught up." was shown for
         // "you ticked everything", "this conversation produced nothing", and "the feature has
         // never run", which made it meaningless.
-        static let emptyOpenTitle = "Nothing to follow up on"
+        static let emptyOpenTitle = "No reminders"
         // `emptyOpenBody` / `emptyOpenBodyNoAi` were removed with the manual "+": both ended
         // "you can add your own any time", which stopped being true. Their replacements live in
         // `Copy+FollowUpsExtra.swift` beside the filed-away section that took over this screen.
@@ -1353,8 +1354,8 @@ enum Copy {
         static let statusDescription = "Whether your Pebble is recording, for how long, and a button to pause or resume."
         static let nowName = "Recording now"
         static let nowDescription = "The conversation being recorded: its title, the last thing heard, and recent activity."
-        static let followUpsName = "Follow-ups"
-        static let followUpsDescription = "Open follow-ups from your conversations. Tap one to open it."
+        static let followUpsName = "Reminders"
+        static let followUpsDescription = "Your open reminders. Tap one to open it."
         static let coverageName = "Day coverage"
         static let coverageDescription = "A diagnostic strip of the whole day — what was recorded, quiet, and missing."
 

@@ -14,6 +14,8 @@ struct TodayScreen: View {
     @State private var poppedSpan: CoverageSpanDisplay?
     /// Which follow-up row is showing its swipe actions — at most one at a time, card-wide.
     @State private var openSwipeRow: String?
+    /// What waits for review and what today added, for the Reminders section's top rows.
+    @State private var reminderDigest = ReminderDigestModel()
 
     var body: some View {
         ScrollView {
@@ -47,6 +49,7 @@ struct TodayScreen: View {
         // Its snackbars post to `UndoCenter.shared`, which `RootView` hosts once for the
         // whole app — a second host here would stack one snackbar on top of the other.
         .task { await viewModel.observe() }
+        .task { await reminderDigest.observe() }
     }
 
     // MARK: Route destinations (the Today stack)
@@ -357,10 +360,10 @@ struct TodayScreen: View {
 
     @ViewBuilder
     private var followUpsSection: some View {
-        if !viewModel.visibleFollowUps.isEmpty {
+        if !viewModel.visibleFollowUps.isEmpty || !reminderDigest.isEmpty {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Copy.FollowUps.title)
+                    Text(Copy.Reminders.title)
                         .font(AppFont.sectionTitle)
                         .foregroundStyle(Tokens.label)
                         .accessibilityAddTraits(.isHeader)
@@ -377,16 +380,22 @@ struct TodayScreen: View {
                 }
                 .padding(.top, 4)
 
+                // The way into the review and today's summary, the same two rows the Reminders
+                // tab starts with (`docs/reminders.md`).
+                ReminderEntryCard(digest: reminderDigest) { router.reminderSheet = $0 }
+
                 // The rows draw their own inset: a `SwipeRow`'s buttons have to reach the
                 // card's edges, and a row the card has inset can only slide within that inset.
-                ListCard(rowVerticalPadding: 0, rowHorizontalPadding: 0) {
-                    ForEach(viewModel.visibleFollowUps) { item in
-                        followUpRow(item)
+                if !viewModel.visibleFollowUps.isEmpty {
+                    ListCard(rowVerticalPadding: 0, rowHorizontalPadding: 0) {
+                        ForEach(viewModel.visibleFollowUps) { item in
+                            followUpRow(item)
+                        }
                     }
+                    .animation(
+                        Motion.animation(.snappy(duration: 0.25)),
+                        value: viewModel.visibleFollowUps.map { "\($0.id)\($0.done)" }.joined())
                 }
-                .animation(
-                    Motion.animation(.snappy(duration: 0.25)),
-                    value: viewModel.visibleFollowUps.map { "\($0.id)\($0.done)" }.joined())
             }
         }
     }

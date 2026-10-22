@@ -66,7 +66,7 @@ struct FollowUpsWidgetView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(Copy.Conversation.followUps)
+            Text(Copy.Widgets.followUpsName)
                 .font(AppFont.cardHead)
                 .foregroundStyle(Tokens.label)
             Spacer(minLength: 0)

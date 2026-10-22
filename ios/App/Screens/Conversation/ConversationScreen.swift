@@ -939,10 +939,7 @@ struct FollowUpsSheet: View {
                                             atMs: target.mediaOffsetMs, focus: target.focus))
                                 }
                             } label: {
-                                FollowUpRow(item: item, now: now, showsChevron: false) {
-                                    Haptics.checkedOff()
-                                    toggle(item)
-                                }
+                                StagedFollowUpRow(item: item, now: now) { remind(item) }
                             }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
@@ -960,7 +957,7 @@ struct FollowUpsSheet: View {
                     .background(Tokens.ground)
                     .animation(
                         Motion.animation(.snappy(duration: 0.25)),
-                        value: items.map { "\($0.id)\($0.done)" }.joined())
+                        value: items.map { "\($0.id)\($0.done)\($0.stage)" }.joined())
                 }
             }
             .navigationTitle(Copy.Conversation.followUps)
@@ -977,23 +974,25 @@ struct FollowUpsSheet: View {
 
     private func reload() async {
         now = Date()
-        let all = (try? await source.items(scope: .open)) ?? []
-        let completed = (try? await source.items(scope: .completed)) ?? []
-        let archived = (try? await source.items(scope: .archived)) ?? []
-        // The conversation's own screen shows everything it produced, including what has been
-        // ticked or filed away: on this screen "where did the other one go?" is the question,
-        // not "what is left to do today".
-        items = (all + completed + archived)
-            .filter { $0.sourceConversationId == conversationId }
+        // The conversation's own screen shows everything it produced — waiting for review,
+        // skipped, ticked, filed away: on this screen "where did the other one go?" is the
+        // question, not "what is left to do today". In the order it was said.
+        items = ((try? await source.items(conversationId: conversationId)) ?? [])
+            .sorted { $0.said < $1.said }
         loaded = true
     }
 
-    private func toggle(_ item: FollowUpItem) {
+    /// "Remind Me" on one waiting for review, or one skipped: a reminder now, out of the review.
+    private func remind(_ item: FollowUpItem) {
+        Haptics.checkedOff()
         if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index].done.toggle()
+            items[index].stage = .reminder
         }
         Task {
-            try? await source.setDone(id: item.id, done: !item.done)
+            try? await source.setStage(id: item.id, stage: .reminder)
+            if item.dueAtMs != nil {
+                await ReminderHomeSources.current.askForAlertPermissionIfNeeded()
+            }
             await reload()
         }
     }
@@ -1005,6 +1004,65 @@ struct FollowUpsSheet: View {
             try? await source.delete(id: item.id)
             await reload()
         }
+    }
+}
+
+/// One of a conversation's follow-ups, with where it stands at the trailing edge: "✓ Reminder"
+/// once it is one, and "Remind Me" while it waits for review or after it was skipped.
+private struct StagedFollowUpRow: View {
+    let item: FollowUpItem
+    let now: Date
+    let remind: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.text)
+                    .font(AppFont.callout)
+                    .foregroundStyle(item.done ? Tokens.meta : Tokens.label)
+                    .strikethrough(item.done, color: Tokens.meta)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(meta)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            if item.stage == .reminder {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                    Text(Copy.Reminders.stateReminder).font(AppFont.smallButton)
+                }
+                .foregroundStyle(Tokens.tint)
+                .fixedSize()
+                .accessibilityElement(children: .combine)
+            } else {
+                Button(action: remind) {
+                    Text(Copy.Reminders.remindMeButton)
+                        .font(AppFont.cardHead)
+                        .foregroundStyle(Tokens.tint)
+                        .padding(.horizontal, 14)
+                        .frame(height: 30)
+                        .background(Capsule().fill(Tokens.tintFill12))
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .fixedSize()
+            }
+        }
+    }
+
+    /// Done or filed away when it is; otherwise when it was said.
+    private var meta: String {
+        if item.done || item.isArchived,
+            let line = FollowUpFormatting.metaLine(item, now: now)?.text
+        {
+            return line
+        }
+        return TimeFmt.time(item.said)
     }
 }
 

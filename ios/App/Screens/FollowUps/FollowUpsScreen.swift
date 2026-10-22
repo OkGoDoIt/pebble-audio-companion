@@ -1,7 +1,10 @@
 import AppDB
+import CompanionRuntime
 import SwiftUI
 
-/// The Follow-ups tab.
+/// The Reminders tab (`docs/reminders.md`): the follow-ups waiting for review and what today
+/// added, as two rows at the top, then the reminders themselves. Kept in Apple Reminders it is the
+/// same list, read back, with a quiet way into the Reminders app at its foot.
 ///
 /// This is the one screen in the app that is a plain iOS list, and deliberately so. A follow-up
 /// list is a to-do list; people already know how one behaves — swipe left to get rid of it,
@@ -16,11 +19,20 @@ struct FollowUpsScreen: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model = FollowUpsViewModel()
+    @State private var digest = ReminderDigestModel()
+    @State private var home: ReminderHome = .app
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         content
-            .navigationTitle(Copy.FollowUps.title)
+            .navigationTitle(Copy.Reminders.title)
             .toolbar { toolbar }
+            .task { await digest.observe() }
+            .task {
+                for await preferences in ReminderHomeSources.current.preferenceUpdates() {
+                    if home != preferences.home { home = preferences.home }
+                }
+            }
             .navigationDestination(for: Route.self) { route in
                 destination(for: route)
             }
@@ -48,6 +60,17 @@ struct FollowUpsScreen: View {
 
     private var content: some View {
         List {
+            // What waits for review and what today added: the way into the review and the
+            // summary. Only over the working list; the other filters are history.
+            if model.scope == .open && !digest.isEmpty {
+                Section {
+                    ReminderEntryCard(digest: digest) { router.reminderSheet = $0 }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+                .listSectionSpacing(Tokens.blockGap)
+            }
             // Said once, at the top, only when the on-device reader is the one proposing. It
             // leads with what is MISSING rather than with what might be wrong: the measurement
             // is certain that it finds fewer (three of eight a careful reader found) and never
@@ -77,13 +100,18 @@ struct FollowUpsScreen: View {
             if model.scope == .open && !model.isEmpty {
                 filedAwayTail
             }
+            if model.scope == .open && home == .apple {
+                openInRemindersRow
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Tokens.ground)
         .animation(Motion.animation(.snappy(duration: 0.25)), value: model.animationKey)
         .overlay {
-            if model.isEmpty {
+            // Not while the rows above have something to say: "4 reminders added from today"
+            // over "No reminders" would be the screen arguing with itself.
+            if model.isEmpty && (model.scope != .open || digest.isEmpty) {
                 ContentUnavailableView {
                     Label(model.emptyTitle, systemImage: model.emptyGlyph)
                 } description: {
@@ -102,6 +130,36 @@ struct FollowUpsScreen: View {
             }
         }
     }
+
+    // MARK: Kept in Apple Reminders
+
+    /// Quiet, at the foot: the list above already is the Apple list, read back, so this is for
+    /// the things only the Reminders app does (other lists, sharing, locations).
+    private var openInRemindersRow: some View {
+        Section {
+            Button {
+                if let url = URL(string: Self.remindersAppURL) { openURL(url) }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(Copy.Reminders.openInReminders)
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 12, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                .font(AppFont.subBody)
+                .foregroundStyle(Tokens.tint)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// The Reminders app's own URL scheme.
+    static let remindersAppURL = "x-apple-reminderkit://"
 
     // MARK: The tail of the open list — what the age rule took away
     //
@@ -407,7 +465,7 @@ struct FollowUpsScreen: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Picker(Copy.FollowUps.title, selection: $model.scope) {
+                Picker(Copy.Reminders.title, selection: $model.scope) {
                     ForEach(FollowUpListScope.allCases) { scope in
                         Text(scope.title).tag(scope)
                     }

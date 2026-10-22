@@ -24,7 +24,7 @@ extension Copy.FollowUps {
     // the reader is already looking at.
 
     static let emptyOpenBodySuggested =
-        "Things you say you will do turn up here, pulled out of what you record."
+        "What you ask to be reminded of, and the follow-ups you keep, show up here."
     static let emptyOpenBodySuggestedNoAi =
         "Follow-ups are suggested from your recordings once AI processing is set up."
 
