@@ -992,9 +992,15 @@ public actor MusePushToTalk: MuseWatchSide {
     /// Only the current exchange may replace the screen; newer questions supersede old ones.
     private func replayInterruptedAnswer() async {
         guard let current = turn, current.needsReplay else { return }
-        guard Date().timeIntervalSince(current.startedAt) < Self.messageShelfLife else { return }
+        guard Date().timeIntervalSince(current.startedAt) < Self.messageShelfLife else {
+            current.needsReplay = false
+            return
+        }
         guard current.finished else { scheduleMessageRetry(); return }
-        guard !current.answerText.isEmpty, watchKeepsConversation else { return }
+        guard !current.answerText.isEmpty, watchKeepsConversation else {
+            current.needsReplay = false
+            return
+        }
         let heard = Self.cut(current.heard ?? "", bytes: ProtocolConstants.assistantTextMaxBytes)
         let id = current.id
         let reply = await link.sendControlRequest { token in
