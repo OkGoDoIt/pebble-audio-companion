@@ -450,10 +450,10 @@ struct OpenAppLinkIntent: AppIntent {
     }
 }
 
-/// "Open my follow-ups in Pebble Audio."
+/// "Open my reminders in Pebble Audio."
 struct OpenFollowUpsIntent: AppIntent {
-    static let title: LocalizedStringResource = "Open Follow-ups"
-    static let description = IntentDescription("Opens your follow-ups in Pebble Audio.")
+    static let title: LocalizedStringResource = "Open Reminders"
+    static let description = IntentDescription("Opens your reminders in Pebble Audio.")
     static let supportedModes: IntentModes = .foreground
 
     func perform() async throws -> some IntentResult {

@@ -104,12 +104,12 @@ struct GetTodaysRecapIntent: AppIntent {
     }
 }
 
-/// "Get my follow-ups" — open ones by default, done ones on request.
+/// "Get my reminders" — open ones by default, done ones on request.
 @available(iOS 27, *)
 struct GetFollowUpsIntent: AppIntent {
-    static let title: LocalizedStringResource = "Get Follow-ups"
+    static let title: LocalizedStringResource = "Get Reminders"
     static let description = IntentDescription(
-        "Lists the follow-ups Pebble Audio has found, open ones first."
+        "Lists your reminders in Pebble Audio, open ones first."
     )
     static let supportedModes: IntentModes = .background
 
@@ -120,7 +120,7 @@ struct GetFollowUpsIntent: AppIntent {
     var includeDone: Bool
 
     static var parameterSummary: some ParameterSummary {
-        Summary("Get \(\.$scope) follow-ups") {
+        Summary("Get \(\.$scope) reminders") {
             \.$includeDone
         }
     }
@@ -135,7 +135,7 @@ struct GetFollowUpsIntent: AppIntent {
         guard visibility.donates else {
             return .result(
                 value: [],
-                dialog: IntentDialog(stringLiteral: Copy.Siri.offForSiri("follow-ups")))
+                dialog: IntentDialog(stringLiteral: Copy.Siri.offForSiri("reminders")))
         }
         var entities: [FollowUpEntity] = []
         for snapshot in await source.followUps(

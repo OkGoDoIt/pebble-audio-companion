@@ -131,7 +131,7 @@ enum EntityMapping {
 
     /// The single list every follow-up belongs to: the reminder schema requires one.
     static let followUpListId = "follow-ups"
-    static let followUpListName = "Follow-ups"
+    static let followUpListName = "Reminders"
 
     /// Whether the entity may appear in Spotlight at all — `IndexedEntity.hideInSpotlight`.
     static func hideInSpotlight(_ visibility: SystemSearchVisibility) -> Bool {

@@ -53,11 +53,12 @@ struct CompanionAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: OpenFollowUpsIntent(),
             phrases: [
+                "Open reminders in \(.applicationName)",
+                "Open my reminders in \(.applicationName)",
+                "Show my reminders in \(.applicationName)",
                 "Open follow-ups in \(.applicationName)",
-                "Open my follow-ups in \(.applicationName)",
-                "Show my follow-ups in \(.applicationName)",
             ],
-            shortTitle: "Follow-ups",
+            shortTitle: "Reminders",
             systemImageName: "checklist"
         )
         // The iOS 27 additions. `#available` is the one condition the builder accepts, and

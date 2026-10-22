@@ -26,9 +26,9 @@ extension Copy {
 
         static func followUpsFound(_ count: Int) -> String {
             switch count {
-            case 0: return "No follow-ups."
-            case 1: return "1 follow-up."
-            default: return "\(count) follow-ups."
+            case 0: return "No reminders."
+            case 1: return "1 reminder."
+            default: return "\(count) reminders."
             }
         }
 
