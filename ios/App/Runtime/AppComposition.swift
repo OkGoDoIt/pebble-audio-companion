@@ -1403,6 +1403,7 @@ final class AppComposition {
         installEntitySurfaces()
         installNowPlaying()
         MuseComposition.startPushToTalk()
+        RemindersComposition.start()
         installTelemetry()
 
         // The device conditions the catch-up policy judges on. Pushed into the shared foreground
