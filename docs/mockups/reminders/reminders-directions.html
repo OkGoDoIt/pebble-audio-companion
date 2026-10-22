@@ -1,0 +1,1058 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reminders Directions</title>
+<style>
+/* Tokens: ios/App/DesignSystem/Tokens.swift + Tokens+History.swift, light anchors, named after
+   the Swift tokens. Reminders list colors are iOS system colors (the lists belong to Reminders,
+   not to the app); the Pebble Audio list is created in the app's tint. */
+:root {
+  --tint: #5B5BD6;
+  --tint-pressed: #4A4AC4;
+  --captured: #B9B9EE;
+  --tint-on-dark: #9F9FF0;
+  --on-tint: #FFFFFF;
+  --tint-fill-10: rgba(91, 91, 214, 0.10);
+  --tint-fill-12: rgba(91, 91, 214, 0.12);
+  --tint-fill-18: rgba(91, 91, 214, 0.18);
+  --tint-border: rgba(91, 91, 214, 0.40);
+  --tint-soft: #C9C9F0;
+
+  --good: #34C759;
+  --good-fill: rgba(52, 199, 89, 0.12);
+  --missing: #FF9500;
+  --attention: #FF9F0A;
+  --destructive: #FF3B30;
+  --neutral-dot: #8A8A8E;
+
+  --label: #1C1C1E;
+  --secondary-body: #3C3C43;
+  --tertiary: #6E6E73;
+  --meta: #8A8A8E;
+  --faint: #B0B0B6;
+  --chevron: #C7C7CC;
+  --quiet: #D1D1D6;
+  --hairline: rgba(60, 60, 67, 0.18);
+  --card-border: rgba(60, 60, 67, 0.22);
+  --bar-hairline: rgba(60, 60, 67, 0.29);
+  --field-fill: #E3E3E8;
+  --track: #ECECF1;
+  --gray-chip-fill: #EFEFF4;
+  --pill-fill: #E9E9EE;
+  --toggle-off: #E9E9EA;
+  --ground: #F2F2F7;
+  --surface: #FFFFFF;
+  --bar-bg: #F9F9F9;
+  --snackbar-bg: #1C1C1E;
+  --follow-up-done: #A0A0A6;
+  --missing-text: #C77700;
+
+  --screen-margin: 16px;
+  --block-gap: 12px;
+  --card-radius: 12px;
+  --option-card-radius: 14px;
+  --primary-button-radius: 14px;
+  --sheet-radius: 16px;
+  --menu-radius: 13px;
+
+  /* Reminders list colors (iOS system palette) */
+  --list-pebble: #5B5BD6;
+  --list-blue: #007AFF;
+  --list-orange: #FF9500;
+  --list-red: #FF3B30;
+  --list-green: #34C759;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, sans-serif;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { background: #E6E6EB; color: var(--label); font-family: var(--font); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; }
+
+/* ── Review page around the frames (not app UI) ──────────────────────── */
+.page { max-width: 1800px; margin: 0 auto; padding: 40px 16px 72px; }
+.page-head { max-width: 860px; }
+.page-head .kicker { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--tertiary); }
+.page-head h1 { margin: 6px 0 10px; font: 700 34px/41px var(--font); letter-spacing: 0.37px; }
+.page-head p { margin: 0 0 10px; font: 400 17px/25px var(--font); color: var(--secondary-body); }
+.jump { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.jump a { text-decoration: none; font: 500 15px/20px var(--font); color: var(--tint); background: var(--surface); border-radius: 18px; padding: 8px 14px; box-shadow: 0 0 0 0.5px var(--card-border); }
+.jump a b { font-weight: 700; margin-right: 4px; }
+.dir { margin-top: 56px; scroll-margin-top: 16px; }
+.dir-head { max-width: 860px; }
+.dir-head .tag { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.letter { width: 32px; height: 32px; border-radius: 10px; background: var(--label); color: #fff; font: 700 17px/32px var(--font); text-align: center; flex: none; }
+.dir.rec .letter { background: var(--tint); }
+.dir-head h2 { margin: 0; font: 700 26px/32px var(--font); letter-spacing: 0.3px; }
+.recbadge { font: 600 13px/18px var(--font); color: var(--tint); background: var(--tint-fill-12); border-radius: 12px; padding: 4px 10px; }
+.dir-head p { margin: 10px 0 0; font: 400 16px/24px var(--font); color: var(--secondary-body); }
+.dir-head p b { color: var(--label); font-weight: 600; }
+.frames { display: flex; gap: 28px; overflow-x: auto; margin: 0 -16px; padding: 22px 16px 10px; scroll-snap-type: x proximity; }
+.frames::-webkit-scrollbar { height: 8px; }
+.frames::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+figure.shot { margin: 0; flex: none; width: 390px; scroll-snap-align: start; }
+figcaption { margin-top: 14px; font: 400 14px/20px var(--font); color: var(--tertiary); padding: 0 6px; }
+figcaption b { display: block; color: var(--label); font: 600 15px/20px var(--font); margin-bottom: 2px; }
+@media (max-width: 480px) {
+  .page { padding-top: 28px; }
+  .page-head h1 { font-size: 28px; line-height: 34px; }
+  figure.shot { width: 336px; }
+  .phone { zoom: 0.862; }
+  .frames { gap: 18px; }
+}
+
+/* ── Phone frame ─────────────────────────────────────────────────────── */
+.phone { width: 390px; height: 844px; position: relative; overflow: hidden; border-radius: 50px; background: var(--ground); color: var(--label); font-family: var(--font); box-shadow: 0 0 0 1px rgba(0,0,0,0.10), 0 28px 60px -18px rgba(0,0,0,0.30); isolation: isolate; }
+.island { position: absolute; top: 11px; left: 50%; width: 124px; height: 36px; margin-left: -62px; border-radius: 18px; background: #000; z-index: 60; }
+.sb { position: absolute; top: 0; left: 0; right: 0; height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 4px 32px 0 54px; font: 600 17px/22px var(--font); letter-spacing: -0.4px; z-index: 55; color: var(--label); }
+.sb.light { color: #fff; }
+.sb svg { width: 77px; height: 13px; fill: currentColor; }
+.home { position: absolute; left: 50%; bottom: 8px; width: 139px; height: 5px; margin-left: -69.5px; border-radius: 3px; background: var(--label); z-index: 70; }
+.home.light { background: #fff; }
+
+.ic { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
+
+/* Bars */
+.inlinebar { position: absolute; top: 0; left: 0; right: 0; height: 98px; padding-top: 54px; z-index: 30; background: rgba(242, 242, 247, 0.86); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 0.5px 0 var(--bar-hairline); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding-left: 16px; padding-right: 16px; }
+.inlinebar.clear { background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.inlinebar .ttl { font: 600 17px/22px var(--font); letter-spacing: -0.43px; text-align: center; }
+.inlinebar .trail { display: flex; justify-content: flex-end; }
+.glass { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 44px; min-width: 44px; padding: 0 14px; border-radius: 22px; background: rgba(255, 255, 255, 0.82); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.06), 0 2px 10px rgba(0,0,0,0.08); font: 400 17px/22px var(--font); letter-spacing: -0.43px; color: var(--label); }
+.glass.round { padding: 0; width: 44px; }
+.glass .ic { width: 20px; height: 20px; stroke-width: 2.1; }
+.glass .ic.chev-back { width: 12px; height: 20px; stroke-width: 2.6; }
+.glass.tint { color: var(--tint); }
+.glass .flt { width: 18px; height: 18px; stroke-width: 2; }
+
+.content { position: absolute; inset: 0; overflow: hidden; }
+.scroll { display: flex; flex-direction: column; gap: var(--block-gap); padding: 0 var(--screen-margin) 140px; }
+.scroll > * { flex: none; }
+.largetitle { font: 700 34px/41px var(--font); letter-spacing: 0.37px; padding: 3px 0 4px; }
+
+/* Tab bar (iOS 26 floating) */
+.tabbar { position: absolute; left: 20px; right: 20px; bottom: 22px; height: 62px; border-radius: 31px; background: rgba(249, 249, 249, 0.86); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0 0 0.5px var(--card-border), 0 8px 26px rgba(0,0,0,0.10); display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; padding: 0 5px; z-index: 40; }
+.tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; height: 52px; border-radius: 26px; font: 500 10px/12px var(--font); color: var(--label); }
+.tab .ic { width: 25px; height: 25px; stroke-width: 1.8; }
+.tab.on { color: var(--tint); background: rgba(118, 118, 128, 0.12); }
+
+/* Cards and lists */
+.card { background: var(--surface); border-radius: var(--card-radius); padding: 14px 16px; }
+.lc { background: var(--surface); border-radius: var(--card-radius); overflow: hidden; }
+.lc > .r { display: flex; align-items: center; gap: 12px; padding: 11px 16px; position: relative; min-height: 44px; }
+.lc > .r + .r::before { content: ""; position: absolute; top: 0; left: 16px; right: 16px; height: 0.5px; background: var(--hairline); }
+.lc.fu > .r + .r::before { left: 56px; right: 0; }
+.lc.sugs > .r + .r::before { left: 16px; right: 0; }
+.lc.chk > .r + .r::before { left: 52px; right: 0; }
+.r .grow { flex: 1; min-width: 0; }
+.r .t { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--label); }
+.r .t.semi { font-weight: 600; }
+.r .val { font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--meta); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.r .val.urgent { color: var(--attention); }
+.r .sub { font: 400 13px/18px var(--font); letter-spacing: -0.08px; color: var(--meta); margin-top: 2px; }
+.r .tinttext { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--tint); }
+.r .redtext { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--destructive); }
+.m { display: flex; align-items: center; gap: 5px; margin-top: 3px; font: 400 13px/18px var(--font); letter-spacing: -0.08px; color: var(--meta); white-space: nowrap; }
+.m.urgent { color: var(--attention); }
+.m .ic { width: 13px; height: 13px; stroke-width: 2; }
+.excl { width: 9px; height: 13px; fill: none; stroke: var(--attention); stroke-width: 3; stroke-linecap: round; flex: none; display: block; }
+.chev { width: 8px; height: 14px; stroke: var(--chevron); stroke-width: 2.2; fill: none; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.circ { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; flex: none; align-self: flex-start; margin-top: -3px; }
+.circ::before { content: ""; width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1.6px var(--chevron); }
+.sh { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta); padding: 6px 4px 0; margin-bottom: -6px; display: flex; align-items: baseline; justify-content: space-between; }
+.sh .act { text-transform: none; letter-spacing: -0.23px; font: 600 15px/20px var(--font); color: var(--tint); }
+.sectitle { display: flex; align-items: baseline; justify-content: space-between; padding-top: 4px; }
+.sectitle h3 { margin: 0; font: 700 20px/25px var(--font); letter-spacing: 0.38px; }
+.sectitle .chip { font: 500 13px/18px var(--font); color: var(--tint); }
+.footer { font: 400 13px/18px var(--font); color: var(--meta); padding: 0 4px; margin-top: -4px; }
+
+/* Reminders list glyph: the list's color as a filled circle (squint test: "this is in Reminders") */
+.lg { width: 20px; height: 20px; border-radius: 50%; background: var(--lc, var(--list-pebble)); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.lg svg { width: 13px; height: 13px; fill: #fff; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; }
+.lg.s { width: 14px; height: 14px; }
+.lg.s svg { width: 9px; height: 9px; stroke-width: 2.6; }
+.lg.l { width: 30px; height: 30px; }
+.lg.l svg { width: 18px; height: 18px; stroke-width: 2; }
+
+/* Suggestion row (C strip, C tab) */
+.sug { align-items: center; }
+.sug .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.btn-x { width: 30px; height: 30px; border-radius: 50%; background: var(--gray-chip-fill); color: var(--tertiary); display: flex; align-items: center; justify-content: center; }
+.btn-x .ic { width: 13px; height: 13px; stroke-width: 2.4; }
+.btn-add { height: 30px; padding: 0 14px; border-radius: 15px; background: var(--tint-fill-12); color: var(--tint); font: 600 15px/30px var(--font); letter-spacing: -0.23px; }
+.added { display: inline-flex; align-items: center; gap: 5px; color: var(--tint); font: 600 15px/20px var(--font); }
+.added .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+.striphead { display: flex; align-items: baseline; justify-content: space-between; padding: 13px 16px 3px; }
+.striphead .h { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.striphead .n { font: 400 13px/18px var(--font); color: var(--meta); }
+
+/* Inline-button rows (B) */
+.ib { flex-direction: column; align-items: stretch !important; gap: 0 !important; }
+.ib .btns { display: flex; gap: 8px; margin-top: 10px; }
+.btn-sm { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 10px; font: 600 14px/19px var(--font); color: var(--tint); box-shadow: inset 0 0 0 1px var(--tint-border); }
+.btn-sm .ic { width: 14px; height: 14px; stroke-width: 2.2; }
+.btn-sm.quiet { box-shadow: none; color: var(--tertiary); background: var(--gray-chip-fill); }
+
+/* Buttons */
+.btn-primary { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 50px; padding: 14px 16px; border-radius: var(--primary-button-radius); background: var(--tint); color: var(--on-tint); font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.btn-plain { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; color: var(--tint); font: 400 17px/22px var(--font); letter-spacing: -0.43px; }
+.btn-incard { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; border-radius: 11px; background: var(--tint); color: var(--on-tint); font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.btn-bordered { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 44px; border-radius: 11px; box-shadow: inset 0 0 0 1px var(--tint-border); color: var(--tint); font: 600 15px/20px var(--font); letter-spacing: -0.23px; position: relative; }
+.btn-bordered .ic { width: 17px; height: 17px; stroke-width: 2; }
+
+/* Switch (on = Tokens.good) */
+.switch { width: 51px; height: 31px; border-radius: 16px; background: var(--toggle-off); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgba(0,0,0,0.15), 0 1px 1px rgba(0,0,0,0.16); }
+.switch.on { background: var(--good); }
+.switch.on::after { left: 22px; }
+.timepill { font: 400 17px/22px var(--font); letter-spacing: -0.43px; background: var(--gray-chip-fill); border-radius: 7px; padding: 6px 11px; color: var(--label); }
+
+/* Snackbar */
+.snack { position: absolute; left: 16px; right: 16px; bottom: 96px; min-height: 44px; border-radius: var(--card-radius); background: var(--snackbar-bg); color: #fff; display: flex; align-items: center; gap: 10px; padding: 0 16px; z-index: 45; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+.snack .msg { flex: 1; font: 400 15px/20px var(--font); letter-spacing: -0.23px; padding: 12px 0; }
+.snack .act { font: 600 15px/20px var(--font); color: var(--tint-on-dark); min-height: 44px; display: flex; align-items: center; }
+
+/* Detail screen bits */
+.d-title { font: 700 24px/30px var(--font); letter-spacing: 0.07px; color: var(--label); }
+.why { font: 400 13px/18px var(--font); color: var(--tertiary); }
+.quote { display: flex; gap: 10px; }
+.quote::before { content: ""; width: 3px; border-radius: 2px; background: var(--tint-soft); flex: none; }
+.quote p { margin: 0; font: italic 400 15px/24px var(--font); letter-spacing: -0.23px; color: var(--secondary-body); }
+.cardhead { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.foot13 { font: 400 13px/18px var(--font); color: var(--meta); }
+.playrow { display: flex; align-items: center; gap: 12px; }
+.play { width: 44px; height: 44px; border-radius: 50%; background: var(--tint); color: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+.play .ic { width: 16px; height: 16px; margin-left: 2px; }
+
+/* Sheet presentation */
+.presenting { position: absolute; inset: 0; background: #000; }
+.presenting .behind { position: absolute; left: 12px; right: 12px; top: 46px; height: 40px; border-radius: 14px 14px 0 0; background: #C9C9CE; }
+.sheet { position: absolute; left: 0; right: 0; top: 56px; bottom: 0; border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; background: var(--ground); display: flex; flex-direction: column; overflow: hidden; }
+.sheet .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--chevron); margin: 5px auto 0; flex: none; }
+.sheet .sbar { height: 52px; flex: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 12px; }
+.sheet .sbar .ttl { font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.sheet .sbar .trail { display: flex; justify-content: flex-end; font: 400 15px/20px var(--font); color: var(--meta); padding-right: 6px; }
+.sheet .body { flex: 1; overflow: hidden; padding: 0 var(--screen-margin); display: flex; flex-direction: column; gap: var(--block-gap); }
+.sheet .body > * { flex: none; }
+.sheet .dock { flex: none; padding: 10px 20px 30px; display: flex; flex-direction: column; gap: 2px; background: var(--ground); box-shadow: 0 -0.5px 0 var(--hairline); }
+
+/* Review stack (A) */
+.stack { position: relative; height: 436px; margin-top: 4px; }
+.scard { position: absolute; left: 0; right: 0; top: 0; height: 410px; background: var(--surface); border-radius: var(--sheet-radius); transform-origin: 50% 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 10px 30px rgba(0,0,0,0.08); padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.scard.b1 { transform: translateY(30px) scale(0.95); opacity: 0.9; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.scard.b2 { transform: translateY(62px) scale(0.90); opacity: 0.7; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.scard .src { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chip-t { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--tint-fill-12); color: var(--tint); font: 500 13px/18px var(--font); }
+.chip-t .ic { width: 13px; height: 13px; stroke-width: 2; }
+.chip-g { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--gray-chip-fill); color: var(--tertiary); font: 500 13px/18px var(--font); }
+.chip-a { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px; border-radius: 13px; background: rgba(255, 159, 10, 0.12); color: var(--missing-text); font: 600 13px/18px var(--font); }
+.scard .hr { height: 0.5px; background: var(--hairline); margin: 2px 0; }
+.scard .spacer { flex: 1; }
+.decide { display: flex; justify-content: center; gap: 56px; margin-top: 30px; }
+.decide .d { display: flex; flex-direction: column; align-items: center; gap: 7px; font: 500 13px/18px var(--font); color: var(--tertiary); }
+.decide .c { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.decide .c.no { background: var(--surface); color: var(--tertiary); box-shadow: 0 0 0 0.5px var(--card-border), 0 4px 12px rgba(0,0,0,0.06); }
+.decide .c.no .ic { width: 24px; height: 24px; stroke-width: 2.4; }
+.decide .c.yes { background: var(--tint); color: #fff; box-shadow: 0 6px 16px rgba(91,91,214,0.35); }
+.decide .c.yes .ic { width: 26px; height: 26px; stroke-width: 2.4; }
+.decide .d.yes { color: var(--tint); font-weight: 600; }
+.decide .d.hot .c.yes { transform: scale(1.12); box-shadow: 0 0 0 8px var(--tint-fill-18), 0 6px 16px rgba(91,91,214,0.35); }
+.stamp { position: absolute; top: 22px; left: 18px; transform: rotate(-7deg); display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 17px; background: var(--tint); color: #fff; font: 600 15px/20px var(--font); box-shadow: 0 6px 18px rgba(91,91,214,0.35); }
+.stamp .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+
+/* Done state */
+.donestate { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 28px 40px; gap: 0; }
+.donestate .badge { width: 76px; height: 76px; border-radius: 50%; background: var(--tint-fill-12); color: var(--tint); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+.donestate .badge .ic { width: 36px; height: 36px; stroke-width: 2.4; }
+.donestate h4 { margin: 0; font: 700 28px/34px var(--font); letter-spacing: 0.36px; }
+.donestate p { margin: 8px 0 0; font: 400 16px/22px var(--font); color: var(--secondary-body); }
+
+/* Checkbox rows (D) */
+.cb { width: 24px; height: 24px; border-radius: 50%; flex: none; align-self: flex-start; box-shadow: inset 0 0 0 1.6px var(--chevron); display: flex; align-items: center; justify-content: center; color: #fff; }
+.cb.on { background: var(--tint); box-shadow: none; }
+.cb .ic { width: 14px; height: 14px; stroke-width: 2.6; }
+.cb.on + .grow .t { color: var(--label); }
+
+/* Menu (C detail) */
+.menu { position: absolute; right: 16px; width: 254px; background: rgba(250, 250, 252, 0.94); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-radius: var(--menu-radius); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.08), 0 18px 50px rgba(0,0,0,0.22); z-index: 50; overflow: hidden; }
+.menu .mi { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; height: 44px; font: 400 17px/22px var(--font); letter-spacing: -0.43px; position: relative; }
+.menu .mi + .mi::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 0.5px; background: var(--hairline); }
+.menu .mi.sep::before { height: 8px !important; background: rgba(0,0,0,0.06) !important; top: -8px !important; }
+.menu .mi.sep { margin-top: 8px; }
+.menu .mi .ic { width: 19px; height: 19px; stroke-width: 1.8; }
+.menu .mi.red { color: var(--destructive); }
+.dimmer { position: absolute; inset: 0; background: rgba(0,0,0,0.06); z-index: 45; }
+
+/* System alert (iOS 26) */
+.alertscrim { position: absolute; inset: 0; background: rgba(0,0,0,0.22); z-index: 50; }
+.alert { position: absolute; left: 36px; right: 36px; top: 268px; background: rgba(255,255,255,0.95); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); border-radius: 34px; padding: 22px 18px 18px; z-index: 55; box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
+.alert h5 { margin: 0 6px; font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.alert p { margin: 8px 6px 18px; font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--secondary-body); }
+.alert .ab { display: flex; align-items: center; justify-content: center; height: 48px; border-radius: 24px; background: rgba(120, 120, 128, 0.16); font: 600 17px/22px var(--font); color: var(--label); }
+.alert .ab + .ab { margin-top: 8px; }
+
+/* Touch indicator */
+.touch { position: absolute; width: 46px; height: 46px; border-radius: 50%; background: rgba(28, 28, 30, 0.16); box-shadow: 0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(0,0,0,0.12); z-index: 48; pointer-events: none; }
+
+/* Lock screen (D) */
+.lock { position: absolute; inset: 0; background: radial-gradient(120% 70% at 20% 10%, #8C86D8 0%, rgba(140,134,216,0) 60%), radial-gradient(90% 60% at 90% 80%, #E3A98C 0%, rgba(227,169,140,0) 60%), linear-gradient(170deg, #2C2A57 0%, #514A8F 45%, #9A7FA8 75%, #D79C86 100%); color: #fff; }
+.lock .date { position: absolute; top: 92px; left: 0; right: 0; text-align: center; font: 600 20px/24px var(--font); opacity: 0.92; }
+.lock .time { position: absolute; top: 112px; left: 0; right: 0; text-align: center; font: 700 100px/110px "SF Pro Rounded", var(--font); letter-spacing: -2px; opacity: 0.95; }
+.notif { position: absolute; left: 10px; right: 10px; top: 520px; border-radius: 24px; background: rgba(245, 245, 250, 0.72); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); color: var(--label); display: flex; gap: 12px; padding: 13px 14px 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+.notif .tx { flex: 1; min-width: 0; }
+.notif .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.notif .hd b { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.notif .hd span { font: 400 13px/18px var(--font); color: rgba(60,60,67,0.6); }
+.notif .bd { font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--label); }
+.appicon { width: 38px; height: 38px; border-radius: 9px; background: linear-gradient(160deg, #8C8CF0, #5B5BD6); display: flex; align-items: center; justify-content: center; flex: none; }
+.appicon svg { width: 28px; height: 28px; }
+.lockbtn { position: absolute; bottom: 44px; width: 50px; height: 50px; border-radius: 50%; background: rgba(0,0,0,0.28); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: center; color: #fff; }
+.lockbtn .ic { width: 22px; height: 22px; }
+
+.ring { box-shadow: inset 0 0 0 2px var(--tint-border); }
+.ann { position: absolute; z-index: 80; font: 600 12px/16px var(--font); color: #fff; background: var(--label); border-radius: 8px; padding: 4px 8px; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sb" viewBox="0 0 77 13"><rect x="0" y="8" width="3" height="4.5" rx="1"/><rect x="5" y="5.5" width="3" height="7" rx="1"/><rect x="10" y="3" width="3" height="9.5" rx="1"/><rect x="15" y="0.5" width="3" height="12" rx="1"/><path transform="translate(24 0.5)" d="M8 2.2c2.4 0 4.6.9 6.2 2.5l1.2-1.3A10.4 10.4 0 0 0 8 .4C5.2.4 2.6 1.5.6 3.4l1.2 1.3A8.7 8.7 0 0 1 8 2.2zm0 3.6c1.4 0 2.7.5 3.7 1.4l1.2-1.3A7.1 7.1 0 0 0 8 4a7.1 7.1 0 0 0-4.9 1.9l1.2 1.3c1-.9 2.3-1.4 3.7-1.4zm0 3.5c-.6 0-1.2.2-1.6.6L8 11.6l1.6-1.7c-.4-.4-1-.6-1.6-.6z"/><rect x="47.5" y="0.5" width="24" height="12" rx="3.8" fill="none" stroke="currentColor" stroke-opacity="0.4"/><rect x="49.5" y="2.5" width="17" height="8" rx="2.2"/><path d="M73.5 4.5v4c.8-.3 1.5-1.1 1.5-2s-.7-1.7-1.5-2z" fill-opacity="0.45"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 8 14"><path d="M1.5 1.5 6.5 7l-5 5.5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 12 20"><path d="M10 2 2 10l8 8"/></symbol>
+  <symbol id="i-waveform" viewBox="0 0 24 24"><path d="M3 12h.5M6.5 8.5v7M10 4.5v15M13.5 7.5v9M17 10v4M20.5 12h.5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path d="M4.2 8.5A8.5 8.5 0 1 1 3.5 12"/><path d="M3.3 5v3.8h3.8"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-checklist" viewBox="0 0 24 24"><circle cx="6" cy="7" r="2.6"/><path d="M4.9 7.1l.8.8 1.5-1.6"/><circle cx="6" cy="17" r="2.6"/><path d="M11.5 7h9M11.5 17h9"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M10 3.5l1.6 4.4L16 9.5l-4.4 1.6L10 15.5l-1.6-4.4L4 9.5l4.4-1.6zM17.5 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/><circle cx="12" cy="12" r="6.6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-watch" viewBox="0 0 24 24"><rect x="6.5" y="6" width="11" height="12" rx="3"/><path d="M9 6l.6-3h4.8l.6 3M9 18l.6 3h4.8l.6-3"/></symbol>
+  <symbol id="i-quote" viewBox="0 0 24 24"><path d="M4 5h16v10.5H10L5.5 19v-3.5H4z"/><path d="M9 9v2.5M12 9v2.5M15 9v2.5"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"/></symbol>
+  <symbol id="i-excl" viewBox="0 0 12 14"><path d="M6 2v7M6 12.2v.3"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><circle cx="7" cy="7.5" r="1.7" stroke="none"/><circle cx="7" cy="12" r="1.7" stroke="none"/><circle cx="7" cy="16.5" r="1.7" stroke="none"/><path d="M11 7.5h7M11 12h7M11 16.5h7" fill="none"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M19.5 4.5 11 13M17 14v5.5H4.5V7H10"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M4 7h11M4 12h8M4 17h6M15 13l4 3.5-4 3.5M19 16.5h-6.5"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8 12h8"/></symbol>
+  <symbol id="i-torch" viewBox="0 0 24 24"><path d="M8 3h8v4l-2 3v11h-4V10L8 7z"/><path d="M12 13.5v2"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3.5 8.5h3.5l1.5-2.5h7l1.5 2.5h3.5v10h-17z"/><circle cx="12" cy="13" r="3.2"/></symbol>
+  <symbol id="i-wave-logo" viewBox="0 0 28 28"><g stroke="#fff" stroke-width="1.9" stroke-linecap="round"><path d="M4 11v6M7 8.5v11M10 6v16M18 6v16M21 8.5v11M24 11v6"/></g><g stroke="#FF9F0A" stroke-width="1.9" stroke-linecap="round"><path d="M13 12.5v3M15 11v6"/></g></symbol>
+</svg>
+
+<main class="page">
+  <header class="page-head">
+    <div class="kicker">Pebble Audio · Follow-ups to Reminders</div>
+    <h1>Four ways in to Reminders</h1>
+    <p>Every frame shows the same Thursday, October 22: seven new follow-ups. Three you asked for out loud at 4:08 AM, one you marked on your watch at 2:41 PM, and three the AI heard. The 48 older open ones never move on their own, in any direction.</p>
+    <p>Real tokens from <code>Tokens.swift</code>: tint #5B5BD6, ground #F2F2F7, cards 12 pt radius, sheets 16, primary buttons 14, 16 pt margins, SF type ramp. Light mode only for this review.</p>
+    <nav class="jump">
+      <a href="#a"><b>A</b>Review stack</a>
+      <a href="#b"><b>B</b>Inbox rows</a>
+      <a href="#c"><b>C</b>Asked-for goes straight in</a>
+      <a href="#d"><b>D</b>Evening review</a>
+      <a href="#shared"><b>S</b>Shared: Settings and first use</a>
+    </nav>
+  </header>
+
+  <!-- ═══════════════════════════════ A ═══════════════════════════════ -->
+  <section class="dir" id="a">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">A</span><h2>Review stack</h2></div>
+      <p>One decision at a time, with the quote and a play button on the card, so every yes or no is informed. Swipe right to add, left for not needed, tap to open the moment. <b>Trade-off:</b> it's a mode you have to enter, swipes stay invisible until learned (the two buttons say the same thing), and seven a day makes a long stack.</p>
+    </div>
+    <div class="frames">
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb light"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar">
+                <div><span class="glass round"><svg class="ic"><use href="#i-x"/></svg></span></div>
+                <div class="ttl">New follow-ups</div>
+                <div class="trail">4 of 7</div>
+              </div>
+              <div class="body">
+                <div class="stack">
+                  <div class="scard b2"></div>
+                  <div class="scard b1"></div>
+                  <div class="scard">
+                    <div class="src"><span class="chip-a"><svg class="ic" style="width:10px;height:13px;stroke-width:3"><use href="#i-excl"/></svg>Due today</span><span class="chip-g">Heard at 11:20 AM</span></div>
+                    <div class="d-title">Pay the clinic at the October 22 appointment</div>
+                    <div class="why">If this slips, you’ll have to settle the bill separately later.</div>
+                    <div class="hr"></div>
+                    <div class="quote"><p>“I’ll pay the clinic when I’m there on the twenty-second.”</p></div>
+                    <div class="foot13">Call about the appointment</div>
+                    <div class="spacer"></div>
+                    <div class="playrow"><span class="play"><svg class="ic"><use href="#i-play"/></svg></span><div><div class="cardhead">Play the moment</div><div class="foot13">0:14</div></div></div>
+                  </div>
+                </div>
+                <div class="decide">
+                  <div class="d"><span class="c no"><svg class="ic"><use href="#i-x"/></svg></span>Not needed</div>
+                  <div class="d yes"><span class="c yes"><svg class="ic"><use href="#i-plus"/></svg></span>Add to Reminders</div>
+                </div>
+              </div>
+              <div class="dock" style="box-shadow:none"><button class="btn-plain">Finish Later</button></div>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>The card</b>Opened from a “7 new” row on Today. Source, task, consequence, the words, and the moment to play.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb light"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar">
+                <div><span class="glass round"><svg class="ic"><use href="#i-x"/></svg></span></div>
+                <div class="ttl">New follow-ups</div>
+                <div class="trail">1 of 7</div>
+              </div>
+              <div class="body">
+                <div class="stack">
+                  <div class="scard b2"></div>
+                  <div class="scard" style="transform: translateY(30px) scale(0.95); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                    <div class="src"><span class="chip-t"><svg class="ic"><use href="#i-quote"/></svg>You asked for this</span></div>
+                    <div class="d-title">Send automatic follow-ups from Pebble Audio conversations to iOS Reminders</div>
+                  </div>
+                  <div class="scard" style="transform: translate(78px, -6px) rotate(8deg); box-shadow: 0 18px 40px rgba(0,0,0,0.16);">
+                    <div class="src" style="margin-top:50px"><span class="chip-t"><svg class="ic"><use href="#i-quote"/></svg>You asked for this</span><span class="chip-g">4:08 AM</span></div>
+                    <div class="d-title">Fix Muse push-to-talk: a quick release should just open the app and keep the conversation</div>
+                    <div class="hr"></div>
+                    <div class="quote"><p>“Create a follow-up for this. A quick release should just open the app and keep the conversation.”</p></div>
+                    <div class="foot13">Muse push-to-talk</div>
+                    <span class="stamp"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span>
+                  </div>
+                </div>
+                <div class="decide">
+                  <div class="d"><span class="c no"><svg class="ic"><use href="#i-x"/></svg></span>Not needed</div>
+                  <div class="d yes hot"><span class="c yes"><svg class="ic"><use href="#i-plus"/></svg></span>Add to Reminders</div>
+                </div>
+              </div>
+              <div class="dock" style="box-shadow:none"><button class="btn-plain">Finish Later</button></div>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Mid-swipe, right</b>The card names what letting go will do, and the matching button lights up. Left shows “Not needed” the same way.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb light"><span>3:14</span><svg><use href="#i-sb"/></svg></div>
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar">
+                <div><span class="glass round"><svg class="ic"><use href="#i-x"/></svg></span></div>
+                <div class="ttl">New follow-ups</div>
+                <div class="trail"></div>
+              </div>
+              <div class="donestate">
+                <div class="badge"><svg class="ic"><use href="#i-check"/></svg></div>
+                <h4>4 added to Reminders</h4>
+                <p>3 set aside in Follow-ups.</p>
+              </div>
+              <div class="dock" style="box-shadow:none">
+                <button class="btn-primary">Done</button>
+                <button class="btn-plain">Open Reminders</button>
+              </div>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>End of the stack</b>A heading and one line. Nothing set aside is lost; it stays in the app’s list.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ B ═══════════════════════════════ -->
+  <section class="dir" id="b">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">B</span><h2>Inbox rows</h2></div>
+      <p>The least new machinery. New follow-ups sit at the top of the Follow-ups tab, each with two plain buttons, and what you asked for goes in with one “Add all 3.” Older items below are untouched. <b>Trade-off:</b> two buttons on every row make the top of the list heavy, and nothing reaches Reminders unless you visit this tab.</p>
+    </div>
+    <div class="frames">
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div></div><div></div><div class="trail"><span class="glass tint"><svg class="ic flt"><use href="#i-filter"/></svg>Open</span></div></div>
+            <div class="scroll" style="padding-top:98px">
+              <div class="largetitle">Follow-ups</div>
+              <div class="sh">You asked for <span class="act">Add all 3</span></div>
+              <div class="lc sugs">
+                <div class="r ib">
+                  <div class="t">Fix Muse push-to-talk: a quick release should just open the app and keep the conversation</div>
+                  <div class="m"><svg class="ic"><use href="#i-quote"/></svg>4:08 AM</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+                <div class="r ib">
+                  <div class="t">Send automatic follow-ups from Pebble Audio conversations to iOS Reminders</div>
+                  <div class="m"><svg class="ic"><use href="#i-quote"/></svg>4:08 AM</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+                <div class="r ib">
+                  <div class="t">Add a Pebble quick action to mark a moment as important</div>
+                  <div class="m"><svg class="ic"><use href="#i-quote"/></svg>4:08 AM</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+              </div>
+              <div class="sh">Heard today</div>
+              <div class="lc sugs">
+                <div class="r ib">
+                  <div class="t">Pay the clinic at the October 22 appointment</div>
+                  <div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>Due today</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>New, at the top of the tab</b>Grouped by how sure we are: what you asked for, then what was heard or marked. Overdue and the rest follow below.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div></div><div></div><div class="trail"><span class="glass tint"><svg class="ic flt"><use href="#i-filter"/></svg>Open</span></div></div>
+            <div class="scroll" style="padding-top:98px">
+              <div class="largetitle">Follow-ups</div>
+              <div class="lc">
+                <div class="r"><span class="lg l"><svg><use href="#i-list"/></svg></span><div class="grow"><div class="t">3 added to Reminders</div><div class="sub">What you asked for</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="sh">Heard today</div>
+              <div class="lc sugs">
+                <div class="r ib">
+                  <div class="t">Pay the clinic at the October 22 appointment</div>
+                  <div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>Due today</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+                <div class="r ib">
+                  <div class="t">Look up DHL locations and their mailing details</div>
+                  <div class="m"><svg class="ic"><use href="#i-watch"/></svg>Marked on your watch at 2:41 PM</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+                <div class="r ib">
+                  <div class="t">Talk to Austin’s mother about when Austin can visit Vietnam</div>
+                  <div class="m">Heard at 10:05 AM</div>
+                  <div class="btns"><span class="btn-sm"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</span><span class="btn-sm quiet">Dismiss</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="snack"><span class="msg">3 added to Reminders.</span><span class="act">Undo</span></div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>After “Add all 3”</b>The group folds into one row in the list’s color, with Undo. The rest wait for their own buttons.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ C ═══════════════════════════════ -->
+  <section class="dir rec" id="c">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">C</span><h2>Asked-for goes straight in, the rest waits</h2><span class="recbadge">Recommended</span></div>
+      <p>Saying “remind me to…” is already the decision, so those go straight to Reminders with Undo always one menu away. Everything the AI guessed waits in a short strip on Today, and whatever isn’t added by tomorrow just stays in the app, so <b>Reminders only ever gets what you asked for or tapped, never old cruft</b>. Until you’ve added one by hand, asked-for ones wait in the strip too, because that first tap is what asks iOS for access.</p>
+    </div>
+    <div class="frames">
+      <!-- C1 Today strip -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div></div><div class="ttl">Today</div><div></div></div>
+            <div class="scroll" style="padding-top:98px">
+              <div class="card" style="margin-top:-58px; padding-top:0">
+                <p style="margin:0; font:400 15px/25px var(--font); letter-spacing:-0.23px; color:var(--secondary-body)">In the morning you worked through Muse push-to-talk. Around noon, a call about today’s clinic appointment, then a quiet afternoon.</p>
+              </div>
+              <div class="sectitle"><h3>Follow-ups</h3><span class="chip">See all 48</span></div>
+              <div class="lc sugs">
+                <div class="striphead"><span class="h">Add to Reminders?</span><span class="n">4 new</span></div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Pay the clinic at the October 22 appointment</div><div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>Due today</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Look up DHL locations and their mailing details</div><div class="m"><svg class="ic"><use href="#i-watch"/></svg>Marked on your watch at 2:41 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Talk to Austin’s mother about when Austin can visit Vietnam</div><div class="m">Heard at 10:05 AM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Buy a plain black shirt without a logo for stage blacks</div><div class="m">Heard at 1:30 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="lg l"><svg><use href="#i-list"/></svg></span><div class="grow"><div class="t">3 added to Reminders</div><div class="sub">What you asked for · 1 done</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="sectitle"><h3>Conversations</h3></div>
+              <div class="card" style="height:80px"></div>
+            </div>
+            <nav class="tabbar"><span class="tab on"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Today: the strip</b>Today’s guesses, with Add and ×. Below it, one row says what you asked for is already in, and that one is ticked off there.</figcaption>
+      </figure>
+
+      <!-- C2 just added -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div></div><div class="ttl">Today</div><div></div></div>
+            <div class="scroll" style="padding-top:98px">
+              <div class="card" style="margin-top:-58px; padding-top:0">
+                <p style="margin:0; font:400 15px/25px var(--font); letter-spacing:-0.23px; color:var(--secondary-body)">In the morning you worked through Muse push-to-talk. Around noon, a call about today’s clinic appointment, then a quiet afternoon.</p>
+              </div>
+              <div class="sectitle"><h3>Follow-ups</h3><span class="chip">See all 48</span></div>
+              <div class="lc sugs">
+                <div class="striphead"><span class="h">Add to Reminders?</span><span class="n">4 new</span></div>
+                <div class="r sug" style="background:var(--tint-fill-10)">
+                  <div class="grow"><div class="t">Pay the clinic at the October 22 appointment</div><div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>Due today</div></div>
+                  <div class="acts"><span class="added"><svg class="ic"><use href="#i-check"/></svg>Added</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Look up DHL locations and their mailing details</div><div class="m"><svg class="ic"><use href="#i-watch"/></svg>Marked on your watch at 2:41 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Talk to Austin’s mother about when Austin can visit Vietnam</div><div class="m">Heard at 10:05 AM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Buy a plain black shirt without a logo for stage blacks</div><div class="m">Heard at 1:30 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="lg l"><svg><use href="#i-list"/></svg></span><div class="grow"><div class="t">4 added to Reminders</div><div class="sub">3 you asked for, 1 you added · 1 done</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+            </div>
+            <div class="snack"><span class="msg">Added to Reminders.</span><span class="act">Undo</span></div>
+            <nav class="tabbar"><span class="tab on"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Just added</b>The row says Added for a beat, then leaves the strip; the count below goes up. Undo in the app’s usual snackbar.</figcaption>
+      </figure>
+
+      <!-- C3 Follow-ups tab -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div></div><div class="ttl">Follow-ups</div><div class="trail"><span class="glass tint"><svg class="ic flt"><use href="#i-filter"/></svg>Open</span></div></div>
+            <div class="scroll" style="padding-top:98px">
+              <div class="lc sugs" style="margin-top:-96px">
+                <div class="r sug">
+                  <div class="grow"><div class="t">Look up DHL locations and their mailing details</div><div class="m"><svg class="ic"><use href="#i-watch"/></svg>Marked on your watch at 2:41 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Talk to Austin’s mother about when Austin can visit Vietnam</div><div class="m">Heard at 10:05 AM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+                <div class="r sug">
+                  <div class="grow"><div class="t">Buy a plain black shirt without a logo for stage blacks</div><div class="m">Heard at 1:30 PM</div></div>
+                  <div class="acts"><span class="btn-x"><svg class="ic"><use href="#i-x"/></svg></span><span class="btn-add">Add</span></div>
+                </div>
+              </div>
+              <div class="sh">Overdue</div>
+              <div class="lc fu">
+                <div class="r" style="align-items:flex-start"><span class="circ"></span><div class="grow"><div class="t">Send the order number</div><div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>21 days overdue</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+                <div class="r" style="align-items:flex-start"><span class="circ"></span><div class="grow"><div class="t">Email the vendor about the larger room</div><div class="m urgent">9 days overdue</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="sh">No date</div>
+              <div class="lc fu">
+                <div class="r" style="align-items:flex-start"><span class="circ"></span><div class="grow"><div class="t">Fix Muse push-to-talk: a quick release should just open the app and keep the conversation</div><div class="m"><span class="lg s"><svg><use href="#i-list"/></svg></span>In Reminders · you asked</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+                <div class="r" style="align-items:flex-start"><span class="circ"></span><div class="grow"><div class="t">Add a Pebble quick action to mark a moment as important</div><div class="m"><span class="lg s"><svg><use href="#i-list"/></svg></span>In Reminders · you asked</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+                <div class="r" style="align-items:flex-start"><span class="circ"></span><div class="grow"><div class="t">Fix the crash on older dates</div><div class="m">Bug triage</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>The Follow-ups tab, scrolled</b>“To review” sits at the top (the same strip). Below, nothing changes except the list’s dot on what’s in Reminders. The one ticked off there has already left.</figcaption>
+      </figure>
+
+      <!-- C4 Detail with menu -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:13</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div class="trail"><span class="glass">Edit</span></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="card" style="display:flex; flex-direction:column; gap:12px">
+                <div class="d-title">Fix Muse push-to-talk: a quick release should just open the app and keep the conversation</div>
+                <div class="why">If this slips, a quick press keeps ending the conversation.</div>
+                <button class="btn-incard">Mark Done</button>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Due</span><span class="val">No date</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Priority</span><span class="val">Normal</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r" style="background:rgba(0,0,0,0.04)"><span class="t grow">Reminders</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="card" style="display:flex; flex-direction:column; gap:10px">
+                <div class="cardhead">You asked for this</div>
+                <div class="quote"><p>“Create a follow-up for this. A quick release should just open the app and keep the conversation.”</p></div>
+                <div class="foot13">Heard today at 4:08 AM · Muse push-to-talk</div>
+              </div>
+            </div>
+            <div class="menu" style="top:514px">
+              <div class="mi">Open in Reminders<svg class="ic"><use href="#i-open"/></svg></div>
+              <div class="mi">Move to List<svg class="ic"><use href="#i-move"/></svg></div>
+              <div class="mi sep red">Remove from Reminders<svg class="ic"><use href="#i-minus"/></svg></div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>An asked-for one, opened</b>The undo for anything that went in by itself: Remove from Reminders, on the Reminders row. Mark Done here ticks it there too.</figcaption>
+      </figure>
+
+      <!-- C5 Settings -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:20</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="sh">Reminders</div>
+              <div class="lc">
+                <div class="r"><div class="grow"><div class="t">Add what you ask for</div><div class="sub">When you say “remind me to…”</div></div><span class="switch on"></span></div>
+                <div class="r"><span class="t grow">List</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Alert on the due date</span><span class="switch on"></span></div>
+                <div class="r"><span class="t grow">Alert time</span><span class="timepill">9:00 AM</span></div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="tinttext grow">Open Reminders</span></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab on"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Settings › Follow-ups</b>Shared by every direction; only the first switch is C’s. The list defaults to a Pebble Audio list the app makes; any list can be picked (see Shared).</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ D ═══════════════════════════════ -->
+  <section class="dir" id="d">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">D</span><h2>Evening review</h2></div>
+      <p>One moment a day, at a time you choose: a single notification opens a short checklist, already ticked for what you asked for and anything with a date. <b>Trade-off:</b> it adds a notification to an app that sends almost none, something due this afternoon waits until evening, and a skipped evening means nothing goes in.</p>
+    </div>
+    <div class="frames">
+      <figure class="shot">
+        <div class="phone">
+          <div class="lock"></div>
+          <div class="island"></div>
+          <div class="sb light"><span></span><svg><use href="#i-sb"/></svg></div>
+          <div style="position:absolute; inset:0; color:#fff">
+            <div class="lock-date" style="position:absolute; top:92px; left:0; right:0; text-align:center; font:600 20px/24px var(--font); opacity:.92">Thursday, October 22</div>
+            <div style="position:absolute; top:112px; left:0; right:0; text-align:center; font:700 100px/110px var(--font); letter-spacing:-2px; opacity:.95">8:00</div>
+          </div>
+          <div class="notif">
+            <span class="appicon"><svg><use href="#i-wave-logo"/></svg></span>
+            <div class="tx">
+              <div class="hd"><b>7 follow-ups from today</b><span>now</span></div>
+              <div class="bd">Pay the clinic at the October 22 appointment, and 6 more.</div>
+            </div>
+          </div>
+          <span class="lockbtn" style="left:46px"><svg class="ic"><use href="#i-torch"/></svg></span>
+          <span class="lockbtn" style="right:46px"><svg class="ic"><use href="#i-camera"/></svg></span>
+          <div class="home light"></div>
+        </div>
+        <figcaption><b>8:00 PM, once</b>One notification a day, only on days with something new. The time is yours to set.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb light"><span>8:01</span><svg><use href="#i-sb"/></svg></div>
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar">
+                <div><span class="glass round"><svg class="ic"><use href="#i-x"/></svg></span></div>
+                <div class="ttl">Today’s follow-ups</div>
+                <div></div>
+              </div>
+              <div class="body">
+                <div class="sh">You asked for</div>
+                <div class="lc chk">
+                  <div class="r" style="align-items:flex-start"><span class="cb on"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Fix Muse push-to-talk: a quick release should just open the app and keep the conversation</div></div></div>
+                  <div class="r" style="align-items:flex-start"><span class="cb on"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Send automatic follow-ups from Pebble Audio conversations to iOS Reminders</div></div></div>
+                  <div class="r" style="align-items:flex-start"><span class="cb on"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Add a Pebble quick action to mark a moment as important</div></div></div>
+                </div>
+                <div class="sh">Also from today</div>
+                <div class="lc chk">
+                  <div class="r" style="align-items:flex-start"><span class="cb on"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Pay the clinic at the October 22 appointment</div><div class="m urgent"><svg class="excl"><use href="#i-excl"/></svg>Due today</div></div></div>
+                  <div class="r" style="align-items:flex-start"><span class="cb"></span><div class="grow"><div class="t">Look up DHL locations and their mailing details</div><div class="m"><svg class="ic"><use href="#i-watch"/></svg>Marked on your watch at 2:41 PM</div></div></div>
+                  <div class="r" style="align-items:flex-start"><span class="cb"></span><div class="grow"><div class="t">Talk to Austin’s mother about when Austin can visit Vietnam</div></div></div>
+                  <div class="r" style="align-items:flex-start"><span class="cb"></span><div class="grow"><div class="t">Buy a plain black shirt without a logo for stage blacks</div></div></div>
+                </div>
+              </div>
+              <div class="dock">
+                <button class="btn-primary">Add 4 to Reminders</button>
+                <button class="btn-plain">Not Now</button>
+              </div>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>The review sheet</b>Pre-ticked: what you asked for, and anything with a date. The button counts what’s ticked; the unticked stay in Follow-ups.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:20</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="sh">Reminders</div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Evening review</span><span class="switch on"></span></div>
+                <div class="r"><span class="t grow">Time</span><span class="timepill">8:00 PM</span></div>
+                <div class="r"><span class="t grow">List</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Alert on the due date</span><span class="switch on"></span></div>
+                <div class="r"><span class="t grow">Alert time</span><span class="timepill">9:00 AM</span></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab on"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Settings, D’s version</b>The review time replaces C’s “Add what you ask for” switch. Notification permission is asked when this switch is first turned on.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ Shared ═══════════════════════════════ -->
+  <section class="dir" id="shared">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">S</span><h2>Shared: the list, and the first time</h2></div>
+      <p>The same in every direction. Settings gets one new row. There’s no explainer screen: the first tap on Add to Reminders is the explanation, iOS asks once, and that first add says which list it went to, which the app made for you. <b>The one real choice is the list</b>, and it’s a picker of your actual lists, never typed.</p>
+    </div>
+    <div class="frames">
+      <!-- S1 Settings root -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:20</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="scroll" style="padding-top:56px">
+              <div class="largetitle" style="padding-top:2px">Settings</div>
+              <div class="lc">
+                <div class="r" style="align-items:flex-start"><span style="width:36px;height:36px;border-radius:9px;background:var(--tint-fill-12);color:var(--tint);display:flex;align-items:center;justify-content:center;flex:none"><svg class="ic" style="width:20px;height:20px"><use href="#i-watch"/></svg></span><div class="grow"><div class="t semi">Pebble Time 2</div><div class="sub" style="color:#248A3D">Recording · connected</div></div><svg class="chev" style="margin-top:4px"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Record from your Pebble</span><span class="switch on"></span></div>
+                <div class="r"><div class="grow"><div class="t">Alert me about missed audio</div><div class="sub">Only long gaps, at most one an hour.</div></div><span class="switch"></span></div>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Transcription &amp; AI</span><span class="val">Soniox · GPT-6</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r ring" style="border-radius:0"><span class="t grow">Follow-ups</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Storage</span><span class="val">2.1 GB · 383 recordings</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Privacy</span><span class="val">Soniox and OpenAI</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">About You</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Diagnostics</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="footer">Recordings are sent to Soniox, transcripts to OpenAI.</div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab on"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Settings: one new row</b>“Follow-ups,” showing where they go. Before the first add it reads “Not set up.” (Outline is for review only.)</figcaption>
+      </figure>
+
+      <!-- S2 List picker -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:21</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">List</div><div></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="lc chk">
+                <div class="r"><span class="lg l"><svg><use href="#i-list"/></svg></span><span class="t grow">Pebble Audio</span><svg class="ic" style="width:20px;height:20px;color:var(--tint);stroke-width:2.4"><use href="#i-check"/></svg></div>
+              </div>
+              <div class="sh">Your lists</div>
+              <div class="lc chk">
+                <div class="r"><span class="lg l" style="--lc:var(--list-blue)"><svg><use href="#i-list"/></svg></span><span class="t grow">Reminders</span></div>
+                <div class="r"><span class="lg l" style="--lc:var(--list-orange)"><svg><use href="#i-list"/></svg></span><span class="t grow">Home</span></div>
+                <div class="r"><span class="lg l" style="--lc:var(--list-red)"><svg><use href="#i-list"/></svg></span><span class="t grow">Work</span></div>
+                <div class="r"><span class="lg l" style="--lc:var(--list-green)"><svg><use href="#i-list"/></svg></span><span class="t grow">Groceries</span></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab on"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>Choosing the list</b>Your real lists, in their own colors. Picking one moves only what’s added from now on.</figcaption>
+      </figure>
+
+      <!-- S3 Step before permission -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div class="trail"><span class="glass">Edit</span></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="card" style="display:flex; flex-direction:column; gap:12px">
+                <div class="d-title">Pay the clinic at the October 22 appointment</div>
+                <div class="why">If this slips, you’ll have to settle the bill separately later.</div>
+                <button class="btn-incard">Mark Done</button>
+                <button class="btn-bordered" style="margin-top:-4px"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</button>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Due</span><span class="val urgent">today</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Priority</span><span class="val">High</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Put off until</span><span class="val">Not put off</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="card" style="display:flex; flex-direction:column; gap:10px">
+                <div class="cardhead">Where this came from</div>
+                <div class="quote"><p>“I’ll pay the clinic when I’m there on the twenty-second.”</p></div>
+                <div class="foot13">Heard today at 11:20 AM · Call about the appointment</div>
+              </div>
+            </div>
+            <span class="touch" style="left:188px; top:290px"></span>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>1 · The first tap</b>Any follow-up, old or new, can be sent by hand from its own screen. The Add on Today’s strip works the same way.</figcaption>
+      </figure>
+
+      <!-- S4 Permission alert -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div class="trail"><span class="glass">Edit</span></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="card" style="display:flex; flex-direction:column; gap:12px">
+                <div class="d-title">Pay the clinic at the October 22 appointment</div>
+                <div class="why">If this slips, you’ll have to settle the bill separately later.</div>
+                <button class="btn-incard">Mark Done</button>
+                <button class="btn-bordered" style="margin-top:-4px"><svg class="ic"><use href="#i-plus"/></svg>Add to Reminders</button>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Due</span><span class="val urgent">today</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Priority</span><span class="val">High</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Put off until</span><span class="val">Not put off</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="alertscrim"></div>
+          <div class="alert">
+            <h5>“Pebble Audio” Would Like Full Access to Your Reminders</h5>
+            <p>Follow-ups you add go to a list in Reminders. Tick one off in either place and it’s done in both.</p>
+            <div class="ab">Allow Full Access</div>
+            <div class="ab">Don’t Allow</div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>2 · iOS asks, once</b>The only copy we write here is the purpose line, and it’s where the two-way tick is said, once.</figcaption>
+      </figure>
+
+      <!-- S5 After -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:12</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div class="trail"><span class="glass">Edit</span></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="card" style="display:flex; flex-direction:column; gap:12px">
+                <div class="d-title">Pay the clinic at the October 22 appointment</div>
+                <div class="why">If this slips, you’ll have to settle the bill separately later.</div>
+                <button class="btn-incard">Mark Done</button>
+              </div>
+              <div class="lc">
+                <div class="r"><span class="t grow">Due</span><span class="val urgent">today</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Priority</span><span class="val">High</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r" style="background:var(--tint-fill-10)"><span class="t grow">Reminders</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="t grow">Put off until</span><span class="val">Not put off</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+              <div class="card" style="display:flex; flex-direction:column; gap:10px">
+                <div class="cardhead">Where this came from</div>
+                <div class="quote"><p>“I’ll pay the clinic when I’m there on the twenty-second.”</p></div>
+                <div class="foot13">Heard today at 11:20 AM · Call about the appointment</div>
+              </div>
+            </div>
+            <div class="snack"><span class="msg">Added to a new Pebble Audio list.</span><span class="act">Undo</span></div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab on"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>3 · Added</b>The button becomes a Reminders row showing the list. The first time only, the snackbar names the new list.</figcaption>
+      </figure>
+
+      <!-- S6 Denied -->
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div>
+          <div class="sb"><span>3:22</span><svg><use href="#i-sb"/></svg></div>
+          <div class="content">
+            <div class="inlinebar clear"><div><span class="glass round"><svg class="ic chev-back"><use href="#i-back"/></svg></span></div><div class="ttl">Follow-ups</div><div></div></div>
+            <div class="scroll" style="padding-top:102px">
+              <div class="card" style="display:flex; flex-direction:column; gap:6px">
+                <div style="display:flex; align-items:center; gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:var(--attention)"></span><span style="font:600 17px/22px var(--font); letter-spacing:-0.43px">Reminders access is off</span></div>
+                <div class="foot13" style="color:var(--tertiary); font-size:15px; line-height:20px">Turn it on in iOS Settings to add follow-ups.</div>
+                <button class="btn-incard" style="margin-top:8px">Open Settings</button>
+              </div>
+              <div class="sh">Reminders</div>
+              <div class="lc" style="opacity:0.45">
+                <div class="r"><div class="grow"><div class="t">Add what you ask for</div><div class="sub">When you say “remind me to…”</div></div><span class="switch on"></span></div>
+                <div class="r"><span class="t grow">List</span><span class="val"><span class="lg s"><svg><use href="#i-list"/></svg></span>Pebble Audio</span><svg class="chev"><use href="#i-chev"/></svg></div>
+              </div>
+            </div>
+            <nav class="tabbar"><span class="tab"><svg class="ic"><use href="#i-waveform"/></svg>Today</span><span class="tab"><svg class="ic"><use href="#i-clock"/></svg>History</span><span class="tab"><svg class="ic"><use href="#i-checklist"/></svg>Follow-ups</span><span class="tab"><svg class="ic"><use href="#i-sparkles"/></svg>Ask</span><span class="tab on"><svg class="ic"><use href="#i-gear"/></svg>Settings</span></nav>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>If you said Don’t Allow</b>Follow-ups keep working in the app. The status card pattern from Today, with the one action that fixes it.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+</body>
+</html>
