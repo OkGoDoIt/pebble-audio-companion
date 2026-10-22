@@ -88,7 +88,9 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         #expect(written.first?.quote == "I got to take Theo to the airport at 7:00")
         #expect(written.first?.dueAtMs != nil)
         #expect(try await candidates.pending(limit: 10).isEmpty)
-        #expect(try await followUps.list(scope: .open, nowMs: clock.now).count == 1)
+        // Something the app noticed waits for the person's review; it is not a reminder yet.
+        #expect(try await followUps.list(scope: .suggested, nowMs: clock.now).count == 1)
+        #expect(try await followUps.list(scope: .open, nowMs: clock.now).isEmpty)
     }
 
     /// A "tomorrow" spoken inside a recording is routinely behind us by the time it is read.
@@ -207,9 +209,10 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         try await followUps.upsertExtracted(
             FollowUp(
                 id: "old", text: "Something from a fortnight ago", done: false,
-                sourceConversationId: "conv-1", sourceSegmentId: "seg-1", createdAtMs: old))
+                sourceConversationId: "conv-1", sourceSegmentId: "seg-1", createdAtMs: old,
+                stage: .suggested))
         #expect(try await curator(nil).archiveStale() == 1)
-        #expect(try await followUps.list(scope: .open, nowMs: clock.now).isEmpty)
+        #expect(try await followUps.list(scope: .suggested, nowMs: clock.now).isEmpty)
         #expect(try await followUps.list(scope: .archived).count == 1)
     }
 
@@ -246,7 +249,8 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         try await followUps.upsertExtracted(
             FollowUp(
                 id: "old", text: "Something from a fortnight ago", done: false,
-                sourceConversationId: "conv-1", sourceSegmentId: "seg-1", createdAtMs: old))
+                sourceConversationId: "conv-1", sourceSegmentId: "seg-1", createdAtMs: old,
+                stage: .suggested))
         #expect(try await curator(nil).archiveStale() == 1)
 
         try await followUps.setArchived(id: "old", false, nowMs: clock.now)

@@ -824,6 +824,29 @@ public struct AppDatabase: Sendable {
         // A candidate drawn from beside a sentence in which the person asked, out loud, for a
         // reminder or a follow-up (`FollowUpRequestDetector`). Curation keeps those unless they
         // repeat something already on the list.
+        // Follow-ups and reminders (`docs/reminders.md`). Every row from before is a reminder:
+        // what the person already has never goes back into review. Copies of one open item
+        // (the 2026-10-21 re-extraction made several: same conversation and words, or the same
+        // task) are filed away, the oldest kept.
+        migrator.registerMigration("follow-ups-stage-v1") { db in
+            guard try db.tableExists("follow_ups") else { return }
+            let columns = Set(try db.columns(in: "follow_ups").map(\.name))
+            let additions: [(String, String)] = [
+                ("stage", "TEXT NOT NULL DEFAULT 'reminder'"),
+                ("decidedAtMs", "INTEGER"),
+                ("appleId", "TEXT"),
+                ("appleListId", "TEXT"),
+            ]
+            for (name, definition) in additions where !columns.contains(name) {
+                try db.execute(sql: "ALTER TABLE follow_ups ADD COLUMN \(name) \(definition)")
+            }
+            try db.execute(
+                sql: "CREATE INDEX IF NOT EXISTS follow_ups_stage ON follow_ups(stage, archivedAtMs)")
+            try db.execute(
+                sql: "CREATE INDEX IF NOT EXISTS follow_ups_apple ON follow_ups(appleId)")
+            try FollowUpStore.fileAwayCopies(db, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
+        }
+
         // Moments the person marked as important on the watch (`MomentStore`).
         migrator.registerMigration("moments-v1") { db in
             try db.execute(

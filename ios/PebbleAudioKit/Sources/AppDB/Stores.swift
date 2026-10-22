@@ -55,13 +55,25 @@ public enum FollowUpOrigin: String, Equatable, Sendable, Codable {
     case assistant
 }
 
-/// Which slice of the list a query wants. `open` is what the app shows by default: not done,
-/// not archived, and not snoozed past the given clock.
+/// Where a follow-up stands (`docs/reminders.md`): something the app noticed, waiting for the
+/// person; a reminder, which they said yes to or asked for; or skipped, which they said no to.
+/// Skipped rows are kept: they stay findable in their conversation, and the summary can turn
+/// them back into reminders.
+public enum FollowUpStage: String, Equatable, Sendable, Codable, CaseIterable {
+    case suggested
+    case reminder
+    case skipped
+}
+
+/// Which slice of the list a query wants. `open` is what the app shows by default: reminders
+/// not done, not archived, and not snoozed past the given clock. `suggested` is the review queue.
 public enum FollowUpScope: Equatable, Sendable {
     case open
     case completed
     case archived
     case all
+    /// Follow-ups waiting for review: suggested, not archived.
+    case suggested
 }
 
 public struct FollowUp: Equatable, Sendable, Identifiable {
@@ -107,6 +119,16 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
     /// account for the recording. Nil when the moment is unknown — a hand-written item, an
     /// item whose quote matched no diarized turn, or a row nothing has filled yet.
     public var sourceWall: SegmentWallRange?
+    /// Suggested, a reminder, or skipped. Rows from before reminders existed are reminders.
+    public var stage: FollowUpStage
+    /// When it became a reminder or was skipped, by the person or automatically: what the
+    /// review's summary of the day lists.
+    public var decidedAtMs: Int64?
+    /// The Apple Reminders item it is kept as (`EKReminder.calendarItemIdentifier`), while
+    /// reminders are kept in Apple Reminders.
+    public var appleId: String?
+    /// The Apple Reminders list it was last seen in.
+    public var appleListId: String?
 
     public init(
         id: String, text: String, done: Bool, sourceConversationId: String?,
@@ -124,11 +146,19 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         touchedAtMs: Int64? = nil,
         origin: FollowUpOrigin = .ai,
         model: String? = nil,
-        sourceWall: SegmentWallRange? = nil
+        sourceWall: SegmentWallRange? = nil,
+        stage: FollowUpStage = .reminder,
+        decidedAtMs: Int64? = nil,
+        appleId: String? = nil,
+        appleListId: String? = nil
     ) {
         self.id = id
         self.text = text
         self.done = done
+        self.stage = stage
+        self.decidedAtMs = decidedAtMs
+        self.appleId = appleId
+        self.appleListId = appleListId
         self.sourceConversationId = sourceConversationId
         self.sourceSegmentId = sourceSegmentId
         self.createdAtMs = createdAtMs
@@ -156,9 +186,9 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
         return snoozedUntilMs > nowMs
     }
 
-    /// On the working list right now: not done, not archived, not snoozed.
+    /// On the working list right now: a reminder, not done, not archived, not snoozed.
     public func isActive(at nowMs: Int64) -> Bool {
-        !done && !isArchived && !isSnoozed(at: nowMs)
+        stage == .reminder && !done && !isArchived && !isSnoozed(at: nowMs)
     }
 }
 
@@ -801,7 +831,11 @@ public struct FollowUpStore: Sendable {
             touchedAtMs: row["touchedAtMs"],
             origin: FollowUpOrigin(rawValue: row["origin"] ?? "ai") ?? .ai,
             model: row["model"],
-            sourceWall: SegmentWallRange.sourceWall(from: row))
+            sourceWall: SegmentWallRange.sourceWall(from: row),
+            stage: FollowUpStage(rawValue: row["stage"] ?? "reminder") ?? .reminder,
+            decidedAtMs: row["decidedAtMs"],
+            appleId: row["appleId"],
+            appleListId: row["appleListId"])
     }
 
     /// Every column, in one place, so `add` and `upsert` cannot drift apart.
@@ -810,8 +844,9 @@ public struct FollowUpStore: Sendable {
             (id, text, done, sourceConversationId, sourceSegmentId, createdAtMs,
              quote, why, dueAtMs, priority, sourceStartMs, sourceEndMs,
              completedAtMs, archivedAtMs, snoozedUntilMs, editedAtMs, touchedAtMs, origin,
-             model, sourceWallStartMs, sourceWallEndMs, sourceWallApproximate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             model, sourceWallStartMs, sourceWallEndMs, sourceWallApproximate,
+             stage, decidedAtMs, appleId, appleListId)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     private static func arguments(_ item: FollowUp) -> StatementArguments {
@@ -821,7 +856,8 @@ public struct FollowUpStore: Sendable {
             item.sourceStartMs, item.sourceEndMs, item.completedAtMs, item.archivedAtMs,
             item.snoozedUntilMs, item.editedAtMs, item.touchedAtMs, item.origin.rawValue,
             item.model, item.sourceWall?.startMs, item.sourceWall?.endMs,
-            item.sourceWall?.isApproximate,
+            item.sourceWall?.isApproximate, item.stage.rawValue, item.decidedAtMs, item.appleId,
+            item.appleListId,
         ]
     }
 
@@ -836,7 +872,8 @@ public struct FollowUpStore: Sendable {
         let item = FollowUp(
             id: UUID().uuidString.lowercased(), text: text, done: false,
             sourceConversationId: conversationId, sourceSegmentId: segmentId, createdAtMs: nowMs,
-            dueAtMs: dueAtMs, priority: priority, origin: .user)
+            dueAtMs: dueAtMs, priority: priority, origin: .user, stage: .reminder,
+            decidedAtMs: nowMs)
         try await db.writer.write { db in
             try db.execute(sql: Self.insertSQL, arguments: Self.arguments(item))
         }
@@ -846,9 +883,9 @@ public struct FollowUpStore: Sendable {
     /// Writes an item the curation pass decided to keep.
     ///
     /// The conflict clause is deliberately narrow. `done`, `completedAtMs`, `archivedAtMs`,
-    /// `snoozedUntilMs` and an edited `text` are the person's answer to the item, and a second
-    /// pass over the same conversation must never overwrite an answer: re-running extraction
-    /// cannot un-tick, un-archive, un-snooze, or un-edit anything.
+    /// `snoozedUntilMs`, `stage` and an edited `text` are the person's answer to the item, and a
+    /// second pass over the same conversation must never overwrite an answer: re-running
+    /// extraction cannot un-tick, un-archive, un-snooze, un-skip, or un-edit anything.
     public func upsertExtracted(_ item: FollowUp) async throws {
         try await db.writer.write { db in
             try db.execute(
@@ -919,7 +956,7 @@ public struct FollowUpStore: Sendable {
                 // not show what you deliberately deferred.
                 sql = """
                     SELECT * FROM follow_ups
-                    WHERE done = 0 AND archivedAtMs IS NULL
+                    WHERE done = 0 AND archivedAtMs IS NULL AND stage = 'reminder'
                     ORDER BY (snoozedUntilMs IS NOT NULL AND snoozedUntilMs > ?),
                              (dueAtMs IS NULL), dueAtMs, priority DESC, createdAtMs DESC, id
                     """
@@ -927,8 +964,16 @@ public struct FollowUpStore: Sendable {
             case .completed:
                 sql = """
                     SELECT * FROM follow_ups
-                    WHERE done = 1 AND archivedAtMs IS NULL
+                    WHERE done = 1 AND archivedAtMs IS NULL AND stage = 'reminder'
                     ORDER BY COALESCE(completedAtMs, createdAtMs) DESC, id
+                    """
+                arguments = []
+            case .suggested:
+                // Oldest first: the review reads the day in the order things were said.
+                sql = """
+                    SELECT * FROM follow_ups
+                    WHERE stage = 'suggested' AND archivedAtMs IS NULL AND done = 0
+                    ORDER BY COALESCE(sourceWallStartMs, createdAtMs), id
                     """
                 arguments = []
             case .archived:
@@ -1048,6 +1093,94 @@ public struct FollowUpStore: Sendable {
         }
     }
 
+    /// The person's answer to a follow-up: a reminder, or skipped (or back to waiting). Stamps
+    /// `decidedAtMs` so the summary of the day lists it, and `touchedAtMs` so the age rule
+    /// leaves it alone. Coming back out of the archive with it, like a tick does.
+    public func setStage(
+        id: String, _ stage: FollowUpStage,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups
+                    SET stage = ?, decidedAtMs = ?, touchedAtMs = ?, archivedAtMs = NULL
+                    WHERE id = ?
+                    """,
+                arguments: [stage.rawValue, stage == .suggested ? nil : nowMs, nowMs, id])
+        }
+    }
+
+    /// Follow-ups decided (automatically or by the person) in `[fromMs, toMs)`, reminders and
+    /// skipped alike, in the order they were said: the review's summary of a day.
+    public func decided(fromMs: Int64, toMs: Int64) async throws -> [FollowUp] {
+        try await db.reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM follow_ups
+                    WHERE decidedAtMs >= ? AND decidedAtMs < ? AND stage != 'suggested'
+                      AND origin = 'ai'
+                    ORDER BY COALESCE(sourceWallStartMs, createdAtMs), id
+                    """,
+                arguments: [fromMs, toMs]
+            ).map(Self.followUp(from:))
+        }
+    }
+
+    /// How many follow-ups wait for review.
+    public func suggestedCount() async throws -> Int {
+        try await db.reader.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*) FROM follow_ups
+                    WHERE stage = 'suggested' AND archivedAtMs IS NULL AND done = 0
+                    """) ?? 0
+        }
+    }
+
+    /// Files away copies of one open follow-up, keeping the oldest: the same conversation and
+    /// the same words, or the same task. Run once, when reminders arrived (`follow-ups-stage-v1`);
+    /// the 2026-10-21 re-extraction had made several. Returns how many.
+    @discardableResult
+    public static func fileAwayCopies(_ db: Database, nowMs: Int64) throws -> Int {
+        try db.execute(
+            sql: """
+                    UPDATE follow_ups SET archivedAtMs = ?
+                    WHERE id IN (
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY sourceConversationId, lower(trim(quote))
+                                ORDER BY createdAtMs, id) AS copy
+                            FROM follow_ups
+                            WHERE done = 0 AND archivedAtMs IS NULL
+                              AND sourceConversationId IS NOT NULL AND quote IS NOT NULL
+                              AND trim(quote) != ''
+                        ) WHERE copy > 1
+                        UNION
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY lower(trim(text, ' .'))
+                                ORDER BY createdAtMs, id) AS copy
+                            FROM follow_ups
+                            WHERE done = 0 AND archivedAtMs IS NULL
+                        ) WHERE copy > 1
+                    )
+                    """,
+            arguments: [nowMs])
+        return db.changesCount
+    }
+
+    /// Records the Apple Reminders item a reminder is kept as (nil: no longer kept there).
+    public func setApple(id: String, appleId: String?, listId: String?) async throws {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: "UPDATE follow_ups SET appleId = ?, appleListId = ? WHERE id = ?",
+                arguments: [appleId, listId, id])
+        }
+    }
+
     public func setArchived(
         id: String, _ archived: Bool,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1072,6 +1205,9 @@ public struct FollowUpStore: Sendable {
     public func insertFromAssistant(_ item: FollowUp) async throws -> Bool {
         var stamped = item
         stamped.origin = .assistant
+        // Someone asked an assistant for it: a reminder, not a suggestion.
+        stamped.stage = .reminder
+        stamped.decidedAtMs = stamped.decidedAtMs ?? stamped.createdAtMs
         let toWrite = stamped
         return try await db.writer.write { db in
             try db.execute(
@@ -1174,6 +1310,7 @@ public struct FollowUpStore: Sendable {
                 sql: """
                     UPDATE follow_ups SET archivedAtMs = ?
                     WHERE done = 0 AND archivedAtMs IS NULL AND origin = 'ai'
+                      AND stage = 'suggested'
                       AND touchedAtMs IS NULL AND editedAtMs IS NULL
                       AND snoozedUntilMs IS NULL AND dueAtMs IS NULL
                       AND createdAtMs < ?
@@ -1192,7 +1329,7 @@ public struct FollowUpStore: Sendable {
                 db,
                 sql: """
                     SELECT COUNT(*) FROM follow_ups
-                    WHERE done = 0 AND archivedAtMs IS NULL
+                    WHERE done = 0 AND archivedAtMs IS NULL AND stage = 'reminder'
                       AND (snoozedUntilMs IS NULL OR snoozedUntilMs <= ?)
                     """,
                 arguments: [nowMs]) ?? 0
