@@ -291,19 +291,30 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     // Both delegate methods are `nonisolated`: UserNotifications documents no thread for them,
     // so nothing here assumes one. The response is reduced to a `Route` (a value) on the caller's
     // thread and only that crosses to the main actor, where the router state lives.
+    //
+    // The completion-handler form, never `async`: the async form's bridging thunk calls UIKit's
+    // handler from whatever thread the body finished on, and that handler updates the app
+    // snapshot, which asserts the main thread. It aborted the app on 2026-10-23 at 01:12.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
         // A Muse handoff opens what it is about: a web page, a place, the Muse chat.
-        if let url = MuseHandoffNotifier.url(for: response) {
-            await MainActor.run { UIApplication.shared.open(url) }
-            return
+        let museURL = MuseHandoffNotifier.url(for: response)
+        let route =
+            museURL == nil
+            ? Self.route(for: response.notification.request.content.userInfo) : nil
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if let museURL {
+                    UIApplication.shared.open(museURL)
+                } else if let route {
+                    self.deliver(route)
+                }
+            }
+            completionHandler()
         }
-        guard let route = Self.route(for: response.notification.request.content.userInfo) else {
-            return
-        }
-        await deliver(route)
     }
 
     private func deliver(_ route: Route) {
@@ -316,14 +327,17 @@ final class LossNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler:
+            @escaping @Sendable (UNNotificationPresentationOptions) -> Void
+    ) {
         // A reminder is an alert the person asked for: it shows even with the app open.
         if notification.request.content.userInfo[reminderNotificationRouteKey] != nil {
-            return [.banner, .list, .sound]
+            completionHandler([.banner, .list, .sound])
+            return
         }
         // In the foreground the coverage strip is already showing the gap, so this lands in
         // Notification Center instead of interrupting with a banner over the same information.
-        return [.list]
+        completionHandler([.list])
     }
 }
