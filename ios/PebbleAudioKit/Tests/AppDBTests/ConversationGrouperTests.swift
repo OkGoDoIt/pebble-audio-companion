@@ -274,6 +274,64 @@ import WireProtocol
         #expect(closed.structureChanged)
     }
 
+    // Rewriting both tables whole on every change put the app over iOS's 1 GB/day disk-write
+    // limit: a creeping live extent must cost one row, and whatever is written must leave the
+    // tables exactly as a from-scratch write of the same grouping would.
+    @Test func aRebuildWritesOnlyTheConversationsThatChanged() async throws {
+        let db = try AppDatabase.inMemory()
+        let closed = (0..<3).map { i in
+            makeSegment(
+                id: "c\(i)", stream: UInt32(10 + i), startTimeMs: t0 + minutesMs(60 * Int64(i)),
+                durationSamples: minutesSamples(10))
+        }
+        func live(minutes: UInt64) -> SegmentMeta {
+            makeSegment(
+                id: "live", stream: 2, startTimeMs: t0 + minutesMs(600),
+                durationSamples: minutesSamples(minutes))
+        }
+        func totalChanges() async throws -> Int {
+            try await db.writer.write { try Int.fetchOne($0, sql: "SELECT total_changes()") ?? -1 }
+        }
+        func persisted(_ db: AppDatabase) async throws -> [[String?]] {
+            try await db.reader.read { d in
+                try Row.fetchAll(
+                    d,
+                    sql: """
+                        SELECT c.id, c.startMs, c.endMs, c.state, s.segmentId, s.ordinal,
+                            s.transcriptionState, s.startMediaMs, s.endMediaMs
+                        FROM conversations c
+                        LEFT JOIN conversation_segments s ON s.conversationId = c.id
+                        ORDER BY c.id, s.ordinal
+                        """
+                ).map { row in (0..<row.count).map { i in row[i].map { "\($0)" } } }
+            }
+        }
+        func rebuild(_ segments: [SegmentMeta], open: String?, in db: AppDatabase) async throws
+            -> ConversationGrouper.RebuiltGrouping
+        {
+            try await ConversationGrouper.rebuildDetailed(
+                segments: segments, pauses: [], openSegmentId: open, fallbackTimeZoneID: "UTC",
+                db: db)
+        }
+
+        _ = try await rebuild(closed + [live(minutes: 2)], open: "live", in: db)
+        let before = try await totalChanges()
+        let grown = try await rebuild(closed + [live(minutes: 3)], open: "live", in: db)
+        #expect(grown.changed)
+        #expect(try await totalChanges() - before == 1, "one UPDATE, not the whole library")
+
+        // A closed segment, a state change and a retention deletion together: the tables
+        // match a fresh write of the same grouping.
+        var done = closed
+        done[1].transcriptionState = .complete
+        let final = Array(done.dropFirst()) + [live(minutes: 3)]
+        _ = try await rebuild(final, open: nil, in: db)
+        let fresh = try AppDatabase.inMemory()
+        _ = try await rebuild(final, open: nil, in: fresh)
+        #expect(try await persisted(db) == persisted(fresh))
+        #expect(try await persisted(db).allSatisfy { $0[4] != "c0" }, "c0's rows are gone")
+    }
+
     @Test func previousGroupingKeepsIdStableWhenFirstMemberIsDeleted() {
         let a = makeSegment(
             id: "a", stream: 1, startTimeMs: t0, durationSamples: minutesSamples(10))

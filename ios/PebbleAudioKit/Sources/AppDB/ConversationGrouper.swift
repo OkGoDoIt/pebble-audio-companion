@@ -626,19 +626,41 @@ public enum ConversationGrouper {
             stored: stored, next: next, conversations: conversations, in: db)
         if stored == next { return ApplyOutcome(wrote: false, structureChanged: false) }
         let structureChanged = structure(of: stored) != structure(of: next)
-        try db.execute(sql: "DELETE FROM conversation_segments")
-        try db.execute(sql: "DELETE FROM conversations")
+        // Only the conversations that differ are written. Rewriting both tables whole on every
+        // change cost ~1 MB of WAL per pass on a 1,400-conversation library — and the live
+        // conversation's extent changes on nearly every pass — which put the app over iOS's
+        // 1 GB/day disk-write limit (2026-10-22). Usually this is one UPDATE.
+        let storedById = rowsByConversation(stored)
+        let nextById = rowsByConversation(next)
+        for id in storedById.keys where nextById[id] == nil {
+            // Cascades to its conversation_segments rows.
+            try db.execute(sql: "DELETE FROM conversations WHERE id = ?", arguments: [id])
+        }
         for convo in conversations {
-            try db.execute(
-                sql: """
-                    INSERT INTO conversations (id, startMs, endMs, timezone, state, startReason)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    convo.id, convo.startMs, convo.endMs, convo.timeZoneID,
-                    convo.isLive ? "live" : "closed", convo.startReason?.rawValue,
-                ]
-            )
+            guard let wanted = nextById[convo.id] else { continue }
+            let had = storedById[convo.id]
+            if had?.conversation != wanted.conversation {
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversations (id, startMs, endMs, timezone, state, startReason)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            startMs = excluded.startMs, endMs = excluded.endMs,
+                            timezone = excluded.timezone, state = excluded.state,
+                            startReason = excluded.startReason
+                        """,
+                    arguments: [
+                        convo.id, convo.startMs, convo.endMs, convo.timeZoneID,
+                        convo.isLive ? "live" : "closed", convo.startReason?.rawValue,
+                    ]
+                )
+            }
+            if had?.members == wanted.members { continue }
+            if had != nil {
+                try db.execute(
+                    sql: "DELETE FROM conversation_segments WHERE conversationId = ?",
+                    arguments: [convo.id])
+            }
             for (ordinal, member) in convo.members.enumerated() {
                 try db.execute(
                     sql: """
@@ -660,6 +682,26 @@ public enum ConversationGrouper {
     /// Exactly the columns `apply` writes, in the order it writes them, so equality means
     /// "the write would be a no-op" and nothing else.
     private typealias StoredImage = [[String?]]
+
+    /// One conversation's slice of an image: its own row and its member rows.
+    private struct ConversationRows: Equatable {
+        var conversation: [String?]
+        var members: [[String?]] = []
+    }
+
+    /// The image split per conversation id (row[1] is the id on both row kinds).
+    private static func rowsByConversation(_ image: StoredImage) -> [String: ConversationRows] {
+        var out: [String: ConversationRows] = [:]
+        for row in image {
+            guard let id = row[1] else { continue }
+            if row.first == "c" {
+                out[id, default: ConversationRows(conversation: row)].conversation = row
+            } else {
+                out[id, default: ConversationRows(conversation: [])].members.append(row)
+            }
+        }
+        return out
+    }
 
     /// The image with the extent columns (startMs, endMs) blanked — what is left is the
     /// membership, the ranges and the states, which is what `structureChanged` compares.
