@@ -57,3 +57,16 @@ saved mark and note. Deleting a mark does not remove a reminder the person alrea
 A fresh read of G17 on 2026-10-24 found three marks, at 00:49:52, 00:49:56 and 00:51:42 +07 on
 the recording's clock. The flight recorder confirms all three were received. The previous
 screen had no collection or entry point, only pin rows deep inside a conversation transcript.
+
+## Verification and rollout (2026-10-24)
+
+The full Swift package suite (2,515 tests, two existing known issues), Kotlin protocol/transport
+(41 tests), 117 wire fixtures, and 24 firmware targets passed. The native release app and both
+firmware slots build. Migrating a copy of the phone database preserved all three existing marks.
+Simulator tests reported 723 passing tests and the final moment checks passed, but Xcode hung
+before finalizing its result bundle. Component renders were reviewed; physical interaction and
+post-install battery checks remain pending.
+
+G17 disconnected before installation. The app has **not** been installed. Firmware
+`v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. Install the new companion
+first, then the firmware. Marks saved by the existing firmware are already readable by the new app.
