@@ -82,11 +82,11 @@ crash reports. All samples were charging: on-battery cost remains unverified. Th
 check is scheduled for 08:00 +07 on October 25.
 
 The contextual Today/History/live-transcript follow-up passes 47 simulator tests (clean
-xcresult on iOS 26.5), 29 focused package tests, and state-initialization checks. The final
+xcresult on iOS 26.5), 45 focused package tests, and state-initialization checks. The final
 accessibility adjustment passes all six moment tests. Real SwiftUI renders were inspected at
 375, 820 and 1024 points in light/dark and at accessibility3. The existing medium History card
-also now wraps its time line at accessibility sizes instead of extending off the card. G17 disconnected again before this follow-up could
-be installed. Do not mistake the installed collection build for the contextual update.
+also now wraps its time line at accessibility sizes instead of extending off the card. The signed Release build from `3fe45ed0-dirty` (built `2026-10-24T17:29:15Z`) succeeded and
+passed codesign verification. G17 disconnected again before this follow-up could be installed. Do not mistake the installed collection build for the contextual update.
 
 Firmware `v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. The installed phone
 app supports it; marks saved by the existing firmware remain readable, with its old delivery limits.
