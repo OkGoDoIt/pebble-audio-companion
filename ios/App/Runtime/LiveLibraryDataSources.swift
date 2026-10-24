@@ -401,9 +401,9 @@ extension LiveWorld: ConversationDataSource {
             pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments)
         let marked =
             (try? await MomentStore(db: composition.database).moments(
-                fromWallMs: source.startMs, to: source.endMs + 1)) ?? []
+                fromWallMs: source.startMs, to: max(source.startMs + 1, source.endMs))) ?? []
         let transcript = TranscriptItems.insertingMoments(
-            marked, into: walked.transcript, startMs: source.startMs, endMs: source.endMs + 1,
+            marked, into: walked.transcript, startMs: source.startMs, endMs: max(source.startMs + 1, source.endMs),
             timeZone: walked.zone ?? .current)
         let missingTicks = walked.missingTicks
         let provider = walked.provider
@@ -450,10 +450,24 @@ extension LiveWorld: ConversationDataSource {
     /// follow-ups change — the DB observation that existed all along and nothing subscribed to.
     func updates(conversationId: String) -> AsyncStream<Void> {
         let library = composition.runtime.library
-        return AsyncStream { continuation in
+        let moments = MomentStore(db: composition.database)
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
-                for await _ in library.observeConversation(id: conversationId) {
-                    continuation.yield(())
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        for await _ in library.observeConversation(id: conversationId) {
+                            guard !Task.isCancelled else { return }
+                            continuation.yield(())
+                        }
+                    }
+                    group.addTask {
+                        do {
+                            for try await _ in moments.observe() {
+                                guard !Task.isCancelled else { return }
+                                continuation.yield(())
+                            }
+                        } catch {}
+                    }
                 }
                 continuation.finish()
             }

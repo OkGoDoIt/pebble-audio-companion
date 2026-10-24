@@ -163,6 +163,7 @@ struct TranscriptMarker: Equatable, Identifiable {
     /// the row shows when it is tapped open. Empty whenever there is nothing more to say than
     /// `text` already does: quiet rows, and interruptions with a single known cause.
     var reasons: [TranscriptMarkerReason] = []
+    var momentId: String? = nil
 }
 
 /// One line of an opened interruption row: what happened, and how much of the gap it was.

@@ -513,18 +513,28 @@ struct TodayScreen: View {
 
             ListCard {
                 ForEach(viewModel.snapshot.conversations) { row in
-                    conversationRow(row)
+                    TodayConversationRow(row: row) {
+                        router.todayPath.append(row.isLive ? .live : .conversation(id: row.id, atMs: nil))
+                    }
                 }
             }
         }
     }
+}
 
-    private func conversationRow(_ row: ConversationRowDisplay) -> some View {
-        Button {
-            router.todayPath.append(
-                row.isLive ? .live : .conversation(id: row.id, atMs: nil)
-            )
-        } label: {
+struct TodayConversationRow: View {
+    let row: ConversationRowDisplay
+    var onOpen: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            conversationButton
+            if !row.moments.isEmpty { MarkedMomentLinks(moments: row.moments) }
+        }
+    }
+
+    private var conversationButton: some View {
+        Button(action: onOpen) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.title)

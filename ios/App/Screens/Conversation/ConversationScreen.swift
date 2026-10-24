@@ -21,6 +21,7 @@ struct ConversationScreen: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = ConversationViewModel()
     @State private var player = PlayerModel()
     /// The cold-audio fetch in progress, and why the last one failed. Both live on the screen:
@@ -75,7 +76,8 @@ struct ConversationScreen: View {
         // still being transcribed and has no title yet; without this the transcript, the AI
         // title and summary, and the follow-ups all land invisibly and the screen only catches
         // up if you navigate away and back.
-        .task(id: conversationId) {
+        .task(id: "\(conversationId)-\(scenePhase)") {
+            guard scenePhase == .active else { return }
             for await _ in AskLibraryDataSources.current.conversations.updates(
                 conversationId: conversationId)
             {

@@ -132,6 +132,15 @@ extension HistoryDigest {
         }
         guard !window.isEmpty else { return HistoryDigest(conversationIds: [], fingerprint: hasher.value) }
 
+        hasher.combine("moments")
+        for row in try Row.fetchAll(db,
+            sql: "SELECT id, wallMs, note FROM moments WHERE wallMs >= ? AND wallMs < ? ORDER BY wallMs, id",
+            arguments: [window.lowerBound, window.upperBound]) {
+            hasher.combine(row["id"] as String)
+            hasher.combine(row["wallMs"] as Int64)
+            hasher.combine(row["note"] as String)
+        }
+
         // Conversations overlapping the window: the same edges as `ConversationQueries.rows`.
         let conversations = try Row.fetchAll(
             db,

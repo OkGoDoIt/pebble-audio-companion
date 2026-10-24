@@ -76,12 +76,19 @@ struct ChapterCard: View {
             CardHeading(heading: HistoryLabels.heading(block))
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 .fixedSize(horizontal: false, vertical: true)
-            InlineTrailingLayout(spacing: 8) {
+            if dynamicTypeSize.isAccessibilitySize {
                 timeLine(main: time.main, missing: time.missing)
-                    .lineLimit(1)
                 if !topics.isEmpty || !block.people.isEmpty {
                     TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
-                        .fixedSize()
+                }
+            } else {
+                InlineTrailingLayout(spacing: 8) {
+                    timeLine(main: time.main, missing: time.missing)
+                        .lineLimit(1)
+                    if !topics.isEmpty || !block.people.isEmpty {
+                        TagPillRow(topics: topics, people: block.people, onSelect: onOpenTag)
+                            .fixedSize()
+                    }
                 }
             }
             if let first = block.followUps.first {

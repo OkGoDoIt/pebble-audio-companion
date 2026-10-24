@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// The jump-to-date sheet (plan 5.7, 7.12): a month calendar in a medium sheet. Days with
-/// recordings carry a dot; days outside the recorded range are disabled. Picking a day closes
+/// recordings or saved moments carry a dot; days outside the content range are disabled. Picking a day closes
 /// the sheet and shows that date at the current level. On the Week level a whole week is
 /// picked (`UICalendarSelectionWeekOfYear`, iOS 18+, so available on the iOS 26 target).
 struct JumpCalendarSheet: View {

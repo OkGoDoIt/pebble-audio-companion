@@ -80,6 +80,15 @@ struct DayPage: View, Equatable {
 
     @ViewBuilder
     private func content(_ page: HistoryDayPage) -> some View {
+        let unplaced = page.moments.filter { mark in
+            !page.entries.contains { mark.wallMs >= $0.startMs && mark.wallMs < $0.endMs }
+        }
+        let first = page.entries.first?.startMs ?? Int64.max
+        let before = unplaced.filter { $0.wallMs < first }
+        if !before.isEmpty {
+            Card { MarkedMomentLinks(moments: before, timeZone: TimeZone(identifier: page.day.zoneID) ?? .current) }
+                .padding(.bottom, Tokens.blockGap)
+        }
         if !page.day.hasRecordings {
             Text(Copy.History.nothingRecorded)
                 .font(AppFont.historyBody(dynamicTypeSize))
@@ -96,12 +105,18 @@ struct DayPage: View, Equatable {
             DayTimeline(
                 day: complete ? page.day : DayReveal.prefix(page.day, until: page.entries, revealed),
                 entries: complete ? page.entries : Array(page.entries.prefix(revealed)),
+                moments: page.moments,
                 liveLine: page.liveLine, isComplete: complete,
                 onOpenChapter: actions.openChapter, onOpenFollowUp: actions.openFollowUp,
                 onOpenGap: actions.openGap, onOpenLive: actions.openLive, onOpenTag: actions.openTag)
             if complete, let edge = page.day.trailingEdge {
                 TimelineEdgeLine(edge: edge, leading: false, zoneID: zoneID(of: page.day.items.last))
             }
+        }
+        let after = unplaced.filter { $0.wallMs >= first }
+        if !after.isEmpty, revealed >= page.entries.count {
+            Card { MarkedMomentLinks(moments: after, timeZone: TimeZone(identifier: page.day.zoneID) ?? .current) }
+                .padding(.top, Tokens.blockGap)
         }
     }
 

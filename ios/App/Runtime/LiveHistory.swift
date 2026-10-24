@@ -530,7 +530,7 @@ final class LiveHistory: HistoryDataSource {
             // No chapter stage yet: the conversation cards are what History has, and nothing
             // says topics are on their way (plan 5.8).
             topics: .off,
-            liveLine: hasLiveBlock ? live.line : nil)
+            liveLine: hasLiveBlock ? live.line : nil, moments: build.moments)
     }
 
     // MARK: - The cache

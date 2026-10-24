@@ -10,6 +10,12 @@ transcript, and even when recording is paused. It never starts recording or chan
   have just heard.
 - Today has a permanent **Marked moments** entry, including before the first recording. History
   has the same entry. It opens the collection, newest first, with a time and nearby words.
+- Today conversation rows show their marks as timestamped pin links. History places the same
+  links under the conversation or quiet interval on the day, and counts them on the week and
+  month rows. Marks without any recording still keep their day reachable. All use the existing
+  logical day (5 AM to 5 AM), including marks shortly after midnight.
+- Live and saved transcripts show tappable pins among the words; they appear as soon as a mark
+  is saved, before AI review or durable transcription. The same detail opens from every pin.
 - Open a moment to see the surrounding transcript, add a note, or open the conversation cued
   to that context. Navigation uses the conversation's pieces and the recording's media clock.
 - Every mark queues an AI review of nearby speech under the existing AI/privacy settings.
@@ -65,8 +71,22 @@ The full Swift package suite (2,515 tests, two existing known issues), Kotlin pr
 firmware slots build. Migrating a copy of the phone database preserved all three existing marks.
 Simulator tests reported 723 passing tests and the final moment checks passed, but Xcode hung
 before finalizing its result bundle. Component renders were reviewed; physical interaction and
-post-install battery checks remain pending.
+post-install battery checks for that build are recorded below.
 
-G17 disconnected before installation. The app has **not** been installed. Firmware
-`v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. Install the new companion
-first, then the firmware. Marks saved by the existing firmware are already readable by the new app.
+On 2026-10-25 at 00:09 +07 the collection/review build (`70943f16-dirty`, built
+2026-10-24T17:08:11Z) was installed over the main app after a verified 3.5 GB backup. The wearer
+confirmed all three existing marks appeared. Two completed their nearby AI review with no
+suggestions; the third had no nearby speech. A fourth mark arrived and was saved live at 00:10:59.
+The ten-minute report passed, settling near 1 CPU-second per background minute, with no new app
+crash reports. All samples were charging: on-battery cost remains unverified. The next-morning
+check is scheduled for 08:00 +07 on October 25.
+
+The contextual Today/History/live-transcript follow-up passes 47 simulator tests (clean
+xcresult on iOS 26.5), 29 focused package tests, and state-initialization checks. The final
+accessibility adjustment passes all six moment tests. Real SwiftUI renders were inspected at
+375, 820 and 1024 points in light/dark and at accessibility3. The existing medium History card
+also now wraps its time line at accessibility sizes instead of extending off the card. G17 disconnected again before this follow-up could
+be installed. Do not mistake the installed collection build for the contextual update.
+
+Firmware `v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. The installed phone
+app supports it; marks saved by the existing firmware remain readable, with its old delivery limits.

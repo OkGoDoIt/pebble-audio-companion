@@ -27,7 +27,7 @@ struct WeekDayRow: View {
         }
     }
 
-    private var isOpenable: Bool { row.state != .nothingRecorded }
+    private var isOpenable: Bool { row.state != .nothingRecorded || row.momentCount > 0 }
     private var isToday: Bool { if case .today = row.state { return true } else { return false } }
 
     private var content: some View {
@@ -58,6 +58,9 @@ struct WeekDayRow: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 3)
+            }
+            if row.momentCount > 0 {
+                MarkedMomentCount(count: row.momentCount).padding(.top, 6)
             }
             if !row.tags.isEmpty {
                 TagPillRow(topics: Array(row.tags.prefix(3)), onSelect: onOpenTag)

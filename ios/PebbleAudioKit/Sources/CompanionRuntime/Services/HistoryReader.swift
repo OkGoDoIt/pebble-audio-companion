@@ -95,12 +95,14 @@ public actor HistoryReader {
         /// Everything placed on the day, open and done.
         public var followUpTotal: Int
         public var followUpOpen: Int
+        public var moments: [Moment]
 
-        public init(day: HistoryDay, brief: HistoryBrief?, followUpTotal: Int, followUpOpen: Int) {
+        public init(day: HistoryDay, brief: HistoryBrief?, followUpTotal: Int, followUpOpen: Int, moments: [Moment] = []) {
             self.day = day
             self.brief = brief
             self.followUpTotal = followUpTotal
             self.followUpOpen = followUpOpen
+            self.moments = moments
         }
     }
 
@@ -148,11 +150,20 @@ public actor HistoryReader {
         let today = todayKey(library, nowMs: nowMs)
         let zone = sources.currentZoneID()
         if let cached = cachedBounds, cached.key == library.boundsKey, cached.zone == zone, cached.today == today {
-            return cached.bounds
+            return await includingMarks(cached.bounds, library: library, nowMs: nowMs)
         }
         let bounds = bounds(library, nowMs: nowMs)
         cachedBounds = (library.boundsKey, zone, today, bounds)
-        return bounds
+        return await includingMarks(bounds, library: library, nowMs: nowMs)
+    }
+
+    private func includingMarks(_ bounds: HistoryBounds, library: Library, nowMs: Int64) async -> HistoryBounds {
+        let moments = (try? await MomentStore(db: sources.database).moments(fromWallMs: 0, to: nowMs + 1)) ?? []
+        let days = Set(moments.map { library.timeline.dayKey(forMs: $0.wallMs) })
+        var result = bounds
+        result.firstDateKey = ([bounds.firstDateKey].compactMap { $0 } + days).min()
+        result.recordedDays.formUnion(days)
+        return result
     }
 
     public func bounds(_ library: Library, nowMs: Int64) -> HistoryBounds {
@@ -211,9 +222,15 @@ public actor HistoryReader {
         let placed = inputs.followUps
         let day = HistoryDayBuilder.build(inputs.builder)
         let recap = try await sources.recaps.load(dateKey: dateKey)
+        let (hull, windows) = library.windows(of: dateKey)
+        let moments: [Moment]
+        if let hull {
+            moments = try await MomentStore(db: sources.database).moments(fromWallMs: hull.lowerBound, to: hull.upperBound)
+        } else { moments = [] }
         return DayBuild(
             day: day, brief: recap.flatMap(Self.brief), followUpTotal: placed.count,
-            followUpOpen: placed.filter { !$0.record.done }.count)
+            followUpOpen: placed.filter { !$0.record.done }.count,
+            moments: moments.filter { mark in windows.contains { $0.range.contains(mark.wallMs) } })
     }
 
     /// What one day is built from.
@@ -514,6 +531,7 @@ public actor HistoryReader {
         let tasks = try await tasksRead
         let rows = try await rowsRead
         let records = try await followUpsRead
+        let moments = try await MomentStore(db: database).moments(fromWallMs: lower, to: upper)
 
         let transcripts = sources.transcripts
         var state: [String: TranscriptionState] = [:]
@@ -589,6 +607,7 @@ public actor HistoryReader {
                     summary: brief.text, updatedAtMs: brief.updatedAtMs, headline: current.headline,
                     lineSummary: current.lineSummary)
             }
+            facts.momentCount = moments.filter { mark in windows.contains { $0.contains(mark.wallMs) } }.count
             facts.followUps = followUpsOf[day] ?? []
             result[day] = facts
         }

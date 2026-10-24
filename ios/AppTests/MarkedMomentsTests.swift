@@ -31,6 +31,87 @@ import Testing
         #expect(words == "Overlapping\n\nNearby")
     }
 
+    @Test func aLiveMarkIsVisibleBeforeTheStoredConversationEndCatchesUp() {
+        let mark = Moment(id: "live", wallMs: 200, onAudioClock: true, createdAtMs: 200)
+        let row = ConversationListRow(id: "live", startMs: 100, endMs: 150, isLive: true)
+        #expect(LiveTodayDataSource.conversationRow(row, moments: [mark], nowMs: 200).moments == [mark])
+        var closed = row
+        closed.isLive = false
+        #expect(LiveTodayDataSource.conversationRow(closed, moments: [mark], nowMs: 200).moments.isEmpty)
+        let previous = ConversationListRow(id: "previous", startMs: 50, endMs: 100, isLive: false)
+        let boundary = Moment(id: "boundary", wallMs: 100, onAudioClock: true, createdAtMs: 100)
+        #expect(LiveTodayDataSource.conversationRow(previous, moments: [boundary]).moments.isEmpty)
+        #expect(LiveTodayDataSource.conversationRow(row, moments: [boundary]).moments == [boundary])
+    }
+
+    @Test func livePinsAppearWithoutSpeechAndKeepTheirSavedIdentity() {
+        let marks = [50, 100, 150, 200].map {
+            Moment(id: "m-\($0)", wallMs: Int64($0), onAudioClock: true, createdAtMs: 0)
+        }
+        let result = TranscriptItems.insertingMoments(marks, into: [], startMs: 100, endMs: 200, timeZone: .gmt)
+        #expect(result.map(\.id) == ["moment-m-100", "moment-m-150"])
+        #expect(result.compactMap { item in
+            if case .moment(let marker) = item { return marker.momentId }
+            return nil
+        } == ["m-100", "m-150"])
+    }
+
+    @Test func renderContextualMomentSurfaces() throws {
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/mockups/moments/built", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let start: Int64 = 1_792_777_200_000
+        let marks = [
+            Moment(id: "first", wallMs: start + 60_000, onAudioClock: true, createdAtMs: 0),
+            Moment(id: "second", wallMs: start + 64_000, onAudioClock: true, createdAtMs: 0,
+                   note: "A useful idea to revisit together"),
+            Moment(id: "quiet", wallMs: start + 360_000, onAudioClock: false, createdAtMs: 0)
+        ]
+        let day = HistoryDay(dateKey: "2026-10-23", zoneID: TimeZone.current.identifier, isToday: false, hasRecordings: true,
+            leadingEdge: nil, items: [
+                .chapter(HistoryChapterBlock(id: "c", startMs: start, endMs: start + 300_000,
+                    zoneID: TimeZone.current.identifier, source: .chapter, title: "Planning the weekend", summary: nil)),
+                .gap(HistoryGap(id: "quiet", kind: .quiet, startMs: start + 300_000, endMs: start + 600_000, zoneID: TimeZone.current.identifier))
+            ], trailingEdge: nil)
+        let transcript = TranscriptItems.insertingMoments(Array(marks.prefix(2)), into: [
+            .turn(TranscriptTurn(id: "words", speakerLabel: "S1", name: "You", role: .you,
+                text: "Let's take the early train and spend the afternoon by the water.",
+                startedAt: Date(timeIntervalSince1970: Double(start) / 1000))),
+            .turn(TranscriptTurn(id: "tail", speakerLabel: "S1", name: "You", role: .you,
+                text: "I'll check the train times…", startedAt: Date(timeIntervalSince1970: Double(start + 70_000) / 1000),
+                isInProgress: true))
+        ], startMs: start, endMs: start + 300_000, timeZone: .current)
+        for width in [375.0, 820.0, 1024.0] {
+            for dark in [false, true] {
+                for large in [false, true] where !large || width == 375 {
+                    let view = VStack(alignment: .leading, spacing: 16) {
+                        Text("Today · Conversations").font(AppFont.sectionTitle)
+                        Card {
+                            TodayConversationRow(row: ConversationRowDisplay(id: "c", title: "Planning the weekend",
+                                meta: "12:40 AM · 5 min so far", snippet: "“I'll check the train times…”", isLive: true,
+                                moments: Array(marks.prefix(2))), onOpen: {})
+                        }
+                        Text("History · Day").font(AppFont.sectionTitle)
+                        DayTimeline(day: day, entries: HistoryDayPage.entries(for: day), moments: marks)
+                        Text("History · Week").font(AppFont.sectionTitle)
+                        Card {
+                            WeekDayRow(row: HistoryWeekRow(dateKey: "2026-10-23", state: .recorded,
+                                headline: "Plans for the weekend", summary: "Decided on a day by the water.", momentCount: 3))
+                        }
+                        Text("Live transcript").font(AppFont.sectionTitle)
+                        TranscriptView(transcript: transcript, provenance: "Live transcript", timeZone: .current)
+                    }
+                    .padding(16).frame(width: width).background(Tokens.ground)
+                    .environment(AppRouter()).environment(\.colorScheme, dark ? .dark : .light)
+                    .environment(\.dynamicTypeSize, large ? .accessibility3 : .large)
+                    try render(view, width: width).write(to: output.appendingPathComponent(
+                        "context-\(Int(width))-\(dark ? "dark" : "light")\(large ? "-large-type" : "").png"))
+                }
+            }
+        }
+    }
+
     private func render(_ content: some View, width: CGFloat) throws -> Data {
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1

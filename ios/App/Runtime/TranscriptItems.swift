@@ -188,8 +188,10 @@ enum TranscriptItems {
             let at = Date(timeIntervalSince1970: Double(moment.wallMs) / 1000)
             let marker = TranscriptMarker(
                 id: "moment-\(moment.id)",
-                text: Copy.Conversation.markedAt(TranscriptStamp.text(at, in: timeZone)),
-                startedAt: at)
+                text: Copy.Conversation.markedAt(at.formatted(
+                    Date.FormatStyle(date: .omitted, time: .standard, timeZone: timeZone)))
+                    + (moment.note.isEmpty ? "" : " · \(moment.note)"),
+                startedAt: at, momentId: moment.id)
             let index =
                 result.firstIndex { item in
                     guard let started = item.startedAt else { return false }

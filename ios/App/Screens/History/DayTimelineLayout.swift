@@ -340,6 +340,7 @@ struct DayTimeline: View {
     let day: HistoryDay
     /// What is drawn: `day.items` with every run of gaps as one stretch (`HistoryDayPage.entries`).
     var entries: [HistoryDayEntry]
+    var moments: [Moment] = []
     /// The live transcript's last line, for today's Live card.
     var liveLine: String?
     var nowMs: Int64?
@@ -363,7 +364,15 @@ struct DayTimeline: View {
                 entries,
                 enabled: HistoryDisplayGrouping.isEnabled && !dynamicTypeSize.isAccessibilitySize)
             ForEach(Array(display.enumerated()), id: \.element.id) { index, entry in
-                displayView(entry, isLast: index == display.count - 1)
+                VStack(alignment: .leading, spacing: 4) {
+                    displayView(entry, isLast: index == display.count - 1)
+                    let pins = moments.filter { $0.wallMs >= entry.startMs && $0.wallMs < entry.endMs }
+                    if !pins.isEmpty {
+                        MarkedMomentLinks(moments: pins,
+                            timeZone: timeZone(of: entry))
+                            .padding(.horizontal, dynamicTypeSize.isAccessibilitySize ? 4 : 14)
+                    }
+                }
                     .timelineRole(.item(
                         TimelineSpan(startMs: entry.startMs, endMs: entry.endMs),
                         floor: floor(of: entry), isCard: isCard(entry)))
@@ -447,6 +456,22 @@ struct DayTimeline: View {
                 TimelineStretch(stretch: stretch, onOpenGap: onOpenGap)
             }
         }
+    }
+
+    private func timeZone(of entry: HistoryDisplayItem) -> TimeZone {
+        let zone: String
+        switch entry {
+        case .stretch(let stretch): zone = stretch.zoneID
+        case .shortRun(let blocks): zone = blocks.first?.zoneID ?? day.zoneID
+        case .item(let item):
+            switch item {
+            case .chapter(let block): zone = block.zoneID
+            case .gap(let gap): zone = gap.zoneID
+            case .live(let live): zone = live.zoneID
+            case .zoneChange(let change): zone = change.zoneID
+            }
+        }
+        return TimeZone(identifier: zone) ?? .current
     }
 
     private func isCard(_ entry: HistoryDisplayItem) -> Bool {

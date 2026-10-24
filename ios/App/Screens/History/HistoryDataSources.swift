@@ -31,6 +31,7 @@ struct HistoryDayPage: Equatable, Sendable {
     var topics: HistoryTopicsState
     /// Today while recording: the last line of the live transcript, from the live snapshot
     /// (never a second walk of the transcript). Nil otherwise.
+    var moments: [Moment]
     var liveLine: String?
     /// What the timeline draws: the day's items with every run of gaps as one stretch
     /// (`HistoryStretches.combine`). Computed here, once, when the page is made — never in a view
@@ -39,7 +40,7 @@ struct HistoryDayPage: Equatable, Sendable {
 
     init(
         day: HistoryDay, brief: HistoryBrief?, followUpTotal: Int, followUpOpen: Int,
-        topics: HistoryTopicsState, liveLine: String? = nil
+        topics: HistoryTopicsState, liveLine: String? = nil, moments: [Moment] = []
     ) {
         self.entries = Self.entries(for: day)
         self.day = day
@@ -48,6 +49,7 @@ struct HistoryDayPage: Equatable, Sendable {
         self.followUpOpen = followUpOpen
         self.topics = topics
         self.liveLine = liveLine
+        self.moments = moments
     }
 
     static func entries(for day: HistoryDay) -> [HistoryDayEntry] {

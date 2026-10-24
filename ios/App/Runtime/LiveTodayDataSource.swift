@@ -29,6 +29,8 @@ final class LiveTodayDataSource {
 
     private var tasks: [Task<Void, Never>] = []
     private var refreshTask: Task<Void, Never>?
+    private var momentTask: Task<Void, Never>?
+    private var markedMoments: [Moment] = []
     /// The monitor's raw bars, kept in kit form so the row can be re-placed on the time axis at
     /// every publish — a snapshot built ten seconds ago must not be redrawn as if it were now.
     private var liveBars: [LiveAudio.WaveformBar] = []
@@ -129,11 +131,18 @@ final class LiveTodayDataSource {
         tasks.append(
             Task { [weak self] in
                 let notifications = NotificationCenter.default.notifications(
-                    named: UIApplication.willEnterForegroundNotification)
+                    named: UIApplication.didBecomeActiveNotification)
                 for await _ in notifications {
+                    self?.updateMomentObservation()
                     self?.scheduleRefresh()
                 }
             })
+        tasks.append(Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didEnterBackgroundNotification) {
+                self?.momentTask?.cancel()
+                self?.momentTask = nil
+            }
+        })
         scheduleRefresh()
     }
 
@@ -152,6 +161,26 @@ final class LiveTodayDataSource {
     deinit {
         for task in tasks { task.cancel() }
         refreshTask?.cancel()
+        momentTask?.cancel()
+    }
+
+    private func updateMomentObservation() {
+        guard canRebuild, !todayContinuations.isEmpty || !liveContinuations.isEmpty else {
+            momentTask?.cancel(); momentTask = nil
+            return
+        }
+        guard momentTask == nil else { return }
+        let store = MomentStore(db: composition.database)
+        momentTask = Task { [weak self] in
+            do {
+                for try await marks in store.observe() {
+                    guard !Task.isCancelled, let self else { return }
+                    guard markedMoments != marks else { continue }
+                    markedMoments = marks
+                    scheduleRefresh()
+                }
+            } catch { /* A later foreground entry retries. */ }
+        }
     }
 
     // MARK: - Rebuild
@@ -211,6 +240,8 @@ final class LiveTodayDataSource {
 
         let sections = (try? await composition.runtime.library.library()) ?? []
         let todaySection = sections.first { $0.dateKey == dateKey }
+        let rows = todaySection?.rows ?? []
+        let marked = markedMoments.sorted { ($0.wallMs, $0.id) < ($1.wallMs, $1.id) }
         // `.open` INCLUDES snoozed rows — the Follow-ups list wants them, sectioned under "Put
         // off". Today does not: something deliberately deferred is by definition not on today's
         // list, and a row that came back the moment you put it off read as the snooze failing.
@@ -230,7 +261,7 @@ final class LiveTodayDataSource {
         // with the same coverage computation this day strip uses, and a paused window has to
         // render as paused there for the same reason it does here.
         await refreshLive(
-            openSegmentId: openSegmentId, rows: todaySection?.rows ?? [], pauses: pauses)
+            openSegmentId: openSegmentId, rows: rows, pauses: pauses, moments: marked)
         let liveLine = Self.liveSnippet(liveSnapshotValue)
 
         let status = Self.status(composition)
@@ -256,7 +287,8 @@ final class LiveTodayDataSource {
                     liveSnippet: liveLine,
                     // Only when there are no words to quote: a row already showing what is
                     // being said has answered the question the status line asks.
-                    liveStatusLine: liveLine == nil ? liveSnapshotValue.status.rowLine : nil
+                    liveStatusLine: liveLine == nil ? liveSnapshotValue.status.rowLine : nil,
+                    moments: marked, nowMs: nowMs
                 )
             },
             recovering: composition.startup.isRecovering
@@ -279,7 +311,7 @@ final class LiveTodayDataSource {
     /// had already finished. (The timeline strip needs no such cut: it is clipped to the
     /// conversation's own start, `live.startMs`, whatever its members hold before that.)
     private func refreshLive(
-        openSegmentId: String?, rows: [ConversationListRow], pauses: [PauseInterval]
+        openSegmentId: String?, rows: [ConversationListRow], pauses: [PauseInterval], moments: [Moment]
     ) async {
         guard let live = rows.first(where: \.isLive) else {
             liveSnapshotValue = LiveSnapshot(
@@ -390,6 +422,9 @@ final class LiveTodayDataSource {
             items.append(contentsOf: memberItems)
         }
 
+        items = TranscriptItems.insertingMoments(
+            moments, into: items, startMs: live.startMs, endMs: max(nowMs, live.endMs) + 1,
+            timeZone: zone ?? .current)
         pruneTranscribedThrough(keeping: memberIds)
 
         liveSnapshotValue = LiveSnapshot(
@@ -744,7 +779,8 @@ final class LiveTodayDataSource {
     /// line, so the calm rolling preview existed in every artboard and in no build: the live
     /// row on a real phone showed a title and a duration and nothing of what was being said.
     static func conversationRow(
-        _ row: ConversationListRow, liveSnippet: String? = nil, liveStatusLine: String? = nil
+        _ row: ConversationListRow, liveSnippet: String? = nil, liveStatusLine: String? = nil,
+        moments: [Moment] = [], nowMs: Int64? = nil
     ) -> ConversationRowDisplay {
         let start = Date(timeIntervalSince1970: Double(row.startMs) / 1000)
         var meta =
@@ -757,7 +793,11 @@ final class LiveTodayDataSource {
             meta: meta,
             snippet: row.isLive ? liveSnippet : nil,
             statusLine: row.isLive ? liveStatusLine : nil,
-            isLive: row.isLive
+            isLive: row.isLive,
+            moments: moments.filter {
+                let end = row.isLive ? max(row.endMs, nowMs ?? row.endMs) + 1 : max(row.startMs + 1, row.endMs)
+                return $0.wallMs >= row.startMs && $0.wallMs < end
+            }
         )
     }
 
@@ -815,9 +855,13 @@ extension LiveTodayDataSource: TodayDataSource {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let id = UUID()
             todayContinuations[id] = continuation
+            updateMomentObservation()
             continuation.yield(todaySnapshotValue)
             continuation.onTermination = { [weak self] _ in
-                Task { @MainActor in self?.todayContinuations[id] = nil }
+                Task { @MainActor in
+                    self?.todayContinuations[id] = nil
+                    self?.updateMomentObservation()
+                }
             }
         }
     }
@@ -922,9 +966,13 @@ extension LiveTodayDataSource: LiveDataSource {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let id = UUID()
             liveContinuations[id] = continuation
+            updateMomentObservation()
             continuation.yield(liveSnapshotValue)
             continuation.onTermination = { [weak self] _ in
-                Task { @MainActor in self?.liveContinuations[id] = nil }
+                Task { @MainActor in
+                    self?.liveContinuations[id] = nil
+                    self?.updateMomentObservation()
+                }
             }
         }
     }

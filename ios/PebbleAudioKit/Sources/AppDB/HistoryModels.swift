@@ -358,11 +358,12 @@ public struct HistoryWeekRow: Equatable, Sendable, Identifiable {
     public var followUps: [HistoryFollowUpLine]
     /// Follow-ups of the day not shown in `followUps`, open or done.
     public var moreFollowUps: Int
+    public var momentCount: Int
     public var id: String { dateKey }
 
     public init(
         dateKey: String, state: HistoryDayState, headline: String? = nil, summary: String? = nil,
-        tags: [String] = [], followUps: [HistoryFollowUpLine] = [], moreFollowUps: Int = 0
+        tags: [String] = [], followUps: [HistoryFollowUpLine] = [], moreFollowUps: Int = 0, momentCount: Int = 0
     ) {
         self.dateKey = dateKey
         self.state = state
@@ -370,6 +371,7 @@ public struct HistoryWeekRow: Equatable, Sendable, Identifiable {
         self.summary = summary
         self.tags = tags
         self.followUps = followUps
+        self.momentCount = momentCount
         self.moreFollowUps = moreFollowUps
     }
 }
@@ -386,12 +388,13 @@ public struct HistoryMonthRow: Equatable, Sendable, Identifiable {
     public var tags: [String]
     public var followUpTotal: Int
     public var followUpOpen: Int
+    public var momentCount: Int
     public var id: String { firstDateKey }
 
     public init(
         firstDateKey: String, lastDateKey: String, isCurrentWeek: Bool, hasRecordings: Bool,
         headline: String? = nil, summary: String? = nil, tags: [String] = [],
-        followUpTotal: Int = 0, followUpOpen: Int = 0
+        followUpTotal: Int = 0, followUpOpen: Int = 0, momentCount: Int = 0
     ) {
         self.firstDateKey = firstDateKey
         self.lastDateKey = lastDateKey
@@ -401,6 +404,7 @@ public struct HistoryMonthRow: Equatable, Sendable, Identifiable {
         self.summary = summary
         self.tags = tags
         self.followUpTotal = followUpTotal
+        self.momentCount = momentCount
         self.followUpOpen = followUpOpen
     }
 }
@@ -447,7 +451,7 @@ public struct HistoryBounds: Equatable, Sendable {
     /// Nil when nothing has ever been recorded.
     public var firstDateKey: String?
     public var todayDateKey: String
-    /// Day keys that have at least one recording.
+    /// Day keys with recordings or saved moments (the calendar content dots).
     public var recordedDays: Set<String>
 
     public init(firstDateKey: String?, todayDateKey: String, recordedDays: Set<String>) {

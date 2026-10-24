@@ -91,9 +91,13 @@ struct TranscriptView: View {
         case .missing(let marker):
             missingRow(marker)
         case .moment(let marker):
-            TranscriptMarkerRow(
-                marker: marker, color: Tokens.tint, rule: Tokens.tintSoft, timeZone: timeZone,
-                symbol: "pin.fill")
+            if let id = marker.momentId {
+                MarkedMomentLink(id: id, text: marker.text)
+            } else {
+                TranscriptMarkerRow(
+                    marker: marker, color: Tokens.tint, rule: Tokens.tintSoft, timeZone: timeZone,
+                    symbol: "pin.fill")
+            }
         case .band(let blocks, let playFromMs):
             citedBand(blocks, playFromMs: playFromMs)
         case .provenance(let text):

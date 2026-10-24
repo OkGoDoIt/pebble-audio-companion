@@ -35,6 +35,7 @@ public struct HistoryDayFacts: Equatable, Sendable {
     /// The day's recap, reduced to the text a row may show. Nil when there is none.
     public var recap: HistoryRecapFact?
     /// Every follow-up placed on this day (open, snoozed and done; never archived), any order.
+    public var momentCount: Int = 0
     public var followUps: [HistoryPlacedFollowUp]
 
     public init(
@@ -346,7 +347,7 @@ public enum HistoryPeriodAssembler {
             headline: hasText ? sources.dayHeadline(day) : nil,
             summary: hasText ? sources.daySummary(day) : nil,
             tags: hasText ? Array(sources.dayTags(day).prefix(rowTags)) : [],
-            followUps: shown.map(\.line), moreFollowUps: ordered.count - shown.count)
+            followUps: shown.map(\.line), moreFollowUps: ordered.count - shown.count, momentCount: day.momentCount)
     }
 
     /// The calendar month containing `dateKey`: one row per week overlapping it
@@ -373,7 +374,8 @@ public enum HistoryPeriodAssembler {
                     headline: sources.weekHeadline(firstDateKey: week.lowerBound, weekDays),
                     summary: sources.weekSummary(firstDateKey: week.lowerBound, weekDays),
                     tags: Array(sources.weekTags(weekDays).prefix(rowTags)),
-                    followUpTotal: followUps.count, followUpOpen: followUps.filter { !$0.line.done }.count))
+                    followUpTotal: followUps.count, followUpOpen: followUps.filter { !$0.line.done }.count,
+                    momentCount: weekDays.reduce(0) { $0 + $1.momentCount }))
         }
         let monthDays = facts(HistoryCalendar.days(in: range))
         let followUps = monthDays.flatMap(\.followUps)

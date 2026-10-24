@@ -16,7 +16,7 @@ struct MonthWeekRow: View {
     var body: some View {
         // A tap gesture, not a Button: the topic pills inside the row are a menu of their own,
         // and a control inside a Button's label never receives its taps.
-        if row.hasRecordings {
+        if row.hasRecordings || row.momentCount > 0 {
             content
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onOpen)
@@ -62,6 +62,9 @@ struct MonthWeekRow: View {
                         .foregroundStyle(Tokens.meta)
                         .padding(.top, 2)
                 }
+                if row.momentCount > 0 {
+                    MarkedMomentCount(count: row.momentCount).padding(.top, 6)
+                }
                 if !row.tags.isEmpty {
                     TagPillRow(topics: Array(row.tags.prefix(3)), onSelect: onOpenTag)
                     .padding(.top, 8)
@@ -80,7 +83,7 @@ struct MonthWeekRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if row.hasRecordings {
+            if row.hasRecordings || row.momentCount > 0 {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Tokens.chevron)

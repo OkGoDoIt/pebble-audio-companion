@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import StatusUI
 
@@ -109,6 +110,7 @@ struct ConversationRowDisplay: Equatable, Identifiable {
     /// the app speaking rather than the recording.
     var statusLine: String? = nil
     let isLive: Bool
+    var moments: [Moment] = []
 }
 
 // MARK: - Snapshot
