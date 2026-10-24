@@ -9,6 +9,8 @@ import dev.audiocompanion.protocol.ServiceState
 import dev.audiocompanion.protocol.StateChanged
 import dev.audiocompanion.protocol.AuthResult
 import dev.audiocompanion.protocol.AuthStatus
+import dev.audiocompanion.protocol.MomentMark
+import dev.audiocompanion.protocol.MomentSaved
 import dev.audiocompanion.protocol.Checkpoint
 import dev.audiocompanion.protocol.DecodeResult
 import dev.audiocompanion.protocol.EnableRequest
@@ -52,7 +54,7 @@ class AudioReceiverSessionTest {
         fun authRequest(): AuthRequest = writes().filterIsInstance<AuthRequest>().single()
     }
 
-    private fun TestScope.startSession(): Fixture {
+    private fun TestScope.startSession(saveMoment: (suspend (MomentMark) -> Boolean)? = null): Fixture {
         val link = FakeAudioGattLink()
         val sink = FakeSegmentSink()
         val policy = FakeReceiverPolicy()
@@ -64,6 +66,7 @@ class AudioReceiverSessionTest {
             resumeStore = resumeStore,
             config = ReceiverConfig(receiverId = receiverId, receiverName = "Audio Companion"),
             nowMs = { testScheduler.currentTime },
+            saveMoment = saveMoment,
         )
         session.start(backgroundScope)
         runCurrent()
@@ -104,6 +107,27 @@ class AudioReceiverSessionTest {
         )
 
     // -------------------------------------------------------------------------------------
+
+    @Test
+    fun receiptRequiresDurableStorageAndACompatibleWatch() = runTest {
+        var saved = false
+        val fx = startSession { saved }
+        fx.link.infoBytes = FakeAudioGattLink.defaultInfo().copy(
+            watchCapabilities = ProtocolConstants.CAPABILITY_DURABLE_MOMENTS).encode()
+        authorize(fx)
+        val mark = MomentMark(3, 0, 0u, 0u, 1781000095000u)
+        fx.link.pushControl(mark)
+        runCurrent()
+        assertTrue(fx.writes().filterIsInstance<MomentSaved>().isEmpty())
+        saved = true
+        fx.link.pushControl(mark)
+        runCurrent()
+        val receipt = fx.writes().filterIsInstance<MomentSaved>().single()
+        assertEquals(mark.markId, receipt.markId)
+        assertEquals(mark.wallMs, receipt.wallMs)
+        fx.link.pushControl(Ack(receipt.requestToken, 0))
+        runCurrent()
+    }
 
     @Test
     fun happyPath_authStartDataCheckpointStop() = runTest {

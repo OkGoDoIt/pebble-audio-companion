@@ -159,6 +159,9 @@ struct HistoryScreen: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Marked moments", systemImage: "pin") { router.push(.markedMoments) }
+        }
         // The item itself is conditional, so no empty glass capsule is left behind (spike).
         if let model, !model.isShowingToday {
             ToolbarItem(placement: .topBarLeading) {
@@ -265,6 +268,8 @@ struct HistoryScreen: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
+        case .markedMoments:
+            MarkedMomentsScreen()
         case .conversation(let id, let atMs, let focus):
             ConversationScreen(conversationId: id, atMs: atMs, focus: focus)
         case .note(let id):

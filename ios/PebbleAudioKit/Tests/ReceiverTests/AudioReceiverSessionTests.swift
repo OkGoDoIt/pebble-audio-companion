@@ -822,7 +822,7 @@ import WireProtocol
         fx.link.pushData(streamStart())
         await fx.settle()
         let received = MomentBox()
-        await fx.session.setMomentHandler { received.append($0) }
+        await fx.session.setMomentHandler { received.append($0); return true }
 
         fx.link.pushControl(
             MomentMark(
@@ -844,6 +844,30 @@ import WireProtocol
         #expect(moments.dropFirst().first?.wallMs == 1_781_000_200_000)
         #expect(moments.dropFirst().first?.onAudioClock == false)
         #expect(moments.last?.wallMs == moments.last?.receivedAtMs)
+        #expect(fx.writes().compactMap { $0 as? MomentSaved }.isEmpty) // legacy watch
+    }
+
+    @Test func onlyDurablySavedMomentsAreReceiptedAndDuplicateRetriesAreReceiptedAgain() async {
+        let fx = await startSession(infoBytes: FakeAudioGattLink.defaultInfo(
+            watchCapabilities: ProtocolConstants.capabilityDurableMoments).encode())
+        await authorize(fx)
+        let mark = MomentMark(markId: 3, flags: 0, streamId: 0, sampleIndex: 0, wallMs: 1_781_000_095_000)
+        let received = MomentBox()
+        await fx.session.setMomentHandler { received.append($0); return false }
+        fx.link.pushControl(mark)
+        await fx.waitUntil("failed persistence attempt") { received.values.count == 1 }
+        await fx.settle()
+        #expect(fx.writes().compactMap { $0 as? MomentSaved }.isEmpty)
+        await fx.session.setMomentHandler { _ in true }
+        for count in 1...2 {
+            fx.link.pushControl(mark)
+            await fx.waitUntil("durable receipt") { fx.writes().compactMap { $0 as? MomentSaved }.count == count }
+            let receipt = fx.writes().compactMap { $0 as? MomentSaved }.last!
+            #expect(receipt.markId == mark.markId)
+            #expect(receipt.wallMs == mark.wallMs)
+            fx.link.pushControl(Ack(requestToken: receipt.requestToken, statusRaw: 0))
+            await fx.settle()
+        }
     }
 
     @Test func withoutAProbeThePhoneMediaQueryGoesUnanswered() async {

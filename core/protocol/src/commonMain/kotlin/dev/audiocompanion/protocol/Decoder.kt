@@ -144,6 +144,10 @@ object AudioCompanionProtocol {
                     ),
                 )
             }
+            MessageId.MOMENT_SAVED -> sized(bytes, 11) { r ->
+                r.u8()
+                MomentSaved(requestToken = r.u8(), markId = r.u8(), wallMs = r.u64())
+            }
             MessageId.WATCH_ACTION -> {
                 if (bytes.size < 5) return DecodeResult.Malformed("WATCH_ACTION too short: ${bytes.size}")
                 val actionId = bytes[2].toInt() and 0xFF

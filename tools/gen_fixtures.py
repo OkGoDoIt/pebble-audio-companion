@@ -1020,6 +1020,18 @@ def build_fixtures():
         "Done, with text: what is playing (title, then artist)",
     )
     add(
+        "moment_saved",
+        struct.pack("<BBBQ", 0x0F, 9, 3, 1_788_193_751_778),
+        "control_in", "parse",
+        {"request_token": 9, "mark_id": 3, "wall_ms": 1_788_193_751_778},
+        "A durable phone receipt for exactly one watch mark",
+    )
+    add(
+        "moment_saved_truncated",
+        struct.pack("<BBBQ", 0x0F, 9, 3, 1_788_193_751_778)[:-1],
+        "control_in", "reject", {}, "MOMENT_SAVED one byte short",
+    )
+    add(
         "moment_mark_recording",
         moment_mark(3, MOMENT_FLAG_RECORDING, 0x2A, 1_234_560, 1_788_193_751_778),
         "control_out",

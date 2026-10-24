@@ -12,6 +12,8 @@ import dev.audiocompanion.protocol.DecodeResult
 import dev.audiocompanion.protocol.EnableRequest
 import dev.audiocompanion.protocol.ErrorMessage
 import dev.audiocompanion.protocol.InfoSnapshot
+import dev.audiocompanion.protocol.MomentMark
+import dev.audiocompanion.protocol.MomentSaved
 import dev.audiocompanion.protocol.MuseSetupEvent
 import dev.audiocompanion.protocol.MuseSetupRx
 import dev.audiocompanion.protocol.PttAudio
@@ -133,6 +135,8 @@ class AudioReceiverSession(
      * may still want recording, but they must not surprise the user with a watch prompt.
      */
     private val consumeEnableRequestPermission: () -> Boolean = { desiredEnabled() },
+    /** Return true only after durable storage, including a previously stored duplicate. */
+    private val saveMoment: (suspend (MomentMark) -> Boolean)? = null,
 ) {
     private val _state = MutableStateFlow<ReceiverSessionState>(ReceiverSessionState.Disconnected)
     val state: StateFlow<ReceiverSessionState> = _state.asStateFlow()
@@ -487,6 +491,17 @@ class AudioReceiverSession(
             is ErrorMessage -> _lastProtocolError.value = message
             // Not answered here: this shared session has no view of the phone's audio. The watch
             // then judges playback by the media service alone. The native iOS app answers it.
+            is MomentMark -> connectionScope.launch {
+                // Keep consuming controls while storage and the receipt wait for their ACK.
+                // A client without a durable store must leave the mark queued on the watch.
+                val saved = try { saveMoment?.invoke(message) == true }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { false }
+                if (saved && (_watchInfo.value?.watchCapabilities ?: 0u) and
+                    ProtocolConstants.CAPABILITY_DURABLE_MOMENTS != 0u) {
+                    sendControlAwaitAck { MomentSaved(it, message.markId, message.wallMs).encode() }
+                }
+            }.let { Unit }
             is PhoneMediaQuery -> Unit
             // Muse gadget pairing runs only in the iOS app; nothing here opens a window.
             is MuseSetupRx, is MuseSetupEvent, is PttEvent, is WatchActionResult -> Unit

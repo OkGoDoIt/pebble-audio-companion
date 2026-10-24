@@ -600,7 +600,7 @@ struct TranscriptStamp: View {
     let date: Date
     var timeZone: TimeZone = .current
 
-    static func text(_ date: Date, in timeZone: TimeZone) -> String {
+    nonisolated static func text(_ date: Date, in timeZone: TimeZone) -> String {
         date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone))
     }
 

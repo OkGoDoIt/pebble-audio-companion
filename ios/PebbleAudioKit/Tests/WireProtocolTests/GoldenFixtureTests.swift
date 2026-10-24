@@ -218,6 +218,8 @@ import Testing
                 "frame_count": String(m.frameCount),
                 "max_seconds": String(m.maxSeconds),
             ]
+        case let m as MomentSaved:
+            return ["request_token": String(m.requestToken), "mark_id": String(m.markId), "wall_ms": String(m.wallMs)]
         case let m as MomentMark:
             return [
                 "mark_id": String(m.markId),

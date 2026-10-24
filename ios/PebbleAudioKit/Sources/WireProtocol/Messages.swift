@@ -1287,6 +1287,21 @@ public enum WatchActionStatus: UInt8, Sendable {
     case unsupported = 5
 }
 
+/// Durable receipt of the original wire identity (Section 4.6).
+public struct MomentSaved: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let markId: Int
+    public let wallMs: UInt64
+    public init(requestToken: Int, markId: Int, wallMs: UInt64) {
+        self.requestToken = requestToken; self.markId = markId; self.wallMs = wallMs
+    }
+    public func encode() -> [UInt8] {
+        var w = WireWriter(initialCapacity: 11)
+        w.u8(MessageId.momentSaved); w.u8(requestToken); w.u8(markId); w.u64(wallMs)
+        return w.toBytes()
+    }
+}
+
 /// The wearer marked a moment as important on the watch (Section 4.6).
 public struct MomentMark: ControlOutMessage, Equatable {
     public static let flagRecording: UInt8 = 0x01

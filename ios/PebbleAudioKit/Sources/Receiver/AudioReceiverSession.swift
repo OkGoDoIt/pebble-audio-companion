@@ -1428,7 +1428,9 @@ public actor AudioReceiverSession {
             let moment = markedMoment(mark)
             log("moment \(mark.markId) marked on the watch"
                 + (moment.onAudioClock ? "" : " (watch clock)"))
-            momentHandler?(moment)
+            // Keep consuming control notifications while the database commits and the receipt
+            // waits for its ACK. Waiting here would block the very ACK we need to receive.
+            Task { await self.persistMoment(moment, wire: mark) }
         default:
             break
         }
@@ -1445,13 +1447,22 @@ public actor AudioReceiverSession {
         public let wallMs: Int64
         public let onAudioClock: Bool
         public let receivedAtMs: Int64
+        public let wasRecording: Bool
     }
 
-    private var momentHandler: (@Sendable (MarkedMoment) -> Void)?
+    private var momentHandler: (@Sendable (MarkedMoment) async -> Bool)?
 
-    /// Receives every MOMENT_MARK, on the session's executor: hand the value on and return.
-    public func setMomentHandler(_ handler: (@Sendable (MarkedMoment) -> Void)?) {
+    /// Return true only after durable storage, including a durable duplicate or deletion tombstone.
+    public func setMomentHandler(_ handler: (@Sendable (MarkedMoment) async -> Bool)?) {
         momentHandler = handler
+    }
+
+    private func persistMoment(_ moment: MarkedMoment, wire: MomentMark) async {
+        guard await momentHandler?(moment) == true else { return }
+        guard (watchInfo.value?.watchCapabilities ?? 0) & ProtocolConstants.capabilityDurableMoments != 0 else { return }
+        _ = await sendControlAwaitAck { token in
+            MomentSaved(requestToken: token, markId: wire.markId, wallMs: wire.wallMs).encode()
+        }
     }
 
     private func markedMoment(_ mark: MomentMark) -> MarkedMoment {
@@ -1466,15 +1477,15 @@ public actor AudioReceiverSession {
             onAudioClock = true
         }
         // A watch whose clock was never set counts from 2010 (`SegmentMeta.sampleClockAnchorMs`);
-        // a mark is never older than the minute or so the watch holds it, so it is placed at
-        // its arrival.
+        // without a usable recording anchor its original time is unknown, so use receipt time
+        // and explicitly keep onAudioClock false.
         if wallMs < SegmentMeta.earliestPlausibleWallMs {
             wallMs = now
             onAudioClock = false
         }
         return MarkedMoment(
             id: "watch-\(mark.wallMs)-\(mark.markId)", wallMs: wallMs, onAudioClock: onAudioClock,
-            receivedAtMs: now)
+            receivedAtMs: now, wasRecording: mark.whileRecording)
     }
 
     // --- Push-to-talk and watch actions (protocol Sections 4.4 and 4.5) --------------------------

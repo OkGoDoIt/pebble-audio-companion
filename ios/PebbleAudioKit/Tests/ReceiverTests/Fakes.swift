@@ -132,7 +132,8 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
 
     static func defaultInfo(
         serviceStateRaw: UInt8 = 2,
-        flags: Int = ProtocolConstants.infoFlagReceiverAuthorized | ProtocolConstants.infoFlagEnabled
+        flags: Int = ProtocolConstants.infoFlagReceiverAuthorized | ProtocolConstants.infoFlagEnabled,
+        watchCapabilities: UInt32 = 0
     ) -> InfoSnapshot {
         InfoSnapshot(
             infoVersion: 1,
@@ -141,6 +142,7 @@ final class FakeAudioGattLink: AudioGattLink, @unchecked Sendable {
             serviceStateRaw: serviceStateRaw,
             codecBitmap: ProtocolConstants.codecBitmapSpeexWideband,
             flags: flags,
+            watchCapabilities: watchCapabilities,
             fwVersionPacked: (4 << 24) | (9 << 16) | 2
         )
     }

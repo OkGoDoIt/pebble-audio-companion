@@ -68,6 +68,7 @@ object ProtocolConstants {
      * closed, options with the answer, picks, and turns the receiver begins (Section 4.4).
      */
     const val CAPABILITY_CONVERSATION: UInt = 32u
+    const val CAPABILITY_DURABLE_MOMENTS: UInt = 64u
 
     const val PTT_MAX_SECONDS: Int = 15
     const val ASSISTANT_TEXT_MAX_BYTES: Int = 180
@@ -113,6 +114,7 @@ object MessageId {
     const val PTT_EVENT: Int = 0x49
     const val WATCH_ACTION_RESULT: Int = 0x4A
     const val MOMENT_MARK: Int = 0x4B
+    const val MOMENT_SAVED: Int = 0x0F
 
     // Watch -> phone data notifications (0x80-0x9F).
     const val STREAM_START: Int = 0x80

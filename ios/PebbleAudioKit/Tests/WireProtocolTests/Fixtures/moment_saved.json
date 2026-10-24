@@ -1,0 +1,12 @@
+{
+  "channel": "control_in",
+  "description": "A durable phone receipt for exactly one watch mark",
+  "expect": "parse",
+  "fields": {
+    "mark_id": 3,
+    "request_token": 9,
+    "wall_ms": 1788193751778
+  },
+  "name": "moment_saved",
+  "size": 11
+}

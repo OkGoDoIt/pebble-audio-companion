@@ -259,7 +259,7 @@ public actor ReceiverService {
     }
 
     public func setMomentHandler(
-        _ handler: (@Sendable (AudioReceiverSession.MarkedMoment) -> Void)?
+        _ handler: (@Sendable (AudioReceiverSession.MarkedMoment) async -> Bool)?
     ) async {
         await session.setMomentHandler(handler)
     }

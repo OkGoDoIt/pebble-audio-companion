@@ -73,6 +73,7 @@ enum Route: Equatable, Hashable, Identifiable {
     /// a moment on the clock, scrolled to and marked not at all. Nil for every ordinary open.
     case conversation(id: String, atMs: Int64?, focus: TranscriptFocus? = nil)
     case live
+    case markedMoments
     case library(tag: String?)
     case search(query: String?)
     case ask(scope: String?, query: String?)
@@ -122,6 +123,8 @@ enum Route: Equatable, Hashable, Identifiable {
             return .conversation(id: id, atMs: t, focus: focus)
         case "live":
             return .live
+        case "moments":
+            return .markedMoments
         case "library":
             return .library(tag: query["tag"])
         case "search":
@@ -161,6 +164,8 @@ enum Route: Equatable, Hashable, Identifiable {
         case .today(let date):
             components.host = "today"
             if let date { components.queryItems = [.init(name: "date", value: date)] }
+        case .markedMoments:
+            components.host = "moments"
         case .history(let date, let level):
             components.host = "history"
             var items: [URLQueryItem] = []

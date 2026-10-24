@@ -735,6 +735,11 @@ class WatchAction(
  * what is playing, the app that was opened, or health numbers (Section 4.5); empty for none.
  */
 /** The wearer marked a moment as important on the watch (Section 4.6). */
+data class MomentSaved(val requestToken: Int, val markId: Int, val wallMs: ULong) : ControlInMessage {
+    override fun encode(): ByteArray = WireWriter(11)
+        .u8(MessageId.MOMENT_SAVED).u8(requestToken).u8(markId).u64(wallMs).toByteArray()
+}
+
 data class MomentMark(
     /** Counts marks on the watch, 1-255 and round again; with [wallMs], names a mark sent twice. */
     val markId: Int,

@@ -75,7 +75,7 @@ final class AppRouter {
             todayPath = route == .live ? [.live] : []
         case .history(let date, let level):
             showHistory(HistoryRequest(date: date, level: level.flatMap(HistoryLevel.init(rawValue:))))
-        case .conversation, .note:
+        case .conversation, .note, .markedMoments:
             selectedTab = .library
             libraryPath = [route]
         case .library(let tag):

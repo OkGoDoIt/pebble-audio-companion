@@ -92,6 +92,11 @@ public enum AudioCompanionProtocol {
                     freeStorageHintKb: r.u32()
                 )
             }
+        case MessageId.momentSaved:
+            return sized(bytes, 11) { r in
+                _ = r.u8()
+                return MomentSaved(requestToken: r.u8(), markId: r.u8(), wallMs: r.u64())
+            }
         case MessageId.pauseRequest:
             return sized(bytes, 3) { r in
                 _ = r.u8()

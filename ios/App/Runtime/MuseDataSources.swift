@@ -251,25 +251,12 @@ final class AppMuseData: MuseDataProvider, @unchecked Sendable {
         }
     }
 
-    /// The moment, marked as the watch's Mark Moment marks it: in the transcript where it falls,
-    /// and read for follow-ups like a spoken "remind me". With a label, what to remember is
-    /// already said, and it is a reminder as well.
+    /// The same saved moment as the watch action. A label is a note, not a reminder request.
     func markMoment(_ label: String?) async -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let marked = (try? await MomentStore(db: composition.database).add(
+        return (try? await MomentStore(db: composition.database).add(
             Moment(id: "muse-\(nowMs)", wallMs: nowMs, onAudioClock: false, origin: .muse,
-                   createdAtMs: nowMs))) != nil
-        guard !trimmed.isEmpty else { return marked }
-        let item = FollowUp(
-            id: UUID().uuidString.lowercased(),
-            text: trimmed,
-            done: false, sourceConversationId: nil, sourceSegmentId: nil,
-            createdAtMs: nowMs,
-            origin: .assistant,
-            sourceWall: SegmentWallRange(startMs: nowMs - 30_000, endMs: nowMs, isApproximate: true))
-        guard (try? await composition.followUps.insertFromAssistant(item)) == true else { return false }
-        try? await composition.donator.donateFollowUp(id: item.id, text: item.text, createdAtMs: nowMs)
-        return true
+                   createdAtMs: nowMs, note: String(trimmed.prefix(2_000))))) == true
     }
 }

@@ -20,6 +20,7 @@ public actor EnrichmentService {
     private let followUps: FollowUpWorker
     /// The second follow-up pass. Extraction proposes, this decides — see `FollowUpCurator`.
     private let curator: FollowUpCurator
+    private let moments: MomentReviewWorker?
     private let annotations: AnnotationStore
     private let store: SegmentStore
     private let pauseJournal: PauseJournal?
@@ -76,12 +77,14 @@ public actor EnrichmentService {
         log: RuntimeLog = .silent,
         isForeground: @escaping @Sendable () -> Bool = { false },
         audioContentMask: AudioContentMask? = nil,
-        audioContentStore: AudioContentStore? = nil
+        audioContentStore: AudioContentStore? = nil,
+        moments: MomentReviewWorker? = nil
     ) {
         self.isForeground = isForeground
         self.worker = worker
         self.followUps = followUps
         self.curator = curator
+        self.moments = moments
         self.annotations = annotations
         self.store = store
         self.database = database
@@ -359,7 +362,12 @@ public actor EnrichmentService {
         var changed = false
         if try await curator.archiveStale() > 0 { changed = true }
 
-        let inputs = await enrichmentInputs().filter { !holdsNoConversation($0) }
+        let allInputs = await enrichmentInputs()
+        if let moments,
+           try await moments.run(conversations: allInputs, transcriptOf: searchPieceTranscriptOf) {
+            changed = true
+        }
+        let inputs = allInputs.filter { !holdsNoConversation($0) }
         if !inputs.isEmpty {
             let proposed = try await followUps.extract(
                 inputs, pieceTranscriptOf: pieceTranscriptOf)

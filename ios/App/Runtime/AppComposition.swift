@@ -792,12 +792,7 @@ final class AppComposition {
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
                 },
-                transcriptVersionOf: aiTranscriptVersion,
-                momentsBetween: { from, to in
-                    let marked = try? await MomentStore(db: database).moments(
-                        fromWallMs: from, to: to)
-                    return marked?.map(\.wallMs) ?? []
-                }
+                transcriptVersionOf: aiTranscriptVersion
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,
@@ -843,7 +838,8 @@ final class AppComposition {
             // just topped up is looking.
             isForeground: { AppForegroundProbe.shared.isForeground },
             audioContentMask: audioContentMask,
-            audioContentStore: audioContentStore
+            audioContentStore: audioContentStore,
+            moments: MomentReviewWorker(store: MomentStore(db: database), router: aiRouter, nowMs: nowMs)
         )
 
         let recap = RecapService(
@@ -999,16 +995,20 @@ final class AppComposition {
         )
         self.receiver = receiver
 
-        // Moments marked on the watch (Mark Moment) are kept as they arrive; the transcript and
-        // follow-up extraction read them from the database.
+        // A mark saves a moment; only an explicit request creates a reminder.
         let moments = MomentStore(db: database)
         Task {
             await receiver.setMomentHandler { marked in
-                Task {
-                    _ = try? await moments.add(
-                        Moment(
-                            id: marked.id, wallMs: marked.wallMs,
-                            onAudioClock: marked.onAudioClock, createdAtMs: marked.receivedAtMs))
+                do {
+                    let inserted = try await moments.add(Moment(
+                        id: marked.id, wallMs: marked.wallMs,
+                        onAudioClock: marked.onAudioClock, createdAtMs: marked.receivedAtMs,
+                        wasRecording: marked.wasRecording))
+                    if inserted { AppRuntimeLog.shared.record("moment saved \(marked.id)") }
+                    return true // A duplicate is already durably stored too.
+                } catch {
+                    AppRuntimeLog.shared.record("moment save failed: \(error)")
+                    return false
                 }
             }
         }
@@ -1365,6 +1365,7 @@ final class AppComposition {
         if !Self.usesDemoData {
             AppDataSources.current = AppDataSources(today: today, live: today)
             AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
+            MomentsDataSources.current = LiveMoments(composition: self)
             let history = makeHistory(today: today)
             self.history = history
             HistoryDataSources.current = HistoryDataSources(history: history)

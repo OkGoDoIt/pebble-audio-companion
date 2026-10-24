@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "MOMENT_SAVED one byte short",
+  "expect": "reject",
+  "fields": {},
+  "name": "moment_saved_truncated",
+  "size": 10
+}

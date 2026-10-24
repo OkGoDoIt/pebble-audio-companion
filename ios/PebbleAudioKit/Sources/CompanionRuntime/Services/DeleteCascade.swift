@@ -302,6 +302,12 @@ public actor DeleteCascade {
             log.failure("conversation cut cascade", error)
         }
         if let meta { await audioContent?.forget(segment: meta) }
+        if let meta {
+            do {
+                try await MomentStore(db: annotations.db).forgetRecordingContext(
+                    from: meta.startWallMs, to: meta.startWallMs + SegmentMediaClock(meta).wallSpanMs)
+            } catch { log.failure("moment review cascade", error) }
+        }
         await live?.audioRewritten(segmentId)
 
         // AI outputs whose source set was JUST this segment. An output that also cites surviving
@@ -398,6 +404,11 @@ public actor DeleteCascade {
             log.failure("transcript redaction", error)
         }
         await transcription.discardStagedUpload(segmentId, forgetJob: false)
+        do {
+            try await MomentStore(db: annotations.db).forgetRecordingContext(
+                from: EnrichmentConversation.wallMs(ofMedia: range.lowerBound, in: meta),
+                to: EnrichmentConversation.wallMs(ofMedia: range.upperBound, in: meta))
+        } catch { log.failure("moment review range cascade", error) }
 
         // Follow-ups and candidates drawn from the range. The neighbour's, drawn from the rest
         // of the same segment, stay.

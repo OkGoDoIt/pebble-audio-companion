@@ -874,6 +874,16 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("archive-sync-follow-up-stage-v1") { db in
             try ArchiveOutbox.installFollowUpStage(db)
         }
+        migrator.registerMigration("moments-notes-v1") { db in
+            try db.execute(sql: "ALTER TABLE moments ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+            try db.execute(sql: "ALTER TABLE moments ADD COLUMN wasRecording BOOLEAN")
+            try db.execute(sql: "ALTER TABLE moments ADD COLUMN reviewJSON TEXT")
+            try db.execute(sql: "ALTER TABLE moments ADD COLUMN reviewState TEXT NOT NULL DEFAULT 'pending'")
+            try db.execute(sql: "ALTER TABLE moments ADD COLUMN nextReviewMs INTEGER NOT NULL DEFAULT 0")
+        }
+        migrator.registerMigration("moment-tombstones-v1") { db in
+            try db.execute(sql: "CREATE TABLE moment_tombstones (id TEXT PRIMARY KEY NOT NULL)")
+        }
         try migrator.migrate(writer)
     }
 }

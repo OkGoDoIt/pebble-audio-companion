@@ -191,6 +191,11 @@ class GoldenFixtureTest {
             "frame_count" to message.frameCount.toString(),
             "max_seconds" to message.maxSeconds.toString(),
         )
+        is MomentSaved -> mapOf(
+            "request_token" to message.requestToken.toString(),
+            "mark_id" to message.markId.toString(),
+            "wall_ms" to message.wallMs.toString(),
+        )
         is MomentMark -> mapOf(
             "mark_id" to message.markId.toString(),
             "flags" to message.flags.toString(),

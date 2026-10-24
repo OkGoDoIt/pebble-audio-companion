@@ -19,4 +19,54 @@ import Testing
         #expect(inside.last?.onAudioClock == true)
         #expect(inside.last?.origin == .watch)
     }
+
+    @Test func aResendPreservesThePersonsNoteAndFinishedReview() async throws {
+        let store = MomentStore(db: try AppDatabase.inMemory())
+        let moment = Moment(id: "watch-1", wallMs: 50_000, onAudioClock: true, createdAtMs: 51_000)
+        try await store.add(moment)
+        try await store.setNote(id: moment.id, note: "  keep this  ")
+        let review = MomentReview(summary: "A useful idea", suggestions: [])
+        try await store.saveReview(id: moment.id, review: review, state: "reviewed")
+        try await store.add(moment)
+        let read = try await store.moments(fromWallMs: 0, to: 100_000)
+        #expect(read.first?.note == "keep this")
+        #expect(read.first?.review == review)
+        #expect(try await store.pendingReviews(nowMs: 100_000).isEmpty)
+    }
+
+    @Test func deletingContextClearsAIAndRejectsALateResultButKeepsTheNote() async throws {
+        let store = MomentStore(db: try AppDatabase.inMemory())
+        try await store.add(Moment(id: "mark", wallMs: 60_000, onAudioClock: true,
+                                   createdAtMs: 61_000, note: "Mine"))
+        let review = MomentReview(summary: "Private words", suggestions: [])
+        try await store.saveReview(id: "mark", review: review, state: "reviewed")
+        try await store.forgetRecordingContext(from: 20_000, to: 40_000)
+        try await store.saveReview(id: "mark", review: review, state: "reviewed")
+        let read = try await store.moments(fromWallMs: 0, to: 100_000)
+        #expect(read.first?.review == nil)
+        #expect(read.first?.reviewState == "unavailable")
+        #expect(read.first?.note == "Mine")
+        try await store.delete(id: "mark")
+        try await store.saveReview(id: "mark", review: review, state: "reviewed")
+        #expect(try await store.moments(fromWallMs: 0, to: 100_000).isEmpty)
+    }
+
+    @Test func aWatchRetryCannotResurrectADeletedMark() async throws {
+        let store = MomentStore(db: try AppDatabase.inMemory())
+        let moment = Moment(id: "watch-1", wallMs: 50_000, onAudioClock: true, createdAtMs: 51_000)
+        try await store.add(moment)
+        try await store.delete(id: moment.id)
+        #expect(!(try await store.add(moment)))
+        #expect(try await store.moments(fromWallMs: 0, to: 100_000).isEmpty)
+    }
+
+    @Test func failedReviewsRespectBackoff() async throws {
+        let store = MomentStore(db: try AppDatabase.inMemory())
+        try await store.add(Moment(id: "mark", wallMs: 60_000, onAudioClock: true, createdAtMs: 61_000))
+        #expect(try await store.pendingReviews(nowMs: 70_000).isEmpty)
+        #expect(try await store.pendingReviews(nowMs: 100_000).count == 1)
+        try await store.saveReview(id: "mark", review: nil, state: "retry", nextMs: 500_000)
+        #expect(try await store.pendingReviews(nowMs: 400_000).isEmpty)
+        #expect(try await store.pendingReviews(nowMs: 500_000).count == 1)
+    }
 }

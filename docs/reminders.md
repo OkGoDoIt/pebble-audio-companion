@@ -18,7 +18,7 @@ search, and the summary can turn them back into reminders.
 | Where it came from | Becomes |
 |---|---|
 | The person asked out loud ("remind me…", "create a follow-up") | a reminder, at once |
-| A moment marked on the watch | a reminder, at once |
+| A moment marked on the watch | a saved moment with AI suggestions; a reminder when the person chooses it |
 | An assistant was told to add it (Muse, ChatGPT, Claude, Siri) | a reminder, at once |
 | Anything else the app noticed | a suggestion, for review |
 

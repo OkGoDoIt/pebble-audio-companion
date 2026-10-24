@@ -21,6 +21,7 @@ struct TodayScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 statusCard
+                MarkedMomentsEntry()
 
                 if let line = viewModel.emptyLine {
                     emptyLineView(line)
@@ -57,6 +58,8 @@ struct TodayScreen: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
+        case .markedMoments:
+            MarkedMomentsScreen()
         case .live:
             LiveConversationScreen()
         case .note(let id):
