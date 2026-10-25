@@ -181,7 +181,7 @@ final class LiveWorld {
                     result.voiceMatches.append(ConversationVoiceMatch(id: "\(match.attribution.id):\(start):\(end)",
                         person: match.person, segmentId: segmentId, sourceStartMs: start, sourceEndMs: end,
                         playbackStartMs: before + span.offset(ofSegmentMediaMs: start),
-                        playbackEndMs: before + span.offset(ofSegmentMediaMs: end)))
+                        playbackEndMs: before + span.offset(ofSegmentMediaMs: end), isAutomatic: true))
                 }
                 // A manually corrected audio clip must remain editable even when there are
                 // no words, or the ASR timing cannot expose that exact range in a paragraph.

@@ -493,8 +493,37 @@ final class MockWorld {
             provenance: provenance,
             followUps: followUps.filter { $0.sourceConversationId == conversation.id },
             startedAt: conversation.start,
-            endedAt: conversation.isLive ? nil : conversation.end
+            endedAt: conversation.isLive ? nil : conversation.end,
+            voiceMatches: Self.sampleVoiceMatches(conversation),
+            voiceSelectionPieces: Self.sampleVoicePieces(conversation)
         )
+    }
+
+    /// Voice identification samples for `-demo-data` review: one conversation carries two
+    /// recording sections plus a recognized, a chosen and an explicitly unnamed clip.
+    private static func sampleVoicePieces(_ conversation: MockConversation) -> [ConversationAudioPiece] {
+        guard conversation.id == "coffee-dana" else { return [] }
+        return [
+            ConversationAudioPiece(id: "cd-a", segmentId: "cd-seg-a", sourceStartMs: 0,
+                                   sourceEndMs: 14 * 60_000, playbackStartMs: 0),
+            ConversationAudioPiece(id: "cd-b", segmentId: "cd-seg-b", sourceStartMs: 0,
+                                   sourceEndMs: 10 * 60_000, playbackStartMs: 14 * 60_000),
+        ]
+    }
+
+    private static func sampleVoiceMatches(_ conversation: MockConversation) -> [ConversationVoiceMatch] {
+        guard conversation.id == "coffee-dana" else { return [] }
+        func clip(_ id: String, _ person: Person?, automatic: Bool, atSeconds start: Int64, seconds: Int64)
+            -> ConversationVoiceMatch {
+            ConversationVoiceMatch(id: id, person: person, segmentId: "cd-seg-a",
+                sourceStartMs: start * 1_000, sourceEndMs: (start + seconds) * 1_000,
+                playbackStartMs: start * 1_000, playbackEndMs: (start + seconds) * 1_000, isAutomatic: automatic)
+        }
+        return [
+            clip("cd-v1", Person(id: "person-dana", name: "Dana"), automatic: false, atSeconds: 192, seconds: 8),
+            clip("cd-v2", Person(id: "person-sam", name: "Sam"), automatic: true, atSeconds: 305, seconds: 6),
+            clip("cd-v3", nil, automatic: false, atSeconds: 611, seconds: 5),
+        ]
     }
 
     /// The artboard fixtures carry no per-row times, so the mock world spreads them evenly
