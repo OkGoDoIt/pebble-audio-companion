@@ -140,6 +140,45 @@ import Transcription
         #expect(!after.contains("deleted words"))
     }
 
+    @Test func retentionKeepsAnEnrolledVoiceButExplicitDeleteRevokesDependentMatchesAndSearch() async throws {
+        for reason in [DeleteReason.expired, .user] {
+            let fixture = try RuntimeFixture()
+            let first = try await Fixture.writeSegment(into: fixture.store, streamId: 1,
+                startTimeMs: 1_756_512_000_000, receivedAtMs: 1_756_512_000_000)
+            let second = try await Fixture.writeSegment(into: fixture.store, streamId: 2,
+                startTimeMs: 1_756_515_600_000, receivedAtMs: 1_756_515_600_000)
+            for id in [first, second] {
+                _ = try fixture.transcriptStore.save(id, result: RoutedTranscription(
+                    text: "words", modeUsed: .localOnly, providerId: "test", modelUsed: nil,
+                    segments: [TranscriptSegment(text: "words", startMs: 0, endMs: 100)]))
+            }
+            _ = try await fixture.enrichment.regroup()
+            let person = try await PeopleStore(db: fixture.database).createPerson(name: "Voice name")
+            let voices = VoiceIdentityStore(db: fixture.database)
+            try await voices.setMode(.local)
+            _ = try await voices.prepareSource(segmentId: first, revision: "first")
+            let firstContext = try #require(try await voices.workContext(segmentId: first))
+            #expect(try await voices.commitExample(VoiceConfirmedExample(personId: person.id,
+                confirmationID: "human", sessionID: "session", segmentId: first, startMediaMs: 0,
+                endMediaMs: 100, sourceRevision: "first", recipeID: "recipe", recipeJSON: Data("{}".utf8),
+                embeddingJSON: Data("{}".utf8), qualityJSON: Data("{}".utf8)), token: firstContext.token))
+            _ = try await voices.prepareSource(segmentId: second, revision: "second")
+            let secondContext = try #require(try await voices.workContext(segmentId: second))
+            #expect(try await voices.commitAutomatic(VoiceAutomaticAttribution(personId: person.id,
+                segmentId: second, startMediaMs: 0, endMediaMs: 100, sourceRevision: "second",
+                recipeID: "recipe", score: 0.9, margin: 0.2, calibrationID: "test", runID: "test"),
+                token: secondContext.token))
+            let conversations = await fixture.enrichment.conversationIds(containing: second)
+            await fixture.enrichment.donate(conversationIds: conversations)
+            let conversation = try #require(conversations.first)
+            #expect(fixture.index.fullText(id: conversation, kind: .conversation)?.contains("Voice name") == true)
+            #expect(await fixture.cascade.deleteSegment(first, reason: reason))
+            #expect(try await voices.examples().count == (reason == .expired ? 1 : 0))
+            #expect(try await voices.automaticSegmentIds().contains(second) == (reason == .expired))
+            #expect(fixture.index.fullText(id: conversation, kind: .conversation)?.contains("Voice name") == (reason == .expired))
+        }
+    }
+
     @Test func theOpenSegmentIsNeverDeleted() async throws {
         let fixture = try RuntimeFixture()
         _ = try await Fixture.writeSegment(into: fixture.store, close: false)

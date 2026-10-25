@@ -96,8 +96,13 @@ public actor DeleteCascade {
                 log.failure("archive expiry", error)
             }
         }
-        let conversationIds = await enrichment.conversationIds(containing: segmentId)
-        guard await destroySegment(segmentId) else { return false }
+        var conversationIds = await enrichment.conversationIds(containing: segmentId)
+        if reason == .user {
+            let affected = (try? await SpeakerCorrectionStore(db: annotations.db).affectedConversationIds(
+                segmentId: segmentId, startMediaMs: 0, endMediaMs: Int64.max)) ?? []
+            conversationIds = Array(Set(conversationIds + affected))
+        }
+        guard await destroySegment(segmentId, reason: reason) else { return false }
 
         // Regroup, then drop annotations + index rows for conversations that no longer exist.
         let survivors = Set(await regrouped().map(\.id))
@@ -154,6 +159,10 @@ public actor DeleteCascade {
         // segment: the one whose identity the regroup below has to keep.
         var follower: (conversationId: String, after: ConversationMember)?
         for piece in pieces where piece.segmentId != openSegmentId {
+            let affected = (try? await SpeakerCorrectionStore(db: annotations.db).affectedConversationIds(
+                segmentId: piece.segmentId, startMediaMs: piece.startMediaMs ?? 0,
+                endMediaMs: piece.endMediaMs ?? Int64.max)) ?? []
+            for id in affected where id != conversationId && !neighbours.contains(id) { neighbours.append(id) }
             let owners = await enrichment.owners(ofSegment: piece.segmentId)
                 .filter { $0.conversationId != conversationId }
             if piece.isWhole, owners.isEmpty {
@@ -188,7 +197,7 @@ public actor DeleteCascade {
 
         var deleted: [String] = []
         var destroyed: [ConversationMember] = []
-        for piece in whole where await destroySegment(piece.segmentId) {
+        for piece in whole where await destroySegment(piece.segmentId, reason: .user) {
             deleted.append(piece.segmentId)
             destroyed.append(piece)
         }
@@ -281,7 +290,7 @@ public actor DeleteCascade {
 
     /// Everything that hangs off one segment, without the regroup. False when the audio could
     /// not be deleted, in which case nothing else was touched.
-    private func destroySegment(_ segmentId: String) async -> Bool {
+    private func destroySegment(_ segmentId: String, reason: DeleteReason) async -> Bool {
         if await store.openSegmentId == segmentId { return false }
         // Read before the delete: the classification cascade needs the segment's wall span.
         let meta = await store.readMeta(segmentId)
@@ -290,6 +299,11 @@ public actor DeleteCascade {
             log.failure("segment delete", error)
             return false
         }
+        do {
+            let voice = VoiceIdentityStore(db: annotations.db)
+            if reason == .expired { try await voice.expireSource(segmentId: segmentId) }
+            else { try await voice.deleteSource(segmentId: segmentId) }
+        } catch { log.failure("voice evidence delete", error) }
         do { try await SpeakerCorrectionStore(db: annotations.db).delete(segmentId: segmentId) } catch {
             log.failure("speaker correction delete", error)
         }
@@ -403,6 +417,10 @@ public actor DeleteCascade {
             return false
         }
 
+        do {
+            try await VoiceIdentityStore(db: annotations.db).removeSourceRange(
+                segmentId: segmentId, startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
+        } catch { log.failure("voice evidence redaction", error) }
         do {
             try await SpeakerCorrectionStore(db: annotations.db).removeRange(
                 segmentId: segmentId, startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
