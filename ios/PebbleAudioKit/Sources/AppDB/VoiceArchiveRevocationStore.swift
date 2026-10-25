@@ -85,6 +85,18 @@ public struct VoiceArchiveRevocationStore: Sendable {
             """, arguments: [UUID().uuidString.lowercased(), scope.rawValue, targetID, nowMs])
     }
 
+    /// An old backup cannot know the server's highest generation. Missing device-bound keys
+    /// retire that origin permanently, then new explicit enrollment starts a fresh namespace.
+    static func retireOrigin(_ d: Database) throws {
+        try d.execute(sql: """
+            INSERT INTO voice_archive_revocations(id,originID,generation,scope,targetID,createdAtMs)
+                SELECT ?,originID,?,'all',NULL,? FROM voice_archive_state WHERE id = 1
+            """, arguments: [UUID().uuidString.lowercased(), Int64.max,
+                              Int64(Date().timeIntervalSince1970 * 1000)])
+        try d.execute(sql: "UPDATE voice_archive_state SET originID = ?, generation = 0 WHERE id = 1",
+                      arguments: [UUID().uuidString.lowercased()])
+    }
+
     private static func record(_ r: Row) -> VoiceArchiveRevocation {
         VoiceArchiveRevocation(id: r["id"], originID: r["originID"], generation: r["generation"],
             scope: VoiceArchiveRevocationScope(rawValue: r["scope"])!, targetID: r["targetID"],

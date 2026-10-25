@@ -67,6 +67,43 @@ import Testing
         #expect(try await store.profiles().first?.exampleCount == 32)
     }
 
+    @Test func removingOneConfirmedRecordingRemovesAllItsCropsAtomically() async throws {
+        let (db, store, person) = try await ready()
+        let crops = [example(person, id: "one"), example(person, id: "two", start: 2_000)]
+        #expect(try await store.commitExamples(crops, token: token(store)))
+        #expect(try await store.commitAutomatic(auto(person, start: 5_000, end: 7_000), token: token(store)))
+        await #expect(throws: VoiceIdentityError.capacityExceeded) {
+            try await store.removeExamples(ids: crops.map(\.id) + (0..<33).map { "missing-\($0)" })
+        }
+        #expect(try await store.examples().count == 2)
+        try await store.removeExamples(ids: ["one", "two", "one"])
+        #expect(try await store.examples().isEmpty)
+        #expect(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["s"]).automaticAttributions.isEmpty)
+        #expect(try await PeopleStore(db: db).listPeople().contains { $0.person.id == person.id })
+    }
+
+    @Test func redactionDigestRefreshPreservesUnrelatedConfirmedCropsAndUndoLocks() async throws {
+        let (_, store, person) = try await ready()
+        let crops = [example(person, id: "deleted"), example(person, id: "kept", start: 4_000)]
+        #expect(try await store.commitExamples(crops, token: token(store)))
+        try await store.enqueueJob(runID: "undo", segmentId: "s", startMediaMs: 8_000,
+            endMediaMs: 10_000, recipeID: "recipe")
+        try await store.undoRun("undo")
+        try await store.removeSourceRange(segmentId: "s", startMediaMs: 0, endMediaMs: 1_000)
+        let revision = try await store.configuration().corpusRevision
+        _ = try await store.prepareSource(segmentId: "s", revision: "redacted-digest")
+        #expect(try await store.examples().map(\.id) == ["kept"])
+        #expect(try await store.configuration().corpusRevision == revision)
+        let context = try #require(try await store.workContext(segmentId: "s"))
+        var prediction = auto(person, run: "later", start: 8_000, end: 10_000)
+        prediction.sourceRevision = "redacted-digest"
+        #expect(try await !store.commitAutomatic(prediction, token: context.token))
+        var duplicate = example(person, id: "duplicate", start: 4_000)
+        duplicate.sourceRevision = "redacted-digest"
+        #expect(try await store.commitExample(duplicate, token: context.token))
+        #expect(try await store.examples().count == 1)
+    }
+
     @Test func simultaneousSelfSetupCreatesOneExplicitIdentity() async throws {
         let db = try AppDatabase.inMemory()
         let people = PeopleStore(db: db)

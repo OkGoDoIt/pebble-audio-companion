@@ -265,7 +265,7 @@ public actor VoiceRecognitionService {
         let clean = try Self.enrollmentTurns(analysis, audio: audio)
         let prior = context.examples.filter { $0.personId == personId && $0.recipeID == analysis.recipeID }
         let fresh = clean.filter { turn in
-            !prior.contains { $0.sourceRevision == audio.sourceRevision
+            !prior.contains { ($0.segmentId == audio.sourceID || $0.sourceRevision == audio.sourceRevision)
                 && $0.startMediaMs < Int64(turn.endSample / 16)
                 && $0.endMediaMs > Int64(turn.startSample / 16) }
         }
@@ -333,6 +333,7 @@ public actor VoiceRecognitionService {
         _ = try await store.prepareSource(segmentId: segmentId, revision: source.revision)
         try await store.enqueueJob(runID: "recent:\(segmentId):\(config.generation):\(config.corpusRevision):\(source.revision)", segmentId: segmentId,
             startMediaMs: 0, endMediaMs: source.endMediaMs, recipeID: recipeID)
+        changedSegments.insert(segmentId)
         changed()
     }
 
@@ -387,6 +388,7 @@ public actor VoiceRecognitionService {
                         _ = try await store.prepareSource(segmentId: meta.segmentId, revision: source.revision)
                         try await store.enqueueJob(runID: plan.runID, segmentId: meta.segmentId,
                             startMediaMs: start, endMediaMs: end, recipeID: recipeID, explicitRerun: true)
+                        changedSegments.insert(meta.segmentId)
                         queued = true; capacity -= 1
                     }
                 } catch VoiceEnrollmentError.audioUnavailable { /* unavailable audio remains unavailable, no download */ }
@@ -501,12 +503,15 @@ public actor VoiceRecognitionService {
         changedSegments.formUnion(try await store.automaticSegmentIds(personId: personId))
         try await store.forgetProfile(personId: personId); changed()
     }
-    public func removeExample(id: String) async throws {
+    public func removeExample(id: String) async throws { try await removeExamples(ids: [id]) }
+    public func removeExamples(ids: [String]) async throws {
         cancelEnrollment()
-        if let example = try await store.examples().first(where: { $0.id == id }) {
-            changedSegments.formUnion(try await store.automaticSegmentIds(personId: example.personId))
+        let ids = Set(ids)
+        let people = Set(try await store.examples().filter { ids.contains($0.id) }.map(\.personId))
+        for person in people {
+            changedSegments.formUnion(try await store.automaticSegmentIds(personId: person))
         }
-        try await store.removeExample(id: id); changed()
+        try await store.removeExamples(ids: Array(ids)); changed()
     }
     public func clearAutomaticNames() async throws {
         changedSegments.formUnion(try await store.automaticSegmentIds())

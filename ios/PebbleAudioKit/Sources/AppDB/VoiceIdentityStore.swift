@@ -39,7 +39,14 @@ public struct VoiceIdentityStore: Sendable {
                 if state == "invalidated", oldRevision == revision { throw VoiceIdentityError.sourceInvalidated }
                 if oldRevision != revision {
                     try d.execute(sql: "INSERT OR IGNORE INTO voice_source_revocations(segmentId,revision) VALUES (?,?)", arguments: [segmentId, oldRevision])
-                    try Self.eraseSourceArtifacts(d, segmentId: segmentId)
+                    if state == "invalidated" {
+                        // Our range deletion already removed intersecting evidence. The remaining
+                        // crops and undo locks still refer to unchanged audio at the same offsets.
+                        try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE segmentId = ?", arguments: [segmentId])
+                        try d.execute(sql: "DELETE FROM voice_jobs WHERE segmentId = ?", arguments: [segmentId])
+                    } else {
+                        try Self.eraseSourceArtifacts(d, segmentId: segmentId)
+                    }
                     try d.execute(sql: "UPDATE voice_sources SET revision = ?, generation = generation + 1, state = 'ready' WHERE segmentId = ?",
                                   arguments: [revision, segmentId])
                 }
@@ -118,8 +125,8 @@ public struct VoiceIdentityStore: Sendable {
                 // Partially overlapping recrops of the same audio are not independent evidence.
                 let duplicate = try String.fetchOne(d, sql: """
                     SELECT id FROM voice_examples WHERE personId = ? AND segmentId = ? AND startMediaMs < ?
-                        AND endMediaMs > ? AND sourceRevision = ? AND recipeID = ? LIMIT 1
-                    """, arguments: [example.personId, example.segmentId, example.endMediaMs, example.startMediaMs, example.sourceRevision, example.recipeID])
+                        AND endMediaMs > ? AND recipeID = ? LIMIT 1
+                    """, arguments: [example.personId, example.segmentId, example.endMediaMs, example.startMediaMs, example.recipeID])
                 if duplicate != nil { continue }
                 let count = try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM voice_examples WHERE personId = ? AND recipeID = ?",
                                             arguments: [example.personId, example.recipeID]) ?? 0
@@ -138,13 +145,24 @@ public struct VoiceIdentityStore: Sendable {
         }
     }
 
-    public func removeExample(id: String) async throws {
+    public func removeExample(id: String) async throws { try await removeExamples(ids: [id]) }
+
+    /// One explicit saved recording can produce several disjoint acoustic crops. Removing
+    /// that recording is atomic, and every dependent prediction is invalidated with it.
+    public func removeExamples(ids: [String]) async throws {
+        let ids = Array(Set(ids))
+        guard ids.count <= 32 else { throw VoiceIdentityError.capacityExceeded }
+        guard !ids.isEmpty else { return }
         try await db.writer.write { d in
-            guard let person = try String.fetchOne(d, sql: "SELECT personId FROM voice_examples WHERE id = ?", arguments: [id]) else { return }
-            try d.execute(sql: "DELETE FROM voice_examples WHERE id = ?", arguments: [id])
-            // Existing predictions may have depended on this example; retaining them would
-            // make 'remove example' misleading. Human names remain untouched.
-            try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE personId = ?", arguments: [person])
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            let people = try String.fetchAll(d, sql:
+                "SELECT DISTINCT personId FROM voice_examples WHERE id IN (\(placeholders))",
+                arguments: StatementArguments(ids))
+            try d.execute(sql: "DELETE FROM voice_examples WHERE id IN (\(placeholders))",
+                          arguments: StatementArguments(ids))
+            for person in people {
+                try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE personId = ?", arguments: [person])
+            }
         }
     }
 
@@ -225,7 +243,7 @@ public struct VoiceIdentityStore: Sendable {
     /// for a new, explicit enrollment. A temporarily locked key must never call this operation.
     public func resetUnavailableProfiles() async throws {
         try await db.writer.write { d in
-            try VoiceArchiveRevocationStore.revoke(d, scope: .all)
+            try VoiceArchiveRevocationStore.retireOrigin(d)
             try d.execute(sql: """
                 UPDATE voice_recognition_config SET mode = 'off', generation = generation + 1,
                     corpusRevision = corpusRevision + 1 WHERE id = 1;

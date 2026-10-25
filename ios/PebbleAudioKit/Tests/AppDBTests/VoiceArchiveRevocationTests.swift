@@ -61,6 +61,28 @@ import Testing
         #expect(newer.createdAtMs < 10_000)
     }
 
+    @Test func restoredOldBackupRetiresItsOriginPermanentlyBeforeFreshEnrollment() async throws {
+        let (db, voice, person) = try await ready()
+        try await insert(voice, person: person, run: "old")
+        let before = try #require(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["s"])
+            .automaticAttributions.first?.attribution)
+        try await voice.resetUnavailableProfiles()
+        let retired = try #require(try await VoiceArchiveRevocationStore(db: db).all()
+            .first { $0.originID == before.archiveOriginID && $0.scope == .all })
+        #expect(retired.generation == Int64.max)
+        try await voice.setMode(.local)
+        let token = try #require(try await voice.workContext(segmentId: "s")).token
+        #expect(try await voice.commitExample(VoiceConfirmedExample(personId: person.id,
+            confirmationID: "fresh-human", sessionID: "fresh-session", segmentId: "s", startMediaMs: 0,
+            endMediaMs: 2_000, sourceRevision: "digest", recipeID: "recipe", recipeJSON: Data("{}".utf8),
+            embeddingJSON: Data("{}".utf8), qualityJSON: Data("{}".utf8)), token: token))
+        try await insert(voice, person: person, run: "fresh")
+        let after = try #require(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["s"])
+            .automaticAttributions.first?.attribution)
+        #expect(after.archiveOriginID != before.archiveOriginID)
+        #expect(after.archiveGeneration < retired.generation)
+    }
+
     @Test func undoRevokesOnlyItsRunAndPreservesALaterExplicitPass() async throws {
         let (db, voice, person) = try await ready()
         try await insert(voice, person: person, run: "earlier")
