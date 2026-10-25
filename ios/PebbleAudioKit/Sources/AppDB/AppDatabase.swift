@@ -884,6 +884,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("moment-tombstones-v1") { db in
             try db.execute(sql: "CREATE TABLE moment_tombstones (id TEXT PRIMARY KEY NOT NULL)")
         }
+        migrator.registerMigration("speaker-identity-foundation-v1") { db in
+            try SpeakerCorrectionStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

@@ -190,6 +190,9 @@ public struct SegmentProvenance: Equatable, Sendable {
 public struct ConversationDetail: Equatable, Sendable {
     public var row: ConversationListRow
     public var members: [SegmentProvenance]
+    /// Included in detail equality/observation so changes to names, self identity and range
+    /// corrections refresh an open transcript even though its words/membership did not change.
+    public var identityRevision: Int64 = 0
 }
 
 public struct ConversationQueries: Sendable {
@@ -498,7 +501,9 @@ public struct ConversationQueries: Sendable {
                 endMediaMs: member["endMediaMs"]
             )
         }
-        return ConversationDetail(row: row, members: members)
+        let identityRevision = try Int64.fetchOne(
+            db, sql: "SELECT revision FROM speaker_identity_state WHERE id = 1") ?? 0
+        return ConversationDetail(row: row, members: members, identityRevision: identityRevision)
     }
 
     /// The conversations whose `[startMs, endMs)` overlaps `window` (epoch ms), newest first — a

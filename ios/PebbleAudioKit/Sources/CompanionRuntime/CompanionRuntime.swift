@@ -638,8 +638,8 @@ public actor CompanionRuntime {
     ///    and checkpointing it as received — see `ReceiverService.closeOpenSegment`.
     /// 2. Cascade every segment: audio, transcript, follow-ups, single-source AI outputs,
     ///    quoting recaps, annotations and the search-index rows.
-    /// 3. Sweep transcription state that has no segment left to hang off — queue tasks and
-    ///    transcript files orphaned by an earlier interrupted delete or a crash mid-cascade.
+    /// 3. Sweep transcription and speaker-correction state that has no segment left to hang
+    ///    off — queue tasks and transcript files orphaned by an earlier interrupted delete.
     ///    Without it "delete all" can leave a queue that keeps retrying vanished audio.
     /// 4. Put the live stream back into a fresh segment. Deleting recordings is not a request to
     ///    stop recording; the watch is still streaming and its buffered audio is still ours to
@@ -660,6 +660,9 @@ public actor CompanionRuntime {
         }
         do { try await environment.transcription.deleteAllTranscriptionData() } catch {
             log.failure("delete all transcription data", error)
+        }
+        do { try await SpeakerCorrectionStore(db: environment.database).deleteAll() } catch {
+            log.failure("delete all speaker corrections", error)
         }
         await environment.archiveSync?.didWipeLocally()
         await environment.receiver.resumeAfterBulkDelete()

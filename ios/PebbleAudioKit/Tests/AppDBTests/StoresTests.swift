@@ -264,10 +264,8 @@ import Testing
         #expect(updated.map(\.personName) == ["Sam"])
     }
 
-    /// The typo path the speaker sheet now offers a way out of: "Alx" and "Alex" both exist,
-    /// and fixing the typo has to fold the two together rather than leave two identical names
-    /// in the suggestion list forever.
-    @Test func renamingAPersonOntoAnExistingNameMerges() async throws {
+    /// Equal display names never establish that two people are the same person.
+    @Test func renamingAPersonOntoAnExistingNamePreservesBothIdentities() async throws {
         let db = try AppDatabase.inMemory()
         let store = PeopleStore(db: db)
         let alex = try await store.createPerson(name: "Alex")
@@ -278,9 +276,10 @@ import Testing
         try await store.renamePerson(id: typo.id, to: "Alex")
 
         let people = try await store.listPeople()
-        #expect(people.map(\.person.name) == ["Alex"])
-        #expect(people.first?.assignmentCount == 2)
-        #expect(try await store.assignments(forConversation: "c2").map(\.personId) == [alex.id])
+        #expect(people.map(\.person.name) == ["Alex", "Alex"])
+        #expect(Set(people.map(\.person.id)) == [alex.id, typo.id])
+        #expect(people.allSatisfy { $0.assignmentCount == 1 })
+        #expect(try await store.assignments(forConversation: "c2").map(\.personId) == [typo.id])
     }
 
     @Test func renamingAPersonIgnoresBlankNames() async throws {

@@ -319,6 +319,18 @@ extension GroupedConversation {
 /// build "the database as an earlier release left it" by dropping later columns: the sync's
 /// triggers name those columns, and SQLite refuses to drop a column a trigger reads.
 func removeArchiveSync(_ db: GRDB.Database) throws {
+    // Voice identity came later and its transactional triggers also write the outbox. Rewind
+    // that additive migration too; leaving its triggers behind makes SQLite reject unrelated
+    // ALTER TABLE statements once the outbox they reference has been removed.
+    for name in try String.fetchAll(
+        db, sql: "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'identity_%'")
+    {
+        try db.execute(sql: "DROP TRIGGER \(name)")
+    }
+    try db.execute(sql: "DROP TABLE IF EXISTS speaker_corrections")
+    try db.execute(sql: "DROP TABLE IF EXISTS speaker_identity_state")
+    try db.execute(
+        sql: "DELETE FROM grdb_migrations WHERE identifier = 'speaker-identity-foundation-v1'")
     for name in try String.fetchAll(
         db, sql: "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'sync_%'")
     {

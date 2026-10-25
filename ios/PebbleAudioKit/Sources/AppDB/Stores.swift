@@ -318,10 +318,12 @@ public struct Note: Equatable, Sendable {
 public struct Person: Equatable, Sendable {
     public var id: String
     public var name: String
+    public var isCurrentUser: Bool
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, isCurrentUser: Bool = false) {
         self.id = id
         self.name = name
+        self.isCurrentUser = isCurrentUser
     }
 }
 
@@ -333,12 +335,17 @@ public struct SpeakerAssignment: Equatable, Sendable {
     public var label: String
     public var personId: String
     public var personName: String
+    public var isCurrentUser: Bool
 
-    public init(conversationId: String, label: String, personId: String, personName: String) {
+    public init(
+        conversationId: String, label: String, personId: String, personName: String,
+        isCurrentUser: Bool = false
+    ) {
         self.conversationId = conversationId
         self.label = label
         self.personId = personId
         self.personName = personName
+        self.isCurrentUser = isCurrentUser
     }
 
     /// The assignment that names `key`'s speaker, if any, by `SpeakerKey.lookupOrder`.
@@ -1677,35 +1684,34 @@ public struct PeopleStore: Sendable {
     /// Renaming a PERSON updates every conversation assigned to them — assignments reference
     /// the person by id, so this is one row update ("applies everywhere", plan 6.3).
     ///
-    /// Renaming ONTO an existing name merges, the same way `renameTag` does (Q10). Speakers are
-    /// named by free text, so a typo ("Alx") creates a second person; without the merge, fixing
-    /// the typo would collide with the real "Alex" and leave two identical names in the
-    /// suggestion list forever. The surviving person is the one already carrying the name, so
-    /// every conversation assigned to either ends up on one record.
+    /// Display names are not identities: two people can both be Alex. A rename never merges
+    /// records or moves their assignments. Any future merge must be an explicit operation.
     public func renamePerson(id: String, to newName: String) async throws {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         try await db.writer.write { db in
-            if let survivor = try String.fetchOne(
-                db,
-                sql: "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND id <> ?",
-                arguments: [trimmed, id]
-            ) {
-                // Repoint this person's assignments onto the survivor. The unique key is
-                // (conversationId, label) and personId is not part of it, so this can never
-                // collide — unlike the tag merge, which repoints a pair that IS the key.
-                try db.execute(
-                    sql: "UPDATE speaker_assignments SET personId = ? WHERE personId = ?",
-                    arguments: [survivor, id])
-                try db.execute(sql: "DELETE FROM people WHERE id = ?", arguments: [id])
-            } else {
-                try db.execute(
-                    sql: "UPDATE people SET name = ? WHERE id = ?", arguments: [trimmed, id])
-            }
+            try db.execute(
+                sql: "UPDATE people SET name = ? WHERE id = ? AND name IS NOT ?",
+                arguments: [trimmed, id, trimmed])
         }
     }
 
-    /// Cascades the person's speaker assignments away (FK on delete cascade).
+    public func currentUserPersonId() async throws -> String? {
+        try await db.reader.read { db in
+            try String.fetchOne(db, sql: "SELECT currentUserPersonId FROM speaker_identity_state WHERE id = 1")
+        }
+    }
+
+    /// Explicit, stable association. A person named "You" is not automatically the wearer.
+    /// The foreign key rejects a missing person and clears the association when they are deleted.
+    public func setCurrentUser(personId: String?) async throws {
+        try await db.writer.write { db in
+            try SpeakerCorrectionStore.setCurrentUser(db, personId: personId)
+        }
+    }
+
+    /// Removes legacy assignments and turns range corrections into unnamed locks. Removing a
+    /// person must not reveal a different legacy name underneath a correction they owned.
     public func deletePerson(id: String) async throws {
         try await db.writer.write { db in
             try db.execute(sql: "DELETE FROM people WHERE id = ?", arguments: [id])
@@ -1719,14 +1725,19 @@ public struct PeopleStore: Sendable {
                 db,
                 sql: """
                     SELECT p.id AS id, p.name AS name,
+                        p.id IS (SELECT currentUserPersonId FROM speaker_identity_state WHERE id = 1)
+                            AS isCurrentUser,
                         (SELECT COUNT(*) FROM speaker_assignments sa WHERE sa.personId = p.id)
+                            + (SELECT COUNT(*) FROM speaker_corrections sc WHERE sc.personId = p.id)
                             AS count,
                         IFNULL((SELECT MAX(rowid) FROM speaker_assignments sa2
                                 WHERE sa2.personId = p.id), -1) AS lastUse
                     FROM people p
-                    ORDER BY count DESC, lastUse DESC, p.name COLLATE NOCASE ASC
+                    ORDER BY isCurrentUser DESC, count DESC, lastUse DESC, p.name COLLATE NOCASE ASC, p.id
                     """
-            ).map { (Person(id: $0["id"], name: $0["name"]), $0["count"]) }
+            ).map {
+                (Person(id: $0["id"], name: $0["name"], isCurrentUser: $0["isCurrentUser"]), $0["count"])
+            }
         }
     }
 
@@ -1761,7 +1772,9 @@ public struct PeopleStore: Sendable {
             db,
             sql: """
                 SELECT sa.conversationId AS conversationId, sa.label AS label,
-                    sa.personId AS personId, p.name AS personName
+                    sa.personId AS personId, p.name AS personName,
+                    p.id IS (SELECT currentUserPersonId FROM speaker_identity_state WHERE id = 1)
+                        AS isCurrentUser
                 FROM speaker_assignments sa JOIN people p ON p.id = sa.personId
                 WHERE sa.conversationId = ?
                 ORDER BY sa.label
@@ -1770,7 +1783,8 @@ public struct PeopleStore: Sendable {
         ).map {
             SpeakerAssignment(
                 conversationId: $0["conversationId"], label: $0["label"],
-                personId: $0["personId"], personName: $0["personName"])
+                personId: $0["personId"], personName: $0["personName"],
+                isCurrentUser: $0["isCurrentUser"])
         }
     }
 
@@ -1789,10 +1803,16 @@ public struct PeopleStore: Sendable {
             try String.fetchAll(
                 db,
                 sql: """
-                    SELECT DISTINCT conversationId FROM speaker_assignments
-                    WHERE personId = ? ORDER BY conversationId
+                    SELECT conversationId FROM speaker_assignments WHERE personId = ?
+                    UNION
+                    SELECT cs.conversationId FROM conversation_segments cs
+                    JOIN speaker_corrections sc ON sc.segmentId = cs.segmentId
+                    WHERE sc.personId = ?
+                        AND sc.endMediaMs > COALESCE(cs.startMediaMs, 0)
+                        AND (cs.endMediaMs IS NULL OR sc.startMediaMs < cs.endMediaMs)
+                    ORDER BY conversationId
                     """,
-                arguments: [personId])
+                arguments: [personId, personId])
         }
     }
 

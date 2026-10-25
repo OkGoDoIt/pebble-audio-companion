@@ -283,6 +283,25 @@ import Transcription
         #expect(try fixture.queue.all().isEmpty)
     }
 
+    @Test func deleteAllRecordingsSweepsOrphanSpeakerCorrectionsButPreservesPeople() async throws {
+        let fixture = try RuntimeFixture()
+        let people = PeopleStore(db: fixture.database)
+        let person = try await people.createPerson(name: "Roger")
+        let corrections = SpeakerCorrectionStore(db: fixture.database)
+        // No segment remains for the normal cascade to visit, as after an interrupted delete.
+        try await corrections.set(segmentId: "already-gone", startMediaMs: 0, endMediaMs: 100,
+                                  personId: person.id, makeCurrentUser: true)
+        try await corrections.set(segmentId: "also-gone", startMediaMs: 0, endMediaMs: 100,
+                                  personId: nil)
+
+        #expect(await fixture.runtime.deleteAllRecordings() == 0)
+
+        let snapshot = try await corrections.snapshot(segmentIds: ["already-gone", "also-gone"])
+        #expect(snapshot.corrections.isEmpty)
+        #expect(snapshot.currentUserPersonId == person.id)
+        #expect(try await people.listPeople().map(\.person.id) == [person.id])
+    }
+
     /// The regression the fix above introduced: "Delete All Recordings" closed the STORE's open
     /// segment directly (`store.closeSegment`), leaving the SESSION's stream context alive. The
     /// session went on appending into a store with no open segment — `appendFrames` returns `[]`

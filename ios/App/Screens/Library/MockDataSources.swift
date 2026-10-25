@@ -62,6 +62,8 @@ final class MockWorld {
     /// the mock can answer "is this label assigned, and to whom?" the way the database does —
     /// the mock used to only stamp a name onto the turns, which cannot be undone or renamed.
     var speakerAssignments: [String: String] = [:]
+    var speakerCorrections: [SpeakerCorrection] = []
+    var currentUserPersonId: String? = "person-roger"
     /// Artboard tag counts ("travel 12 · work 8 · family 5 · dining 3") + suggestion tags.
     var extraTagCounts: [String: Int] = [
         "travel": 12, "work": 8, "family": 5, "dining": 3, "budget": 1, "evening": 1,
@@ -404,9 +406,18 @@ final class MockWorld {
         ]
 
         peopleRegistry = [
+            Person(id: "person-roger", name: "Roger", isCurrentUser: true),
             Person(id: "person-sam", name: "Sam"),
             Person(id: "person-dana", name: "Dana"),
         ]
+        // These are explicit fixture identities, not inference from somebody's display name.
+        for conversation in conversations {
+            for item in conversation.transcript {
+                guard case .turn(let turn) = item, turn.role != .unresolved,
+                    let person = peopleRegistry.first(where: { $0.name == turn.name }) else { continue }
+                speakerAssignments[Self.assignmentKey(conversation.id, turn.speakerLabel)] = person.id
+            }
+        }
     }
 
     // MARK: - Internals
@@ -473,12 +484,12 @@ final class MockWorld {
             tags: conversation.tags,
             lifecycle: conversation.lifecycle,
             player: conversation.player,
-            transcript: Self.stamped(
+            transcript: resolvingIdentities(Self.stamped(
                 conversation.transcript,
                 conversationId: conversation.id,
                 from: conversation.start,
                 to: conversation.isLive ? Date() : conversation.end,
-                mediaDurationMs: conversation.player?.durationMs ?? 0),
+                mediaDurationMs: conversation.player?.durationMs ?? 0), conversationId: conversation.id),
             provenance: provenance,
             followUps: followUps.filter { $0.sourceConversationId == conversation.id },
             startedAt: conversation.start,
@@ -498,7 +509,7 @@ final class MockWorld {
         to end: Date,
         mediaDurationMs: Int64
     ) -> [TranscriptItem] {
-        guard transcript.count > 1, end > start else { return transcript }
+        guard !transcript.isEmpty, end > start else { return transcript }
         let step = end.timeIntervalSince(start) / Double(transcript.count)
         let half = (transcript.count + 1) / 2
         return transcript.enumerated().map { offset, item in
@@ -511,6 +522,10 @@ final class MockWorld {
                     ? mediaDurationMs * Int64(offset) / Int64(transcript.count) : nil
                 turn.mediaEndMs = mediaDurationMs > 0
                     ? mediaDurationMs * Int64(offset + 1) / Int64(transcript.count) : nil
+                let memberStart = offset < half ? 0
+                    : mediaDurationMs * Int64(half) / Int64(transcript.count)
+                turn.sourceStartMs = turn.mediaOffsetMs.map { $0 - memberStart }
+                turn.sourceEndMs = turn.mediaEndMs.map { $0 - memberStart }
                 // Even word timings, so the follow-along highlight and tap-to-seek are
                 // exercisable in previews and `-demo-data` too. A real provider's timings are
                 // uneven; these are not pretending to be real, they are pretending to exist.
@@ -1222,6 +1237,68 @@ extension MockWorld: TagEditorDataSource {
 extension MockWorld: PeopleDataSource {
     func people() async throws -> [Person] { peopleRegistry }
 
+    func createPerson(name: String) async throws -> Person {
+        let person = Person(id: UUID().uuidString.lowercased(),
+                            name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+        peopleRegistry.append(person)
+        bump()
+        return person
+    }
+
+    func assignPassage(_ turn: TranscriptTurn, personId: String?, makeCurrentUser: Bool) async throws {
+        guard turn.canIdentifyPassage, let start = turn.sourceStartMs, let end = turn.sourceEndMs else {
+            throw SpeakerEditorError.timingUnavailable
+        }
+        let person = peopleRegistry.first { $0.id == personId }
+        if personId != nil && person == nil { throw SpeakerCorrectionError.missingCurrentUser }
+        if makeCurrentUser && personId == nil { throw SpeakerCorrectionError.missingCurrentUser }
+        var remaining: [SpeakerCorrection] = []
+        for var old in speakerCorrections {
+            guard old.segmentId == turn.segmentId, old.startMediaMs < end, old.endMediaMs > start else {
+                remaining.append(old)
+                continue
+            }
+            let oldEnd = old.endMediaMs
+            if old.startMediaMs < start {
+                old.endMediaMs = start
+                remaining.append(old)
+            }
+            if oldEnd > end {
+                old.id = UUID().uuidString.lowercased()
+                old.startMediaMs = end
+                old.endMediaMs = oldEnd
+                remaining.append(old)
+            }
+        }
+        remaining.append(SpeakerCorrection(id: UUID().uuidString.lowercased(), segmentId: turn.segmentId,
+                                           startMediaMs: start, endMediaMs: end, person: person,
+                                           createdAtMs: Int64(Date().timeIntervalSince1970 * 1000)))
+        speakerCorrections = remaining
+        if makeCurrentUser { try await setCurrentUser(personId: personId) }
+        bump()
+    }
+
+    func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? {
+        if let start = turn.sourceStartMs, let end = turn.sourceEndMs {
+            switch identitySnapshot.resolve(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end) {
+            case .named(let person): return person
+            case .unnamed, .partial: return nil
+            case nil: break
+            }
+        }
+        return try await assignedPerson(conversationId: conversationId, label: turn.speakerLabel)
+    }
+
+    func setCurrentUser(personId: String?) async throws {
+        if let personId, !peopleRegistry.contains(where: { $0.id == personId }) {
+            throw SpeakerCorrectionError.missingCurrentUser
+        }
+        currentUserPersonId = personId
+        for index in peopleRegistry.indices { peopleRegistry[index].isCurrentUser = peopleRegistry[index].id == personId }
+        applyAssignmentsToTranscripts()
+        bump()
+    }
+
     func assign(conversationId: String, label: String, personName: String) async throws {
         let trimmed = personName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
@@ -1248,18 +1325,8 @@ extension MockWorld: PeopleDataSource {
     func renamePerson(id: String, to newName: String) async throws {
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        // Renaming onto an existing name merges, matching `PeopleStore.renamePerson`.
-        if let survivor = peopleRegistry.first(where: {
-            $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
-        }) {
-            for (key, personId) in speakerAssignments where personId == id {
-                speakerAssignments[key] = survivor.id
-            }
-            peopleRegistry.removeAll { $0.id == id }
-        } else {
-            guard let index = peopleRegistry.firstIndex(where: { $0.id == id }) else { return }
-            peopleRegistry[index].name = trimmed
-        }
+        guard let index = peopleRegistry.firstIndex(where: { $0.id == id }) else { return }
+        peopleRegistry[index].name = trimmed
         applyAssignmentsToTranscripts()
         bump()
     }
@@ -1272,6 +1339,11 @@ extension MockWorld: PeopleDataSource {
 
     func deletePerson(id: String) async throws {
         peopleRegistry.removeAll { $0.id == id }
+        if currentUserPersonId == id { currentUserPersonId = nil }
+        // Keep unnamed locks so deleting a person cannot reveal an older broad assignment.
+        for index in speakerCorrections.indices where speakerCorrections[index].person?.id == id {
+            speakerCorrections[index].person = nil
+        }
         for (key, personId) in speakerAssignments where personId == id {
             speakerAssignments.removeValue(forKey: key)
         }
@@ -1281,6 +1353,35 @@ extension MockWorld: PeopleDataSource {
 
     private static func assignmentKey(_ conversationId: String, _ label: String) -> String {
         "\(conversationId)|\(label)"
+    }
+
+    private var identitySnapshot: SpeakerIdentitySnapshot {
+        let current = speakerCorrections.map { correction in
+            var copy = correction
+            copy.person = peopleRegistry.first { $0.id == correction.person?.id }
+            return copy
+        }
+        return SpeakerIdentitySnapshot(currentUserPersonId: currentUserPersonId, corrections: current)
+    }
+
+    private func resolvingIdentities(_ items: [TranscriptItem], conversationId: String) -> [TranscriptItem] {
+        let snapshot = identitySnapshot
+        return items.map { item in
+            guard case .turn(var turn) = item else { return item }
+            var person = speakerAssignments[Self.assignmentKey(conversationId, turn.speakerLabel)]
+                .flatMap { id in peopleRegistry.first { $0.id == id } }
+            if let start = turn.sourceStartMs, let end = turn.sourceEndMs {
+                switch snapshot.resolve(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end) {
+                case .named(let named): person = named
+                case .unnamed, .partial: person = nil
+                case nil: break
+                }
+            }
+            turn.personId = person?.id
+            turn.name = person?.name ?? Self.unresolvedName(for: turn.speakerLabel)
+            turn.role = person.map { $0.isCurrentUser ? .you : .other } ?? .unresolved
+            return .turn(turn)
+        }
     }
 
     /// Writes `name` onto every turn carrying `label`; nil restores the diarizer's own
