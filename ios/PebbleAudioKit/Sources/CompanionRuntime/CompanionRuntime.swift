@@ -660,6 +660,10 @@ public actor CompanionRuntime {
     /// Returns how many segments were destroyed.
     @discardableResult
     public func deleteAllRecordings() async -> Int {
+        // Enrollment may still be waiting for model availability before it creates a source
+        // or captures a DB token. Cancel it before any suspension, so a late continuation
+        // cannot capture the post-wipe generation and recreate a voice profile.
+        environment.voiceRecognition?.cancelEnrollment()
         // The server's copy goes by its own endpoint (`POST /sync/wipe`) once this is done;
         // none of the deletes below is recorded for it one by one.
         await environment.archiveSync?.willWipeLocally()
