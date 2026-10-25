@@ -73,11 +73,15 @@ public struct VoiceAutomaticAttribution: Equatable, Sendable {
     public var score: Double
     public var margin: Double?
     public var disposition: VoiceAttributionDisposition
+    public var archiveOriginID: String?
+    public var archiveGeneration: Int64
     public init(id: String = UUID().uuidString.lowercased(), personId: String, segmentId: String,
                 startMediaMs: Int64, endMediaMs: Int64, sourceRevision: String, recipeID: String,
                 score: Double, margin: Double?, calibrationID: String, runID: String,
                 disposition: VoiceAttributionDisposition = .recognized,
-                createdAtMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+                createdAtMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+                archiveOriginID: String? = nil, archiveGeneration: Int64 = 0) {
+        self.archiveOriginID = archiveOriginID; self.archiveGeneration = archiveGeneration
         self.id = id; self.personId = personId; self.segmentId = segmentId
         self.startMediaMs = startMediaMs; self.endMediaMs = endMediaMs
         self.sourceRevision = sourceRevision; self.recipeID = recipeID; self.score = score

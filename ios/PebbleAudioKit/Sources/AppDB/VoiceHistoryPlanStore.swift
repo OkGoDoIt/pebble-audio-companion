@@ -62,7 +62,9 @@ public struct VoiceHistoryPlanStore: Sendable {
             let runs = try String.fetchAll(d, sql: """
                 SELECT runID FROM voice_history_plans p WHERE state = 'active' AND corpusRevision <> ?
                     AND (discoveryComplete = 0 OR EXISTS(SELECT 1 FROM voice_jobs j
-                        WHERE j.runID = p.runID AND j.state IN ('pending','running')))
+                        WHERE j.runID = p.runID AND (j.state IN ('pending','running')
+                            OR (j.state = 'cancelled' AND j.corpusRevision <> (SELECT corpusRevision FROM voice_recognition_config WHERE id = 1)))))
+                    AND EXISTS(SELECT 1 FROM voice_runs r WHERE r.runID = p.runID AND r.state = 'active')
                 """, arguments: [config.corpusRevision])
             var changed = Set<String>()
             for run in runs {

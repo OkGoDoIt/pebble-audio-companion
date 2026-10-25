@@ -121,16 +121,14 @@ extension VoiceIdentityStore {
     /// immediately restoring them. Only an explicit rerun removes these suppression ranges.
     public func undoRun(_ runID: String) async throws {
         try await db.writer.write { d in
+            try VoiceArchiveRevocationStore.revoke(d, scope: .run, targetID: runID)
             try d.execute(sql: """
                 INSERT INTO voice_suppressions(segmentId,startMediaMs,endMediaMs)
                     SELECT segmentId,startMediaMs,endMediaMs FROM voice_jobs WHERE runID = ?
                     UNION SELECT segmentId,startMediaMs,endMediaMs FROM voice_auto_attributions WHERE runID = ?
                 """, arguments: [runID, runID])
-            try d.execute(sql: """
-                DELETE FROM voice_auto_attributions WHERE EXISTS (
-                    SELECT 1 FROM voice_suppressions vs WHERE vs.segmentId = voice_auto_attributions.segmentId
-                        AND vs.startMediaMs < voice_auto_attributions.endMediaMs AND vs.endMediaMs > voice_auto_attributions.startMediaMs);
-                """)
+            // Undo this pass only. A newer explicit rerun may legitimately cover the same audio.
+            try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE runID = ?", arguments: [runID])
             try d.execute(sql: "INSERT INTO voice_runs(runID,state) VALUES (?, 'undone') ON CONFLICT(runID) DO UPDATE SET state = 'undone'", arguments: [runID])
             try d.execute(sql: "UPDATE voice_jobs SET state = 'cancelled' WHERE runID = ?", arguments: [runID])
         }

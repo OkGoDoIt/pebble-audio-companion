@@ -150,6 +150,7 @@ public struct VoiceIdentityStore: Sendable {
 
     public func forgetProfile(personId: String) async throws {
         try await db.writer.write { d in
+            try VoiceArchiveRevocationStore.revoke(d, scope: .person, targetID: personId)
             try d.execute(sql: "DELETE FROM voice_examples WHERE personId = ?", arguments: [personId])
             try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE personId = ?", arguments: [personId])
             // Even an already empty profile can have an in-flight first enrollment.
@@ -209,6 +210,7 @@ public struct VoiceIdentityStore: Sendable {
     /// Includes standalone microphone enrollment. Keep people/manual labels and tombstones.
     public func deleteAll() async throws {
         try await db.writer.write { d in
+            try VoiceArchiveRevocationStore.revoke(d, scope: .all)
             try d.execute(sql: """
                 UPDATE voice_recognition_config SET generation = generation + 1, corpusRevision = corpusRevision + 1 WHERE id = 1;
                 DELETE FROM voice_examples; DELETE FROM voice_auto_attributions;
@@ -223,6 +225,7 @@ public struct VoiceIdentityStore: Sendable {
     /// for a new, explicit enrollment. A temporarily locked key must never call this operation.
     public func resetUnavailableProfiles() async throws {
         try await db.writer.write { d in
+            try VoiceArchiveRevocationStore.revoke(d, scope: .all)
             try d.execute(sql: """
                 UPDATE voice_recognition_config SET mode = 'off', generation = generation + 1,
                     corpusRevision = corpusRevision + 1 WHERE id = 1;
@@ -232,15 +235,18 @@ public struct VoiceIdentityStore: Sendable {
         }
     }
 
-    public func clearAutomatic() async throws {
+    public func clearAutomatic(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws {
         try await db.writer.write { d in
+            try VoiceArchiveRevocationStore.revoke(d, scope: .all)
             try d.execute(sql: """
                 INSERT INTO voice_suppressions(segmentId,startMediaMs,endMediaMs)
                     SELECT segmentId,startMediaMs,endMediaMs FROM voice_auto_attributions;
                 DELETE FROM voice_auto_attributions;
-                UPDATE voice_recognition_config SET generation = generation + 1 WHERE id = 1;
+                UPDATE voice_recognition_config SET generation = generation + 1,
+                    enabledAtMs = CASE WHEN mode = 'local' THEN ? ELSE enabledAtMs END WHERE id = 1;
                 UPDATE voice_jobs SET state = 'cancelled' WHERE state IN ('pending','running');
-                """)
+                UPDATE voice_history_plans SET state = 'cancelled' WHERE state = 'active';
+                """, arguments: [nowMs])
         }
     }
 
@@ -273,7 +279,9 @@ public struct VoiceIdentityStore: Sendable {
         guard !segmentIds.isEmpty, try d.tableExists("voice_auto_attributions") else { return [] }
         let placeholders = Array(repeating: "?", count: segmentIds.count).joined(separator: ",")
         return try Row.fetchAll(d, sql: """
-            SELECT a.*, p.name AS personName FROM voice_auto_attributions a JOIN people p ON p.id = a.personId
+            SELECT a.*, p.name AS personName, v.originID AS archiveOriginID
+            FROM voice_auto_attributions a JOIN people p ON p.id = a.personId
+            CROSS JOIN voice_archive_state v
             WHERE a.segmentId IN (\(placeholders)) ORDER BY a.segmentId,a.startMediaMs,a.createdAtMs,a.id
             """, arguments: StatementArguments(segmentIds)).map { row in
                 let personId: String = row["personId"]
@@ -281,7 +289,8 @@ public struct VoiceIdentityStore: Sendable {
                     id: row["id"], personId: personId, segmentId: row["segmentId"], startMediaMs: row["startMediaMs"],
                     endMediaMs: row["endMediaMs"], sourceRevision: row["sourceRevision"], recipeID: row["recipeID"],
                     score: row["score"], margin: row["margin"], calibrationID: row["calibrationID"], runID: row["runID"],
-                    disposition: VoiceAttributionDisposition(rawValue: row["disposition"]) ?? .suggestion, createdAtMs: row["createdAtMs"]),
+                    disposition: VoiceAttributionDisposition(rawValue: row["disposition"]) ?? .suggestion, createdAtMs: row["createdAtMs"],
+                    archiveOriginID: row["archiveOriginID"], archiveGeneration: row["archiveGeneration"]),
                     person: Person(id: personId, name: row["personName"], isCurrentUser: personId == currentUserPersonId))
             }
     }
@@ -330,7 +339,8 @@ public struct VoiceIdentityStore: Sendable {
         }
         try d.execute(sql: """
             INSERT OR IGNORE INTO voice_auto_attributions(id,personId,segmentId,startMediaMs,endMediaMs,sourceRevision,
-                recipeID,score,margin,calibrationID,runID,disposition,createdAtMs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                recipeID,score,margin,calibrationID,runID,disposition,createdAtMs,archiveGeneration)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT generation FROM voice_archive_state WHERE id = 1))
             """, arguments: [a.id, a.personId, a.segmentId, a.startMediaMs, a.endMediaMs, a.sourceRevision,
                 a.recipeID, a.score, a.margin, a.calibrationID, a.runID, a.disposition.rawValue, a.createdAtMs])
         return true

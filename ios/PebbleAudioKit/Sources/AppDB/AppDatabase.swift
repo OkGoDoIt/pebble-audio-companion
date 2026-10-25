@@ -891,6 +891,9 @@ public struct AppDatabase: Sendable {
             try VoiceIdentityStore.installSchema(db)
             try VoiceHistoryPlanStore.installSchema(db)
         }
+        migrator.registerMigration("voice-archive-provenance-v1") { db in
+            try VoiceArchiveRevocationStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }
