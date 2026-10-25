@@ -2137,6 +2137,13 @@ extension LiveFollowUps: FollowUpsDataSource {
         await redonateFollowUp(id: id)
     }
 
+    func setReviewDetails(id: String, text: String, dueAtMs: Int64?, priority: FollowUpPriority) async throws {
+        try await composition.followUps.setReviewDetails(
+            id: id, text: text, dueAtMs: dueAtMs, priority: priority,
+            nowMs: composition.clock.nowMs)
+        await redonateFollowUp(id: id)
+    }
+
     /// The index document carries done, due and flagged (the entity Siri resolves reads them),
     /// so every change to one of those is donated again, from the row as it now is.
     private func redonateFollowUp(id: String) async {

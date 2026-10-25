@@ -9,7 +9,7 @@ import Testing
 // numbers agree with what the review will show. Plus the two ways in that are not a tap: the
 // evening notification and a `companion://review` link.
 
-@Suite("reminders review")
+@Suite("reminders review", .serialized)
 @MainActor
 struct RemindersReviewTests {
 
@@ -113,6 +113,121 @@ struct RemindersReviewTests {
         await model.start(.review)
         #expect(model.phase == .summary)
         #expect(model.counter == nil)
+    }
+
+    @Test func editingKeepsTheCardPendingAndConfirmationUsesTheSavedDate() async throws {
+        let fake = source()
+        var alerts = 0
+        let model = ReminderReviewModel(source: fake, now: { now }) { alerts += 1 }
+        await model.start(.review)
+        let original = try #require(model.current)
+        try await model.saveDetails(id: original.id, text: "  Call Austin  ", dueAt: now, priority: .high)
+        #expect(model.counter == "1 of 3")
+        #expect(model.current?.text == "  Call Austin  ")
+        #expect(model.current?.priority == .high)
+        #expect(model.current?.stage == .suggested)
+        #expect(fake.rows.first { $0.id == original.id }?.stage == .suggested)
+        #expect(model.current?.quote == original.quote)
+        #expect(alerts == 0)
+        await model.decide(.remind)?.value
+        #expect(alerts == 1)
+        #expect(fake.rows.first { $0.id == original.id }?.text == "Call Austin")
+    }
+
+    @Test func clearingADateThenSkippingPreservesEditsWithoutRequestingAlerts() async throws {
+        let fake = source()
+        var alerts = 0
+        let model = ReminderReviewModel(source: fake, now: { now }) { alerts += 1 }
+        await model.start(.review)
+        await model.decide(.skip)?.value
+        try await model.saveDetails(id: "clinic", text: "Call clinic", dueAt: nil, priority: .low)
+        #expect(model.current?.dueAtMs == nil)
+        await model.decide(.skip)?.value
+        let saved = try #require(fake.rows.first { $0.id == "clinic" })
+        #expect(saved.stage == .skipped)
+        #expect(saved.dueAtMs == nil)
+        #expect(saved.priority == .low)
+        #expect(alerts == 0)
+    }
+
+    @Test func failedSaveKeepsTheDraftAndCanBeRetried() async throws {
+        let fake = source()
+        let model = ReminderReviewModel(source: fake, now: { now })
+        await model.start(.review)
+        let original = model.current
+        fake.failReviewSave = true
+        await #expect(throws: (any Error).self) {
+            try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .high)
+        }
+        #expect(model.current?.id == original?.id)
+        #expect(model.current?.text == "Call Austin")
+        #expect(model.saveError != nil)
+        #expect(!model.canDecide)
+        #expect(fake.rows.first { $0.id == "austin" } == original)
+        #expect(!model.savingDetails)
+        fake.failReviewSave = false
+        try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .high)
+        #expect(model.current?.text == "Call Austin")
+        #expect(model.position == 0)
+    }
+
+    @Test func saveBlocksDecisionsAndRejectsBlankOrWrongCardEdits() async throws {
+        let fake = source()
+        let model = ReminderReviewModel(source: fake, now: { now })
+        await model.start(.review)
+        fake.beforeReviewSave = {
+            #expect(model.savingDetails)
+            #expect(model.decide(.remind) == nil)
+            #expect(model.position == 0)
+        }
+        try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .normal)
+        await #expect(throws: (any Error).self) {
+            try await model.saveDetails(id: "clinic", text: "Wrong card", dueAt: nil, priority: .high)
+        }
+        await #expect(throws: (any Error).self) {
+            try await model.saveDetails(id: "austin", text: "  ", dueAt: nil, priority: .high)
+        }
+        #expect(!model.canDecide)
+        #expect(fake.rows.first { $0.id == "austin" }?.text == "Call Austin")
+    }
+
+    @Test func rapidTypingSavesOnlyTheLatestDraft() async throws {
+        let fake = source()
+        let model = ReminderReviewModel(source: fake, now: { now })
+        await model.start(.review)
+        let first = model.editDetails(id: "austin", text: "Call", dueAt: nil, priority: .normal)
+        let last = model.editDetails(id: "austin", text: "Call Austin", dueAt: now, priority: .high)
+        try await first?.value
+        try await last?.value
+        #expect(fake.reviewSavedTexts == ["Call Austin"])
+        #expect(model.current?.dueDate == now)
+        #expect(model.current?.priority == .high)
+        #expect(model.canDecide)
+    }
+
+    @Test func anOlderFailureCannotReplaceNewTypingOrUnlockAnUnfinishedSave() async throws {
+        let fake = source()
+        let model = ReminderReviewModel(source: fake, now: { now })
+        await model.start(.review)
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        var release: CheckedContinuation<Void, Never>?
+        fake.beforeReviewSave = {
+            signal.yield(())
+            await withCheckedContinuation { release = $0 }
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let first = model.editDetails(id: "austin", text: "Older", dueAt: nil, priority: .low)
+        for await _ in started { break }
+        let last = model.editDetails(id: "austin", text: "Latest", dueAt: now, priority: .high)
+        fake.beforeReviewSave = nil
+        release?.resume()
+        _ = try? await first?.value
+        #expect(model.current?.text == "Latest")
+        #expect(model.saveError == nil)
+        #expect(!model.canDecide)
+        try await last?.value
+        #expect(fake.reviewSavedTexts == ["Latest"])
+        #expect(model.canDecide)
     }
 
     // MARK: The entry rows

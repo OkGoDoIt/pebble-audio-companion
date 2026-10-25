@@ -644,6 +644,8 @@ protocol FollowUpsDataSource: AnyObject {
     func setText(id: String, text: String) async throws
     func setDue(id: String, dueAtMs: Int64?) async throws
     func setPriority(id: String, priority: FollowUpPriority) async throws
+    /// Saves the review form together, without confirming or skipping the suggestion.
+    func setReviewDetails(id: String, text: String, dueAtMs: Int64?, priority: FollowUpPriority) async throws
     func snooze(id: String, untilMs: Int64?) async throws
     func setArchived(id: String, archived: Bool) async throws
     func delete(id: String) async throws

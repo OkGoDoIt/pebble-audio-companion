@@ -24,6 +24,11 @@ extension Copy {
         // MARK: Review
 
         static let reviewTitle = "Follow-ups"
+        static let noDueDate = "No due date"
+        static let addDueDate = "Add due date"
+        static func priority(_ value: String) -> String { "\(value) priority" }
+        static let saveFailed = "Couldn’t save changes. Your edits are still here. Please try again."
+
         static func counter(_ position: Int, of total: Int) -> String { "\(position) of \(total)" }
         static let remindMe = "Remind me"
         static let skip = "Skip"

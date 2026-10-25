@@ -103,7 +103,7 @@ public struct FollowUp: Equatable, Sendable, Identifiable {
     /// deleted: nothing the person may have acted on disappears without them saying so.
     public var archivedAtMs: Int64?
     public var snoozedUntilMs: Int64?
-    /// Set the moment the person edits the text. Extraction never overwrites an edited row.
+    /// Set when the person edits the text or review details. Extraction preserves those fields.
     public var editedAtMs: Int64?
     /// The last time the person did something deliberate to this row — restored it, un-ticked
     /// it, dated it, re-worded it, put it off. The age rule's memory of them: a clock may file
@@ -809,6 +809,11 @@ public struct TagStore: Sendable {
 
 // MARK: - FollowUpStore
 
+public enum FollowUpReviewEditError: Error {
+    case emptyText
+    case unavailable
+}
+
 public struct FollowUpStore: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
@@ -895,8 +900,10 @@ public struct FollowUpStore: Sendable {
                                     THEN excluded.text ELSE follow_ups.text END,
                         quote = excluded.quote,
                         why = excluded.why,
-                        dueAtMs = excluded.dueAtMs,
-                        priority = excluded.priority,
+                        dueAtMs = CASE WHEN follow_ups.editedAtMs IS NULL
+                                       THEN excluded.dueAtMs ELSE follow_ups.dueAtMs END,
+                        priority = CASE WHEN follow_ups.editedAtMs IS NULL
+                                        THEN excluded.priority ELSE follow_ups.priority END,
                         sourceConversationId = excluded.sourceConversationId,
                         sourceSegmentId = excluded.sourceSegmentId,
                         sourceStartMs = excluded.sourceStartMs,
@@ -1038,6 +1045,24 @@ public struct FollowUpStore: Sendable {
                     WHERE id = ?
                     """,
                 arguments: [done, done ? nowMs : nil, nowMs, id])
+        }
+    }
+
+    /// The review form is one write. It leaves the review decision and provenance untouched.
+    public func setReviewDetails(
+        id: String, text: String, dueAtMs: Int64?, priority: FollowUpPriority,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw FollowUpReviewEditError.emptyText }
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE follow_ups SET text = ?, dueAtMs = ?, priority = ?,
+                        editedAtMs = ?, touchedAtMs = ? WHERE id = ? AND stage = 'suggested'
+                    """,
+                arguments: [trimmed, dueAtMs, priority.rawValue, nowMs, nowMs, id])
+            guard db.changesCount > 0 else { throw FollowUpReviewEditError.unavailable }
         }
     }
 

@@ -95,6 +95,10 @@ final class ReminderReviewModel {
     /// it is open waits for the next one rather than moving the count under the person.
     private(set) var queue: [FollowUpItem] = []
     private(set) var position = 0
+    private(set) var savingDetails = false
+    private(set) var saveError: String?
+    private var detailWrites: Task<Void, Error>?
+    private var editRevision = 0
     /// Everything decided today, in the order it was said.
     private(set) var summary: [FollowUpItem] = []
 
@@ -145,12 +149,68 @@ final class ReminderReviewModel {
         return Copy.Reminders.counter(position + 1, of: queue.count)
     }
 
+    var canDecide: Bool {
+        !savingDetails && saveError == nil
+            && !(current?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    /// In-place edits stay visible while writes run in order. Only the latest write updates
+    /// save status; an older response must never replace newer typing or hide its failure.
+    @discardableResult
+    func editDetails(id: String, text: String, dueAt: Date?, priority: FollowUpPriority) -> Task<Void, Error>? {
+        guard current?.id == id else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dueAtMs = dueAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        queue[position].text = text
+        queue[position].dueAtMs = dueAtMs
+        queue[position].priority = priority
+        editRevision += 1
+        let revision = editRevision
+        let previousDetails = detailWrites
+        let previousDecision = writes
+        savingDetails = true
+        saveError = nil
+        let task = Task {
+            // Coalesce a burst of typing without a persistent observer or timer.
+            try await Task.sleep(for: .milliseconds(250))
+            _ = try? await previousDetails?.value
+            await previousDecision?.value
+            guard revision == editRevision else { return }
+            do {
+                guard !trimmed.isEmpty else { throw FollowUpReviewEditError.emptyText }
+                try await source.setReviewDetails(id: id, text: trimmed, dueAtMs: dueAtMs, priority: priority)
+                if revision == editRevision { savingDetails = false }
+            } catch {
+                if revision == editRevision {
+                    savingDetails = false
+                    // An empty title is already visibly incomplete; keep the previous saved title.
+                    saveError = trimmed.isEmpty ? nil : Copy.Reminders.saveFailed
+                }
+                throw error
+            }
+        }
+        detailWrites = task
+        return task
+    }
+
+    func saveDetails(id: String, text: String, dueAt: Date?, priority: FollowUpPriority) async throws {
+        guard let task = editDetails(id: id, text: text, dueAt: dueAt, priority: priority) else {
+            throw FollowUpReviewEditError.unavailable
+        }
+        try await task.value
+    }
+
+    func retryDetails() {
+        guard let item = current else { return }
+        editDetails(id: item.id, text: item.text, dueAt: item.dueDate, priority: item.priority)
+    }
+
     /// The answer for the card on top. The next card comes up at once (so the caller can
     /// animate it); the write follows, after any earlier one, and after the last card the
     /// summary is read — once every answer is in it. Returns the write, for tests to await.
     @discardableResult
     func decide(_ decision: Decision) -> Task<Void, Never>? {
-        guard let item = current else { return nil }
+        guard let item = current, canDecide else { return nil }
         position += 1
         let isLast = position >= queue.count
         let previous = writes

@@ -1526,6 +1526,18 @@ extension MockFollowUps: FollowUpsDataSource {
         mutate(id) { $0.dueAtMs = dueAtMs }
     }
 
+    func setReviewDetails(id: String, text: String, dueAtMs: Int64?, priority: FollowUpPriority) async throws {
+        guard followUps.contains(where: { $0.id == id && $0.stage == .suggested }) else {
+            throw FollowUpReviewEditError.unavailable
+        }
+        mutate(id) {
+            $0.text = text
+            $0.dueAtMs = dueAtMs
+            $0.priority = priority
+            $0.editedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        }
+    }
+
     func setPriority(id: String, priority: FollowUpPriority) async throws {
         mutate(id) { $0.priority = priority }
     }

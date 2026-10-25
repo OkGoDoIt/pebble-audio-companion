@@ -30,6 +30,12 @@ reminder.
 - Only suggestions get cards. One gesture, one meaning: swipe right or tap ✓ is **Remind me**,
   swipe left or tap ✕ is **Skip**. "1 of 3" is the only progress. **Not Now** closes, and
   unanswered cards wait for next time.
+- Each card shows the suggested due date, priority, and the source conversation and quote. Edit
+  the wording directly in the card, tap its date to change it (or add/clear a date), and tap its
+  priority to choose another. Edits save in place without confirming or skipping. Writes run in
+  order, failures keep the latest draft visible with Retry, and later extraction preserves the
+  person's edits. Confirmation waits for the save. Long content scrolls within the card;
+  vertical scrolling never answers it.
 - After the last card, the **summary** lists every follow-up decided today (the app's day), the
   automatic ones included, each with its state at the trailing edge. A tap flips it. That list is
   the only undo; there is no snackbar.
@@ -37,6 +43,12 @@ reminder.
   and opens the summary.
 - Entry points: the Reminders tab's top rows, Today's Reminders section, and (when turned on) one
   evening notification: "3 follow-ups to review · 4 reminders added".
+
+Native inline-card renders: [phone](mockups/reminders/built/review-inline-375-light.png),
+[no date](mockups/reminders/built/review-inline-undated.png),
+[large text](mockups/reminders/built/review-inline-large-type.png),
+[tablet, dark](mockups/reminders/built/review-inline-820-dark.png), and
+[wide](mockups/reminders/built/review-inline-1024-light.png).
 
 ## Where reminders are kept
 

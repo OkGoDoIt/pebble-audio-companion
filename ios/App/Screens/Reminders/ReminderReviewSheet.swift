@@ -33,6 +33,7 @@ struct ReminderReviewSheet: View {
         }
         .background(Tokens.ground)
         .animation(Motion.animation(.easeInOut(duration: 0.25)), value: model.phase)
+        .interactiveDismissDisabled(model.savingDetails)
         .presentationDragIndicator(.visible)
         .presentationBackground(Tokens.ground)
         .presentationCornerRadius(Tokens.sheetRadius)
@@ -81,6 +82,7 @@ private struct ReviewCards: View {
     let player: MomentPlayer
     let openMoment: (CitationTarget) -> Void
 
+    @State private var editingTitle = false
     @State private var drag: CGSize = .zero
 
     /// The card on top and the two behind it.
@@ -105,7 +107,7 @@ private struct ReviewCards: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
-                let cardHeight = min(430, geometry.size.height - 36)
+                let cardHeight = max(160, min(470, geometry.size.height - 36))
                 ZStack(alignment: .top) {
                     // One keyed list, deepest first, so when an answer advances the queue the
                     // card behind slides up into place rather than being swapped for a new one.
@@ -115,13 +117,17 @@ private struct ReviewCards: View {
                             ReviewCard(
                                 item: item, height: cardHeight,
                                 isPlaying: player.playingId == item.id,
-                                stamp: stamp, stampStrength: stampStrength
+                                stamp: stamp, stampStrength: stampStrength,
+                                onTextFocusChange: { editingTitle = $0 },
+                                onEdit: { text, due, priority in
+                                    model.editDetails(id: item.id, text: text, dueAt: due, priority: priority)
+                                }
                             ) {
                                 play(item)
                             }
                             .offset(drag)
                             .rotationEffect(.degrees(Double(drag.width / 18)), anchor: .bottom)
-                            .gesture(swipe)
+                            .simultaneousGesture(swipe)
                             .accessibilityElement(children: .contain)
                             .accessibilityHint(Copy.Reminders.cardHint)
                             .accessibilityAction(named: Copy.Reminders.remindMe) {
@@ -155,16 +161,26 @@ private struct ReviewCards: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .frame(maxHeight: 466)
+            .frame(maxHeight: 506)
             .padding(.horizontal, Tokens.screenMargin)
             .padding(.top, 6)
 
+            if let error = model.saveError {
+                VStack(spacing: 4) {
+                    Text(error).font(AppFont.footnote).foregroundStyle(Tokens.attention)
+                    Button(Copy.Common.retry) { model.retryDetails() }
+                        .frame(minHeight: 44)
+                }
+                .padding(.horizontal, Tokens.screenMargin)
+            }
             decideButtons
+                .disabled(!model.canDecide)
                 .padding(.top, 26)
 
             Spacer(minLength: 12)
 
             Button(Copy.Reminders.notNow) { dismissSheet() }
+                .disabled(model.savingDetails)
                 .font(AppFont.bodyPlain)
                 .foregroundStyle(Tokens.tint)
                 .frame(maxWidth: .infinity, minHeight: 44)
@@ -211,6 +227,8 @@ private struct ReviewCards: View {
     private var swipe: some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
+                guard model.canDecide, !editingTitle,
+                      abs(value.translation.width) > abs(value.translation.height) else { return }
                 drag = CGSize(width: value.translation.width, height: value.translation.height * 0.2)
                 let past = abs(value.translation.width) >= Self.threshold
                 if past != armed {
@@ -224,7 +242,9 @@ private struct ReviewCards: View {
                 let flung =
                     abs(value.velocity.width) >= Self.flingVelocity
                     && (value.velocity.width > 0) == (distance > 0) && abs(distance) > 30
-                if abs(distance) >= Self.threshold || flung {
+                if model.canDecide, !editingTitle,
+                   abs(distance) > abs(value.translation.height),
+                   abs(distance) >= Self.threshold || flung {
                     commit(distance > 0 ? .remind : .skip)
                 } else {
                     withAnimation(Motion.animation(.spring(response: 0.35, dampingFraction: 0.7))) {
@@ -236,7 +256,7 @@ private struct ReviewCards: View {
 
     /// Swipe or tap: the card leaves in the direction of its answer and the next comes up.
     private func commit(_ decision: ReminderReviewModel.Decision) {
-        guard let item = model.current else { return }
+        guard let item = model.current, model.canDecide else { return }
         player.stop()
         if decision == .remind { Haptics.checkedOff() } else { Haptics.impact(.soft) }
         let direction: CGFloat = decision == .remind ? 1 : -1
@@ -319,44 +339,62 @@ struct ReviewCard: View {
     var stampStrength: Double = 0
     /// How far a card further back in the stack fades toward the ground.
     var dimming: Double = 0
+    var onTextFocusChange: ((Bool) -> Void)? = nil
+    var onEdit: ((String, Date?, FollowUpPriority) -> Void)? = nil
+    @FocusState private var editingTitle: Bool
     let play: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(provenance)
-                .font(AppFont.footnote)
-                .foregroundStyle(Tokens.meta)
-                .lineLimit(1)
-            Text(item.text)
-                .font(AppFont.detailTitle)
-                .foregroundStyle(Tokens.label)
-                .lineLimit(4)
-                .fixedSize(horizontal: false, vertical: true)
-            if let why = item.why, !why.isEmpty {
-                Text(Copy.FollowUps.ifForgotten(why))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.tertiary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let quote = item.quote, !quote.isEmpty {
-                Rectangle().fill(Tokens.hairline).frame(height: 0.5).padding(.vertical, 2)
-                HStack(alignment: .top, spacing: 10) {
-                    Capsule().fill(Tokens.tintSoft).frame(width: 3)
-                    Text("\u{201C}\(quote)\u{201D}")
-                        .font(AppFont.subBody)
-                        .italic()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(provenance)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                    if let onEdit {
+                        TextField("Follow-up", text: Binding(
+                            get: { item.text },
+                            set: { onEdit($0, item.dueDate, item.priority) }), axis: .vertical)
+                            .font(AppFont.detailTitle)
+                            .foregroundStyle(Tokens.label)
+                            .focused($editingTitle)
+                            .onChange(of: editingTitle) { _, focused in onTextFocusChange?(focused) }
+                            .onDisappear { onTextFocusChange?(false) }
+                            .submitLabel(.done)
+                            .onSubmit { editingTitle = false }
+                            .accessibilityLabel("Follow-up")
+                            .accessibilityHint("Tap to edit")
+                        editableMetadata(onEdit)
+                    } else {
+                        Text(item.text)
+                            .font(AppFont.detailTitle)
+                            .foregroundStyle(Tokens.label)
+                            .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(dueLabel, systemImage: "calendar")
+                            Label(Copy.Reminders.priority(FollowUpFormatting.priorityLabel(item.priority)), systemImage: "flag")
+                        }
+                        .font(AppFont.footnote)
                         .foregroundStyle(Tokens.secondaryBody)
-                        .lineSpacing(4)
-                        .lineLimit(5)
-                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let why = item.why, !why.isEmpty {
+                        Text(Copy.FollowUps.ifForgotten(why))
+                            .font(AppFont.footnote)
+                            .foregroundStyle(Tokens.tertiary)
+                    }
+                    if let quote = item.quote, !quote.isEmpty {
+                        Rectangle().fill(Tokens.hairline).frame(height: 0.5)
+                        Text("\u{201C}\(quote)\u{201D}")
+                            .font(AppFont.subBody)
+                            .italic()
+                            .foregroundStyle(Tokens.secondaryBody)
+                            .lineSpacing(4)
+                    }
                 }
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Spacer(minLength: 0)
-            if item.sourceConversationId != nil {
-                playRow
-            }
+            .scrollBounceBehavior(.basedOnSize)
+            if item.sourceConversationId != nil { playRow }
         }
         .padding(.horizontal, 18)
         .padding(.top, 18)
@@ -379,6 +417,85 @@ struct ReviewCard: View {
                     .accessibilityHidden(true)
             }
         }
+    }
+
+    private func editableMetadata(_ onEdit: @escaping (String, Date?, FollowUpPriority) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let due = item.dueDate {
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        duePicker(due, onEdit: onEdit)
+                        clearDate(onEdit)
+                    }
+                    VStack(alignment: .leading) {
+                        duePicker(due, onEdit: onEdit)
+                        clearDate(onEdit)
+                    }
+                }
+            } else {
+                Button {
+                    editingTitle = false
+                    let tomorrow = Calendar.current.date(byAdding: .day, value: 1,
+                        to: Calendar.current.startOfDay(for: Date())) ?? Date()
+                    onEdit(item.text, tomorrow, item.priority)
+                } label: {
+                    Label(Copy.Reminders.addDueDate, systemImage: "calendar.badge.plus")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Tokens.tint)
+            }
+            Menu {
+                Picker(Copy.FollowUps.priority, selection: Binding(
+                    get: { item.priority },
+                    set: { onEdit(item.text, item.dueDate, $0) })) {
+                    ForEach(FollowUpPriority.allCases, id: \.self) { value in
+                        Text(FollowUpFormatting.priorityLabel(value)).tag(value)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Label(Copy.Reminders.priority(FollowUpFormatting.priorityLabel(item.priority)),
+                          systemImage: "flag")
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Tokens.secondaryBody)
+        }
+        .font(AppFont.subBody)
+        .tint(Tokens.tint)
+    }
+
+    private func duePicker(_ due: Date,
+        onEdit: @escaping (String, Date?, FollowUpPriority) -> Void) -> some View {
+        DatePicker(selection: Binding(get: { due }, set: { onEdit(item.text, $0, item.priority) }),
+                   displayedComponents: .date) {
+            Label(Copy.FollowUps.due, systemImage: "calendar")
+        }
+        .datePickerStyle(.compact)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func clearDate(_ onEdit: @escaping (String, Date?, FollowUpPriority) -> Void) -> some View {
+        Button {
+            onEdit(item.text, nil, item.priority)
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(Tokens.meta)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Copy.FollowUps.clearDue)
+    }
+
+    private var dueLabel: String {
+        guard let due = item.dueDate else { return Copy.Reminders.noDueDate }
+        // Always name the actual suggested date, including past dates, before it is accepted.
+        return Copy.FollowUps.dueOn(due.formatted(date: .abbreviated, time: .omitted))
     }
 
     /// "10:05 AM · Catching up about Vietnam".

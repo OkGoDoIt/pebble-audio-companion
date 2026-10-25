@@ -193,6 +193,9 @@ struct FollowUpsFiledAwayTests {
 /// assertion here is a count.
 @MainActor
 final class FakeFollowUpsSource: FollowUpsDataSource {
+    var failReviewSave = false
+    var beforeReviewSave: (() async throws -> Void)?
+    var reviewSavedTexts: [String] = []
     var rows: [FollowUpItem]
     var automaticProposalsEnabled = true
     var proposalsAreOnDevice = false
@@ -237,6 +240,20 @@ final class FakeFollowUpsSource: FollowUpsDataSource {
     func setText(id: String, text: String) async throws { mutate(id) { $0.text = text } }
 
     func setDue(id: String, dueAtMs: Int64?) async throws { mutate(id) { $0.dueAtMs = dueAtMs } }
+
+    func setReviewDetails(id: String, text: String, dueAtMs: Int64?, priority: FollowUpPriority) async throws {
+        guard rows.contains(where: { $0.id == id && $0.stage == .suggested }) else {
+            throw FollowUpReviewEditError.unavailable
+        }
+        if failReviewSave { throw CocoaError(.fileWriteUnknown) }
+        try await beforeReviewSave?()
+        reviewSavedTexts.append(text)
+        mutate(id) {
+            $0.text = text
+            $0.dueAtMs = dueAtMs
+            $0.priority = priority
+        }
+    }
 
     func setPriority(id: String, priority: FollowUpPriority) async throws {
         mutate(id) { $0.priority = priority }
