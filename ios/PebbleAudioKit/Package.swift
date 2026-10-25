@@ -15,12 +15,13 @@ let package = Package(
             targets: [
                 "WireProtocol", "SegmentStore", "Receiver", "StatusUI", "AppDB",
                 "Transcription", "Intelligence", "LiveAudio", "SearchKit", "Migration",
-                "CompanionRuntime", "AudioCodec", "Firmware", "MuseLink",
+                "CompanionRuntime", "AudioCodec", "Firmware", "MuseLink", "SpeakerRecognition",
             ]
         ),
         // The Muse gadget protocol on its own, for the macOS developer tools in ios/Tools/MuseDev
         // that pair and exercise a gadget without building the whole kit.
         .library(name: "MuseLink", targets: ["MuseLink"]),
+        .library(name: "SpeakerRecognition", targets: ["SpeakerRecognition"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -113,6 +114,12 @@ let package = Package(
             ],
             swiftSettings: swiftSettings
         ),
+        .target(
+            name: "SpeakerRecognition",
+            // Reuse the existing Cactus privacy guard; no transcription is invoked here.
+            dependencies: ["Transcription", "CCactus"],
+            swiftSettings: swiftSettings
+        ),
         // StatusUI: Ask's per-segment gap note is the SAME status vocabulary the Library row
         // shows, and it used to be a hand-maintained replica of the classifier
         // (`AskGapVisibility`) plus its own raw-milliseconds arithmetic. Same edge, same reason
@@ -166,6 +173,7 @@ let package = Package(
         .testTarget(name: "StatusUITests", dependencies: ["StatusUI"], swiftSettings: swiftSettings),
         .testTarget(name: "AppDBTests", dependencies: ["AppDB"], swiftSettings: swiftSettings),
         .testTarget(name: "TranscriptionTests", dependencies: ["Transcription"], swiftSettings: swiftSettings),
+        .testTarget(name: "SpeakerRecognitionTests", dependencies: ["SpeakerRecognition"], swiftSettings: swiftSettings),
         // Runs the vendored engine against a real exported bundle when `PEBBLE_COREAI_BUNDLE` is
         // set (macOS 27 has Core AI); skips otherwise. Depends on Transcription too, so the same
         // run also drives `CoreAIParakeetEngine` end to end.
