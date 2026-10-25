@@ -323,10 +323,16 @@ func removeArchiveSync(_ db: GRDB.Database) throws {
     // that additive migration too; leaving its triggers behind makes SQLite reject unrelated
     // ALTER TABLE statements once the outbox they reference has been removed.
     for name in try String.fetchAll(
-        db, sql: "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'identity_%'")
+        db, sql: "SELECT name FROM sqlite_master WHERE type = 'trigger' AND (name LIKE 'identity_%' OR name LIKE 'voice_%')")
     {
         try db.execute(sql: "DROP TRIGGER \(name)")
     }
+    for table in ["voice_history_plans", "voice_auto_attributions", "voice_jobs", "voice_suppressions",
+                  "voice_examples", "voice_source_revocations", "voice_sources", "voice_runs",
+                  "voice_recognition_config", "voice_archive_revocations", "voice_archive_state"] {
+        try db.execute(sql: "DROP TABLE IF EXISTS \(table)")
+    }
+    try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('voice-recognition-v1','voice-archive-provenance-v1')")
     try db.execute(sql: "DROP TABLE IF EXISTS speaker_corrections")
     try db.execute(sql: "DROP TABLE IF EXISTS speaker_identity_state")
     try db.execute(
