@@ -238,7 +238,7 @@ struct ArchiveTranscriptExportTests {
         let data = try ArchivePayloadBuilder.encode(export)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(json.keys) == [
-            "conversationId", "sourceHash", "provider", "model", "language", "charCount", "text", "items",
+            "conversationId", "sourceHash", "provider", "model", "language", "charCount", "text", "items", "speakerRanges",
         ])
         #expect(json["language"] is NSNull)
         let items = try #require(json["items"] as? [[String: Any]])
@@ -246,6 +246,13 @@ struct ArchiveTranscriptExportTests {
         #expect(turn["at"] as? String == "2026-10-13T09:38:06.011Z")
         #expect(Set(turn.keys) == ["kind", "at", "endAt", "speaker", "name", "text", "confidence"])
         #expect(turn["name"] is NSNull)
+        let anchors = try #require(json["speakerRanges"] as? [[String: Any]])
+        #expect(anchors.count == items.filter { $0["kind"] as? String == "turn" }.count)
+        for anchor in anchors {
+            let index = try #require(anchor["itemIndex"] as? Int)
+            #expect(items[index]["at"] as? String == anchor["at"] as? String)
+            #expect((anchor["endMediaMs"] as? Int64 ?? 0) > (anchor["startMediaMs"] as? Int64 ?? 0))
+        }
         let lost = try #require(items.first { $0["kind"] as? String == "lost" })
         #expect(Set(lost.keys) == ["kind", "at", "endAt", "origin", "label", "missingMs", "cause"])
         #expect((lost["label"] as? String)?.hasPrefix("audio interrupted for ") == true)

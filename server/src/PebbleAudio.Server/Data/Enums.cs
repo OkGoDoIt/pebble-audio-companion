@@ -31,6 +31,9 @@ public enum SyncOp
 
 	/// <summary>The app's retention aged it out; the server keeps it and marks it expired on the phone.</summary>
 	Expire,
+
+	/// <summary>Update only transcript speaker identities; preserve all archived words.</summary>
+	SpeakerPatch,
 }
 
 public enum ConversationState

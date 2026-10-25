@@ -10,6 +10,8 @@ public enum ArchiveBuilt: Sendable {
     /// Send this. `hash` is what the outbox records when the server accepts it; `pieceKey` is
     /// the conversation's piece list for a conversation or transcript.
     case payload(Data, hash: String, pieceKey: String?)
+    /// Preserve the server's full transcript while updating names on the retained phone tail.
+    case speakerPatch(Data, hash: String, pieceKey: String?)
     /// Nothing to send: the server already has exactly this, or what changed is only the edge
     /// of a conversation that retention is ageing out (see `isRetentionTail`).
     case unchanged(hash: String?, pieceKey: String?)
@@ -352,22 +354,30 @@ public struct ArchivePayloadBuilder: Sendable {
     func transcript(_ row: ArchiveOutboxRow) async throws -> ArchiveBuilt {
         guard let record = try await conversationRecord(row.entityId) else { return .gone }
         let key = record.pieceKey
-        if Self.isRetentionTail(current: key, sent: row.sentKey) {
-            return .unchanged(hash: nil, pieceKey: row.sentKey)
-        }
+        let retainedTail = Self.isRetentionTail(current: key, sent: row.sentKey)
         let names = Dictionary(
             record.speakers.compactMap { speaker in speaker.name.map { (speaker.label, $0) } },
             uniquingKeysWith: { first, _ in first })
         let identity = try await SpeakerCorrectionStore(db: sources.database)
             .snapshot(segmentIds: record.members.map(\.segmentId))
         let sourceHash = try await transcriptSourceHash(record, names: names, identity: identity)
-        if sourceHash == row.sentHash { return .unchanged(hash: sourceHash, pieceKey: key) }
+        if sourceHash == row.sentHash { return .unchanged(hash: sourceHash, pieceKey: retainedTail ? row.sentKey : key) }
         let pieces = try await pieces(of: record, withTranscripts: true,
             withWords: !identity.corrections.isEmpty || !identity.automaticAttributions.isEmpty)
         let payload = ArchiveExport.transcript(
             conversationId: record.id, pieces: pieces,
             gaps: ArchiveExport.gaps(pieces, window: record.window), speakerNames: names,
-            sourceHash: sourceHash, identity: identity)
+            sourceHash: sourceHash, identity: identity, legacyAssignments: record.legacyAssignments)
+        if retainedTail {
+            let ranges = payload.speakerRanges.map { range in
+                var range = range
+                range.itemIndex = nil
+                return range
+            }
+            guard !ranges.isEmpty else { return .unchanged(hash: nil, pieceKey: row.sentKey) }
+            let patch = ArchiveSpeakerPatchPayload(conversationId: record.id, sourceHash: sourceHash, ranges: ranges)
+            return .speakerPatch(try Self.encode(patch), hash: sourceHash, pieceKey: row.sentKey)
+        }
         return .payload(try Self.encode(payload), hash: sourceHash, pieceKey: key)
     }
 

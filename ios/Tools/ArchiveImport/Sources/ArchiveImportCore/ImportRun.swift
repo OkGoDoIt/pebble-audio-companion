@@ -178,7 +178,7 @@ public struct ImportRun {
                 item = ArchiveBatchItem(
                     key: key, op: .upsert, changedAtMs: row.changedAtMs, payload: payload, hash: hash,
                     pieceKey: pieceKey)
-            case .unchanged:
+            case .unchanged, .speakerPatch:
                 // Only an outbox row with a sent hash is unchanged; the import's rows have none.
                 tally[row.kind].unchanged += 1
                 continue

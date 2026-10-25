@@ -251,6 +251,23 @@ internal static class SyncPayloads
 			});
 		}
 
+		var anchored = new HashSet<int>();
+		foreach (var anchor in p.SpeakerRanges ?? [])
+		{
+			if (!TranscriptSpeakerPatch.Valid(anchor) || anchor.ItemIndex is not { } index
+				|| index < 0 || index >= items.Count || !anchored.Add(index)
+				|| items[index].Kind != TranscriptItemKind.Turn || items[index].At != anchor.At
+				|| items[index].EndAt != anchor.EndAt || items[index].Name != anchor.Name)
+			{
+				return Parsed<Transcript>.Fail("payload: invalid speakerRanges anchor");
+			}
+			items[index].SegmentId = anchor.SegmentId;
+			items[index].StartMediaMs = anchor.StartMediaMs;
+			items[index].EndMediaMs = anchor.EndMediaMs;
+			items[index].PersonId = anchor.PersonId;
+			items[index].IdentityResolved = true;
+		}
+
 		return Parsed<Transcript>.Ok(new Transcript
 		{
 			ConversationId = id,
@@ -551,6 +568,7 @@ internal static class SyncPayloads
 		public int? CharCount { get; init; }
 		public string? Text { get; init; }
 		public List<TranscriptItemPayload?>? Items { get; init; }
+		public List<TranscriptSpeakerPatch.Range>? SpeakerRanges { get; init; }
 	}
 
 	private sealed class TranscriptItemPayload

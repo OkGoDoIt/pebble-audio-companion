@@ -1512,6 +1512,10 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<DateTimeOffset?>("EndAt");
 
+                            b1.Property<long?>("EndMediaMs");
+
+                            b1.Property<bool?>("IdentityResolved");
+
                             b1.Property<string>("Kind")
                                 .IsRequired();
 
@@ -1523,9 +1527,15 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<string>("Origin");
 
+                            b1.Property<string>("PersonId");
+
                             b1.Property<string>("Reason");
 
+                            b1.Property<string>("SegmentId");
+
                             b1.Property<string>("Speaker");
+
+                            b1.Property<long?>("StartMediaMs");
 
                             b1.Property<string>("Text");
 

@@ -303,6 +303,32 @@ public struct ArchiveGap: Encodable, Equatable, Sendable {
 
 // MARK: - §2.2 transcript
 
+public struct ArchiveSpeakerRange: Encodable, Equatable, Sendable {
+    public var itemIndex: Int?
+    public var segmentId: String
+    public var startMediaMs, endMediaMs, atMs, endMs: Int64
+    public var personId, name: String?
+
+    enum CodingKeys: String, CodingKey { case itemIndex, segmentId, startMediaMs, endMediaMs, at, endAt, personId, name }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(itemIndex, forKey: .itemIndex)
+        try c.encode(segmentId, forKey: .segmentId)
+        try c.encode(startMediaMs, forKey: .startMediaMs)
+        try c.encode(endMediaMs, forKey: .endMediaMs)
+        try c.encode(ArchiveTime.string(atMs), forKey: .at)
+        try c.encode(ArchiveTime.string(endMs), forKey: .endAt)
+        try c.encode(personId, forKey: .personId)
+        try c.encode(name, forKey: .name)
+    }
+}
+
+public struct ArchiveSpeakerPatchPayload: Encodable, Equatable, Sendable {
+    public var conversationId: String
+    public var sourceHash: String
+    public var ranges: [ArchiveSpeakerRange]
+}
+
 public struct ArchiveTranscriptPayload: Encodable, Equatable, Sendable {
     public enum Item: Encodable, Equatable, Sendable {
         case turn(atMs: Int64, endMs: Int64, speaker: String?, name: String?, text: String, confidence: Double?)
@@ -366,9 +392,10 @@ public struct ArchiveTranscriptPayload: Encodable, Equatable, Sendable {
     public var charCount: Int
     public var text: String
     public var items: [Item]
+    public var speakerRanges: [ArchiveSpeakerRange] = []
 
     enum CodingKeys: String, CodingKey {
-        case conversationId, sourceHash, provider, model, language, charCount, text, items
+        case conversationId, sourceHash, provider, model, language, charCount, text, items, speakerRanges
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -381,6 +408,7 @@ public struct ArchiveTranscriptPayload: Encodable, Equatable, Sendable {
         try c.encode(charCount, forKey: .charCount)
         try c.encode(text, forKey: .text)
         try c.encode(items, forKey: .items)
+        if !speakerRanges.isEmpty { try c.encode(speakerRanges, forKey: .speakerRanges) }
     }
 }
 

@@ -104,6 +104,13 @@ public sealed class TranscriptItem
 
 	public string? Name { get; set; }
 
+	public string? PersonId { get; set; }
+	public string? SegmentId { get; set; }
+	public long? StartMediaMs { get; set; }
+	public long? EndMediaMs { get; set; }
+	/// <summary>True includes an explicit unnamed decision; readers must not restore a broad label name.</summary>
+	public bool? IdentityResolved { get; set; }
+
 	public string? Text { get; set; }
 
 	public double? Confidence { get; set; }

@@ -48,6 +48,9 @@ public enum ArchiveOp: String, Codable, Sendable, CaseIterable {
     case upsert
     case delete
     case expire
+    /// A names-only transcript overlay. Stored outbox rows still use upsert; the builder
+    /// chooses this wire operation when retention prevents sending a complete transcript.
+    case speakerPatch
 }
 
 /// One entity's sync state.

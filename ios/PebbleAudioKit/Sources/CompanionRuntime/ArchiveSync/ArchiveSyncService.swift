@@ -605,7 +605,7 @@ public actor ArchiveSyncService {
             let key = ArchiveItemKey(kind: row.kind, entityId: row.entityId, version: row.version)
             var item: ArchiveBatchItem
             switch row.op {
-            case .upsert:
+            case .upsert, .speakerPatch:
                 if !gate.holdsEverything,
                     try await !gate.contains(row.kind, id: row.entityId, in: deps.outbox.db)
                 {
@@ -623,6 +623,9 @@ public actor ArchiveSyncService {
                     item = ArchiveBatchItem(
                         key: key, op: .upsert, changedAtMs: row.changedAtMs, payload: data,
                         hash: hash, pieceKey: pieceKey)
+                case .speakerPatch(let data, let hash, let pieceKey):
+                    item = ArchiveBatchItem(key: key, op: .speakerPatch, changedAtMs: row.changedAtMs,
+                                            payload: data, hash: hash, pieceKey: pieceKey)
                 case .unchanged(let hash, let pieceKey):
                     try await deps.outbox.markUnchanged(key, hash: hash, pieceKey: pieceKey)
                     continue

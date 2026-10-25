@@ -22,6 +22,7 @@ public static class WireNames
 		SyncOp.Upsert => "upsert",
 		SyncOp.Delete => "delete",
 		SyncOp.Expire => "expire",
+		SyncOp.SpeakerPatch => "speakerPatch",
 	};
 
 	public static string ToWire(this PhoneRequestKind kind) => kind switch

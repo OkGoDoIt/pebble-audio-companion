@@ -67,6 +67,7 @@ public sealed class BatchApplier(
 				}
 
 				SyncedRecord? record = null;
+				TranscriptSpeakerPatch.Payload? speakerPatch = null;
 				if (item.Op == SyncOp.Upsert)
 				{
 					var parsed = SyncPayloads.Read(item.Kind, item.Id, item.Payload);
@@ -80,6 +81,25 @@ public sealed class BatchApplier(
 
 					// Outside what the person shares: not stored, and not entered in the ledger, so the phone can send
 					// the same version again once the scope widens.
+					if (await IsOutsideAsync(userId, record, scope, cancellationToken))
+					{
+						ignored.Add(new BatchIgnored(kind, item.Id, item.Version, OutsideScope));
+						continue;
+					}
+				}
+				else if (item.Op == SyncOp.SpeakerPatch)
+				{
+					if (item.Kind != SyncKind.Transcript || !TranscriptSpeakerPatch.TryRead(item.Payload, item.Id, out speakerPatch, out _))
+					{
+						rejected.Add(new BatchRejected(kind, item.Id, "payload: invalid speaker patch"));
+						continue;
+					}
+					record = await db.Transcripts.AsNoTracking().SingleOrDefaultAsync(t => t.UserId == userId && t.ConversationId == item.Id, cancellationToken);
+					if (record is null)
+					{
+						rejected.Add(new BatchRejected(kind, item.Id, "payload: transcript to patch is missing"));
+						continue;
+					}
 					if (await IsOutsideAsync(userId, record, scope, cancellationToken))
 					{
 						ignored.Add(new BatchIgnored(kind, item.Id, item.Version, OutsideScope));
@@ -102,6 +122,17 @@ public sealed class BatchApplier(
 							break;
 						case SyncOp.Expire:
 							await ExpireAsync(userId, item.Kind, item.Id, item.ChangedAt, cancellationToken);
+							break;
+						case SyncOp.SpeakerPatch:
+							var transcript = (Transcript)record!;
+							var conversation = await db.Conversations.SingleOrDefaultAsync(c => c.UserId == userId && c.Id == item.Id, cancellationToken);
+							TranscriptSpeakerPatch.Apply(transcript, conversation, speakerPatch!);
+							await ArchivePersonNames.NormalizeAsync(db, userId, transcript, cancellationToken);
+							if (conversation is not null) { await ArchivePersonNames.NormalizeAsync(db, userId, conversation, cancellationToken); }
+							transcript.Version = item.Version;
+							transcript.ChangedAt = item.ChangedAt;
+							transcript.ReceivedAt = now;
+							db.Update(transcript);
 							break;
 					}
 
@@ -172,6 +203,7 @@ public sealed class BatchApplier(
 
 	private async Task<Upserted> UpsertAsync(Guid userId, Envelope item, SyncedRecord record, DateTimeOffset now, CancellationToken cancellationToken)
 	{
+		await ArchivePersonNames.NormalizeAsync(db, userId, record, cancellationToken);
 		record.UserId = userId;
 		record.Version = item.Version;
 		record.ChangedAt = item.ChangedAt;
@@ -210,6 +242,10 @@ public sealed class BatchApplier(
 
 		// The payload is the whole entity, so an existing row is replaced column for column. The search vectors are
 		// generated columns and follow on their own.
+		if (record is Person namedPerson)
+		{
+			await ArchivePersonNames.ApplyAsync(db, userId, namedPerson.Id, namedPerson.Name, cancellationToken);
+		}
 		if (exists)
 		{
 			db.Update(record);
@@ -328,6 +364,7 @@ public sealed class BatchApplier(
 				await db.Notes.Where(n => n.UserId == userId && n.Id == id).ExecuteDeleteAsync(cancellationToken);
 				break;
 			case SyncKind.Person:
+				await ArchivePersonNames.ApplyAsync(db, userId, id, null, cancellationToken);
 				await db.People.Where(p => p.UserId == userId && p.Id == id).ExecuteDeleteAsync(cancellationToken);
 				break;
 			case SyncKind.Coverage:
@@ -439,7 +476,7 @@ public sealed class BatchApplier(
 		}
 
 		var payload = element.TryGetProperty("payload", out var payloadElement) ? payloadElement : default;
-		if (op == SyncOp.Upsert && payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+		if (op is SyncOp.Upsert or SyncOp.SpeakerPatch && payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
 		{
 			error = "payload: missing";
 			return false;

@@ -23,7 +23,9 @@ public enum ArchiveExport {
     /// before the gap change, so the two share one re-send.)
     /// 3: range-level human corrections override legacy speaker names, including local ASR
     /// without provider labels. Explicit unnamed/partial corrections block legacy fallback.
-    public static let transcriptExportVersion = "transcript-export-4"
+    /// 4: acoustic identity uses word alignment; 5: stable source anchors permit names-only
+    /// patches without replacing a longer server transcript after phone retention.
+    public static let transcriptExportVersion = "transcript-export-5"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
@@ -223,9 +225,10 @@ public enum ArchiveExport {
     public static func transcript(
         conversationId: String, pieces: [Piece], gaps: [ArchiveGap],
         speakerNames: [String: String], sourceHash: String,
-        identity: SpeakerIdentitySnapshot = .init()
+        identity: SpeakerIdentitySnapshot = .init(), legacyAssignments: [SpeakerAssignment] = []
     ) -> ArchiveTranscriptPayload {
         var items: [ArchiveTranscriptPayload.Item] = []
+        var anchors: [Int: ArchiveSpeakerRange] = [:]
         var turnsBySource: [String: Int] = [:]
         var sources: [String: (provider: String, model: String?)] = [:]
 
@@ -243,10 +246,10 @@ public enum ArchiveExport {
                 : Array(repeating: false, count: turns.count)
             var clean = cut
             clean.segments = turns.enumerated().filter { !looped[$0.offset] }.map(\.element)
-            let legacy = speakerNames.map { label, name in
+            let legacy = legacyAssignments.isEmpty ? speakerNames.map { label, name in
                 SpeakerAssignment(conversationId: conversationId, label: label,
                                   personId: "legacy:" + label, personName: name)
-            }
+            } : legacyAssignments
             let attributed = SpeakerAttribution.attributedTurns(transcript: clean,
                 segmentId: piece.member.segmentId, identity: identity, legacyAssignments: legacy)
             var withheldBy = Set<Int>()
@@ -266,6 +269,12 @@ public enum ArchiveExport {
                 // either form it was stored in, still covers the label wherever no segment name
                 // does.
                 let name = turn.person?.name
+                if turn.endMs > turn.startMs, wall.endMs > wall.startMs {
+                    let id = turn.person?.id
+                    anchors[items.count] = ArchiveSpeakerRange(itemIndex: nil, segmentId: piece.member.segmentId,
+                        startMediaMs: turn.startMs, endMediaMs: turn.endMs, atMs: wall.startMs, endMs: wall.endMs,
+                        personId: id?.hasPrefix("legacy:") == true ? nil : id, name: name)
+                }
                 items.append(
                     .turn(
                         atMs: wall.startMs, endMs: wall.endMs,
@@ -295,13 +304,19 @@ public enum ArchiveExport {
             items.append(.gap(gap))
         }
         // Time order; at one instant a marker reads before the words that follow it.
-        let ordered = items.enumerated().sorted { a, b in
+        let sorted = items.enumerated().sorted { a, b in
             if a.element.atMs != b.element.atMs { return a.element.atMs < b.element.atMs }
             let rankA = a.element.kindName == "turn" ? 1 : 0
             let rankB = b.element.kindName == "turn" ? 1 : 0
             if rankA != rankB { return rankA < rankB }
             return a.offset < b.offset
-        }.map(\.element)
+        }
+        let ordered = sorted.map(\.element)
+        let speakerRanges = sorted.enumerated().compactMap { index, old -> ArchiveSpeakerRange? in
+            guard var anchor = anchors[old.offset] else { return nil }
+            anchor.itemIndex = index
+            return anchor
+        }
         var orderedLines: [String] = []
         for item in ordered {
             guard case .turn(_, _, let speaker, let name, let text, _) = item else { continue }
@@ -313,7 +328,8 @@ public enum ArchiveExport {
         }.flatMap { sources[$0.key] }
         return ArchiveTranscriptPayload(
             conversationId: conversationId, sourceHash: sourceHash, provider: main?.provider,
-            model: main?.model, language: nil, charCount: text.count, text: text, items: ordered)
+            model: main?.model, language: nil, charCount: text.count, text: text, items: ordered,
+            speakerRanges: speakerRanges)
     }
 
     // MARK: - Range helpers

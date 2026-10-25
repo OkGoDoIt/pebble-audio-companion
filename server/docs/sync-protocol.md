@@ -227,6 +227,41 @@ one's stage; until then a suggested or skipped follow-up reads as a reminder.
 
 ## 3. Batches
 
+### Speaker changes when the phone retains only a conversation's tail
+
+`transcript` also accepts `op: "speakerPatch"`. It shares the transcript's normal increasing
+version ledger, requires an existing transcript, and never changes words, markers, timing,
+provider metadata, or the retained conversation's extent. A phone must never send a shortened
+replacement transcript to rename speakers in retained history.
+
+```json
+{ "kind": "transcript", "id": "conv-…", "version": 1791999182001, "op": "speakerPatch", "changedAt": "…",
+  "payload": { "conversationId": "conv-…", "sourceHash": "…", "ranges": [
+    { "segmentId": "seg-…", "startMediaMs": 12000, "endMediaMs": 18000,
+      "at": "…", "endAt": "…", "personId": "person-…", "name": "Alex" },
+    { "segmentId": "seg-…", "startMediaMs": 18000, "endMediaMs": 22000,
+      "at": "…", "endAt": "…", "personId": null, "name": null }
+  ] } }
+```
+
+Ranges are half-open and use the source segment's stored-media clock. Each range carries its
+wall-clock span solely for safely updating exports from older phones. A null name explicitly
+clears attribution. The server updates only intersecting turns: a name needs consistent coverage
+of the entire turn; partial or conflicting coverage clears the name instead of assigning words
+outside the confirmed range. All other turns, including the expired prefix, remain unchanged.
+The server rebuilds participant metadata and searchable text from the preserved turns.
+
+Full transcript payloads may additionally carry `speakerRanges`, with the same fields plus
+`itemIndex`, identifying a turn in `items`. The server stores these source anchors and stable
+person IDs. For older turns without anchors, a patch must unambiguously identify the source
+through the conversation's stored pieces and wall-clock span; ambiguous legacy timing is left
+unchanged. These additive fields are safe for older servers to ignore.
+
+An old server rejects the unknown `speakerPatch` operation without recording its version. The
+phone keeps that item pending through its bounded rejection handling, then parks it until the
+entity changes again; it must not retry it as an upsert. Deploy server support before the phone
+release. No biometric vectors, samples, or model profiles are part of either payload.
+
 `PUT /sync/batch`
 
 ```json

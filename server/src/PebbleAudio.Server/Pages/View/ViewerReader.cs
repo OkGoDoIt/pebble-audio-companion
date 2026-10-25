@@ -416,12 +416,12 @@ public sealed class ViewerReader(ArchiveReader archive, PhoneRequestService requ
 			var e = Math.Max(s + 1, Clamp(TurnEnd(list, index), c, duration));
 			return new BitView(
 				laneOf.GetValueOrDefault(label),
-				ArchiveReader.Blank(turn.Name) ?? whoOf.GetValueOrDefault(label) ?? $"Speaker {label}",
+				ArchiveReader.Blank(turn.Name) ?? (turn.IdentityResolved == true ? null : whoOf.GetValueOrDefault(label)) ?? $"Speaker {label}",
 				turn.Text?.Trim() ?? "",
 				s,
 				e,
 				turn.Confidence is < 0.6,
-				ArchiveReader.Blank(turn.Name) is null && !namedLabels.Contains(label));
+				ArchiveReader.Blank(turn.Name) is null && (turn.IdentityResolved == true || !namedLabels.Contains(label)));
 		}
 	}
 
