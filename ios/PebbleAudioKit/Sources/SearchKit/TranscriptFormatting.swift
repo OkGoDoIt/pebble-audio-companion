@@ -32,12 +32,16 @@ public struct TranscriptSegment: Equatable, Sendable {
     public var startMs: Int64
     public var endMs: Int64
     public var speaker: String?
+    /// Opaque display grouping supplied by the identity layer, never a provider speaker ID.
+    public var attributionKey: String?
 
-    public init(text: String, startMs: Int64, endMs: Int64, speaker: String? = nil) {
+    public init(text: String, startMs: Int64, endMs: Int64, speaker: String? = nil,
+                attributionKey: String? = nil) {
         self.text = text
         self.startMs = startMs
         self.endMs = endMs
         self.speaker = speaker
+        self.attributionKey = attributionKey
     }
 }
 
@@ -155,17 +159,40 @@ func mergedLossReasons(_ lists: [[LossReason]]) -> [LossReason] {
 }
 
 public enum TranscriptTimelineItem: Equatable, Sendable {
+    /// A whole timed passage retained when its text is split into readable paragraphs.
+    /// Coordinates use the same timeline clock as Speech, never interpolated child timing.
+    public struct IdentificationScope: Equatable, Sendable {
+        public let startMs: Int64
+        public let endMs: Int64
+        public let text: String
+        public init(startMs: Int64, endMs: Int64, text: String) {
+            self.startMs = startMs; self.endMs = endMs; self.text = text
+        }
+    }
+
     public struct Speech: Equatable, Sendable {
         public var startMs: Int64
         public var endMs: Int64
         public var text: String
         public var speaker: String?
+        public var attributionKey: String?
+        /// Display-only paragraph splitting estimates timing by word count. Never enroll or
+        /// correct that estimated range without independently aligned word timings.
+        public var hasEstimatedTiming: Bool
+        /// Optional full-passage selection fallback. The caller must still verify the range
+        /// exists in stored audio and explicitly show the broader scope before saving a name.
+        public var identificationScope: IdentificationScope?
 
-        public init(startMs: Int64, endMs: Int64, text: String, speaker: String? = nil) {
+        public init(startMs: Int64, endMs: Int64, text: String, speaker: String? = nil,
+                    hasEstimatedTiming: Bool = false, attributionKey: String? = nil,
+                    identificationScope: IdentificationScope? = nil) {
             self.startMs = startMs
             self.endMs = endMs
             self.text = text
             self.speaker = speaker
+            self.hasEstimatedTiming = hasEstimatedTiming
+            self.identificationScope = identificationScope
+            self.attributionKey = attributionKey
         }
     }
 
@@ -387,7 +414,7 @@ public func transcriptTimelineItems(
     window: Range<Int64>? = nil
 ) -> [TranscriptTimelineItem] {
     let speech = coalescedSpeechBlocks(segments: segments, words: words)
-        .flatMap { splitSpeechBlock($0) }
+        .flatMap { splitSpeechBlock($0, identificationWindow: window) }
     if speech.isEmpty {
         // A recording whose text was ENTIRELY looped artefact still has a story: it was quiet,
         // and the transcriber filled the silence. Saying nothing here would leave the reader
@@ -653,7 +680,7 @@ private func coalescedSpeechBlocks(
 ) -> [TranscriptTimelineItem.Speech] {
     // Prefer word-level timings for the finest timeline, EXCEPT when diarization labeled the
     // segments with speakers (words carry no speaker) — then segment-level keeps the labels.
-    let hasSpeakers = segments.contains { !($0.speaker ?? "").isEmptyOrBlank }
+    let hasSpeakers = segments.contains { !($0.speaker ?? "").isEmptyOrBlank || $0.attributionKey != nil }
     let raw: [TranscriptTimelineItem.Speech]
     if !words.isEmpty && !hasSpeakers {
         raw = words.map {
@@ -670,7 +697,7 @@ private func coalescedSpeechBlocks(
                 startMs: max($0.startMs, 0),
                 endMs: max($0.endMs, $0.startMs),
                 text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                speaker: $0.speaker.map(speakerLabel)
+                speaker: $0.speaker.map(speakerLabel), attributionKey: $0.attributionKey
             )
         }
     }
@@ -681,13 +708,13 @@ private func coalescedSpeechBlocks(
     for next in sorted {
         if let existing = current,
             next.startMs - existing.endMs < silenceBreakThresholdMs,
-            next.speaker == existing.speaker
+            next.speaker == existing.speaker, next.attributionKey == existing.attributionKey
         {
             current = TranscriptTimelineItem.Speech(
                 startMs: existing.startMs,
                 endMs: max(existing.endMs, next.endMs),
                 text: joinTranscriptText(existing.text, next.text),
-                speaker: existing.speaker
+                speaker: existing.speaker, attributionKey: existing.attributionKey
             )
         } else {
             if let existing = current { blocks.append(existing) }
@@ -701,10 +728,20 @@ private func coalescedSpeechBlocks(
 private func splitSpeechBlock(
     _ block: TranscriptTimelineItem.Speech,
     maxChars: Int = 260,
-    maxWords: Int = 34
+    maxWords: Int = 34,
+    identificationWindow: Range<Int64>? = nil
 ) -> [TranscriptTimelineItem.Speech] {
     let chunks = readableChunks(block.text, maxChars: maxChars, maxWords: maxWords)
     if chunks.count <= 1 { return [block] }
+    // A turn belongs to the piece containing its start, so migrated/provider turns can
+    // extend past a piece boundary. Keep rendering unchanged, but never offer neighboring
+    // audio as a full-passage correction. Do not trim text/range by a proportional guess.
+    let fitsPiece = identificationWindow.map {
+        block.startMs >= $0.lowerBound && block.endMs <= $0.upperBound
+    } ?? true
+    let identificationScope: TranscriptTimelineItem.IdentificationScope? =
+        fitsPiece && block.startMs >= 0 && block.endMs > block.startMs
+        ? .init(startMs: block.startMs, endMs: block.endMs, text: block.text) : nil
     let totalWords = Int64(max(wordCount(block.text), 1))
     let durationMs = max(block.endMs - block.startMs, 0)
     var consumedWords: Int64 = 0
@@ -717,7 +754,9 @@ private func splitSpeechBlock(
             startMs: block.startMs + startOffset,
             endMs: max(block.startMs + endOffset, block.startMs + startOffset),
             text: chunk,
-            speaker: block.speaker
+            speaker: block.speaker,
+            hasEstimatedTiming: true, attributionKey: block.attributionKey,
+            identificationScope: identificationScope
         )
     }
 }

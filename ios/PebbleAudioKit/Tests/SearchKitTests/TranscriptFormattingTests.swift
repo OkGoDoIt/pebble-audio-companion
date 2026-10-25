@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import SegmentStore
 import Testing
@@ -387,6 +388,53 @@ import WireProtocol
         )
         #expect(speech.first?.startMs == 0)
         #expect(speech.last?.endMs == 90_000)
+    }
+
+    @Test func readableParagraphsRetainOneWholeTimedPassageScope() throws {
+        let text = (1...90).map { "word\($0)" }.joined(separator: " ")
+        let speech = transcriptTimelineItems(meta: testMeta(),
+            segments: [TranscriptSegment(text: text, startMs: 2_000, endMs: 8_000)],
+            window: 1_000..<9_000).compactMap(\.asSpeech)
+        #expect(speech.count >= 3)
+        #expect(speech.allSatisfy { $0.hasEstimatedTiming })
+        #expect(speech.allSatisfy { $0.identificationScope == .init(startMs: 2_000, endMs: 8_000, text: text) })
+        #expect(speech[0].endMs < 8_000) // Display timing remains a separate estimate.
+        let short = transcriptTimelineItems(meta: testMeta(),
+            segments: [TranscriptSegment(text: "A short timed turn", startMs: 2_000, endMs: 3_000)])
+            .compactMap(\.asSpeech)
+        #expect(short.first?.identificationScope == nil)
+        #expect(short.first?.hasEstimatedTiming == false)
+    }
+
+    @Test func fullPassageFallbackNeverCrossesConversationPieceBoundary() throws {
+        let text = (1...90).map { "word\($0)" }.joined(separator: " ")
+        let speech = pieceTimeline(meta: testMeta(),
+            member: ConversationMember(segmentId: "seg", startMediaMs: 2_000, endMediaMs: 8_000),
+            clock: SegmentMediaClock(testMeta()),
+            segments: [TranscriptSegment(text: text, startMs: 7_000, endMs: 9_000)],
+            timebase: .media).items.compactMap(\.asSpeech)
+        #expect(!speech.isEmpty)
+        #expect(speech.allSatisfy { $0.hasEstimatedTiming && $0.identificationScope == nil })
+    }
+
+    @Test func fullPassageScopeUsesTheSameExactOrInexactClockAsItsSpeech() throws {
+        let text = (1...90).map { "word\($0)" }.joined(separator: " ")
+        let gap = GapMeta(firstMissingSequence: 100, missingFrameCount: 250,
+            firstMissingSampleIndex: 32_000, origin: GapMeta.originWatch,
+            reasonRaw: Int(GapReason.silenceSuppressed.rawValue))
+        let exact = testMeta(gaps: [gap], lastSampleIndexExclusive: 240_000)
+        let inexact = testMeta(lastSampleIndexExclusive: 1_600_000)
+        #expect(SegmentMediaClock(exact).isExact)
+        #expect(!SegmentMediaClock(inexact).isExact)
+        for (meta, lower, upper) in [(exact, Int64(7_000), Int64(13_000)), (inexact, Int64(2_000), Int64(8_000))] {
+            let timeline = pieceTimeline(meta: meta,
+                member: ConversationMember(segmentId: "seg", startMediaMs: 2_000, endMediaMs: 8_000),
+                clock: SegmentMediaClock(meta),
+                segments: [TranscriptSegment(text: text, startMs: 2_000, endMs: 8_000)], timebase: .media)
+            let speech = timeline.items.compactMap(\.asSpeech)
+            #expect(!speech.isEmpty)
+            #expect(speech.allSatisfy { $0.identificationScope == .init(startMs: lower, endMs: upper, text: text) })
+        }
     }
 
     // MARK: - Fixtures
