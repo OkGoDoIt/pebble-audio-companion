@@ -78,15 +78,23 @@ On 2026-10-25 at 00:09 +07 the collection/review build (`70943f16-dirty`, built
 confirmed all three existing marks appeared. Two completed their nearby AI review with no
 suggestions; the third had no nearby speech. A fourth mark arrived and was saved live at 00:10:59.
 The ten-minute report passed, settling near 1 CPU-second per background minute, with no new app
-crash reports. All samples were charging: on-battery cost remains unverified. The next-morning
-check is scheduled for 08:00 +07 on October 25.
+crash reports. All ten-minute samples were charging. The October 25 morning check also passed,
+with 11 eligible on-battery samples averaging 0.755 CPU-second/minute and no new app crash
+reports. Most of the night was plugged in, so this does not establish overnight battery drain.
 
 The contextual Today/History/live-transcript follow-up passes 47 simulator tests (clean
 xcresult on iOS 26.5), 45 focused package tests, and state-initialization checks. The final
 accessibility adjustment passes all six moment tests. Real SwiftUI renders were inspected at
 375, 820 and 1024 points in light/dark and at accessibility3. The existing medium History card
-also now wraps its time line at accessibility sizes instead of extending off the card. The signed Release build from `3fe45ed0-dirty` (built `2026-10-24T17:29:15Z`) succeeded and
-passed codesign verification. G17 disconnected again before this follow-up could be installed. Do not mistake the installed collection build for the contextual update.
+also now wraps its time line at accessibility sizes instead of extending off the card.
+
+On October 25 at approximately 11:15 +07, G17 received the contextual update after a fresh
+3.5 GB backup. The installed Release build is `e6c1f97d-dirty`, built `2026-10-25T04:14:18Z`,
+including feature commit `3fe45ed0`; codesign verification passed. A post-install database read
+confirmed all four moments and all 15 notes exactly match the backup. The phone locked during
+the build, so iOS refused the final automatic launch. Opening Pebble Audio once is still needed
+before recording-resumption, physical UI and +10-minute CPU checks can be completed. The
+next-morning check is scheduled for 08:00 +07 October 26 and must verify the actual running build.
 
 Firmware `v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. The installed phone
 app supports it; marks saved by the existing firmware remain readable, with its old delivery limits.
