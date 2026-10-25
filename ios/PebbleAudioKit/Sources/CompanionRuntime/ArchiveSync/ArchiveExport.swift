@@ -25,7 +25,7 @@ public enum ArchiveExport {
     /// without provider labels. Explicit unnamed/partial corrections block legacy fallback.
     /// 4: acoustic identity uses word alignment; 5: stable source anchors permit names-only
     /// patches without replacing a longer server transcript after phone retention.
-    public static let transcriptExportVersion = "transcript-export-5"
+    public static let transcriptExportVersion = "transcript-export-6"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
@@ -274,6 +274,10 @@ public enum ArchiveExport {
                     anchors[items.count] = ArchiveSpeakerRange(itemIndex: nil, segmentId: piece.member.segmentId,
                         startMediaMs: turn.startMs, endMediaMs: turn.endMs, atMs: wall.startMs, endMs: wall.endMs,
                         personId: id?.hasPrefix("legacy:") == true ? nil : id, name: name)
+                    if turn.isVoiceMatch, let id {
+                        anchors[items.count]?.voiceEvidence = voiceEvidence(personId: id,
+                            segmentId: piece.member.segmentId, start: turn.startMs, end: turn.endMs, identity: identity)
+                    }
                 }
                 items.append(
                     .turn(
@@ -333,6 +337,17 @@ public enum ArchiveExport {
     }
 
     // MARK: - Range helpers
+
+    static func voiceEvidence(personId: String, segmentId: String, start: Int64, end: Int64,
+                              identity: SpeakerIdentitySnapshot) -> [ArchiveVoiceEvidence] {
+        let evidence = identity.automaticAttributions.compactMap { row -> ArchiveVoiceEvidence? in
+            let a = row.attribution
+            guard row.person.id == personId, a.segmentId == segmentId, a.disposition == .recognized,
+                  a.startMediaMs < end, a.endMediaMs > start, let origin = a.archiveOriginID else { return nil }
+            return ArchiveVoiceEvidence(originID: origin, generation: a.archiveGeneration, runID: a.runID)
+        }
+        return Set(evidence).sorted { ($0.originID, $0.generation, $0.runID) < ($1.originID, $1.generation, $1.runID) }
+    }
 
     static func mergeRanges(_ ranges: [Range<Int64>]) -> [Range<Int64>] {
         var out: [Range<Int64>] = []

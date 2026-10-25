@@ -57,6 +57,28 @@ enum ArchiveJSON {
     }
 }
 
+/// Only attribution provenance crosses the archive boundary, never a voice sample or vector.
+public struct ArchiveVoiceEvidence: Codable, Equatable, Hashable, Sendable {
+    public var originID: String
+    public var generation: Int64
+    public var runID: String
+}
+
+public struct ArchiveVoiceRevocationPayload: Encodable, Sendable {
+    public var originID: String
+    public var generation: Int64
+    public var scope: String
+    public var targetID: String?
+    enum CodingKeys: String, CodingKey { case originID, generation, scope, targetID }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(originID, forKey: .originID)
+        try c.encode(generation, forKey: .generation)
+        try c.encode(scope, forKey: .scope)
+        try c.encode(targetID, forKey: .targetID)
+    }
+}
+
 // MARK: - §2.1 conversation
 
 public struct ArchiveConversationPayload: Encodable, Equatable, Sendable {
@@ -87,14 +109,16 @@ public struct ArchiveConversationPayload: Encodable, Equatable, Sendable {
         public var label: String
         public var personId: String?
         public var name: String?
+        public var voiceEvidence: [ArchiveVoiceEvidence] = []
 
-        enum CodingKeys: String, CodingKey { case label, personId, name }
+        enum CodingKeys: String, CodingKey { case label, personId, name, voiceEvidence }
 
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(label, forKey: .label)
             try c.encode(personId, forKey: .personId)
             try c.encode(name, forKey: .name)
+            if !voiceEvidence.isEmpty { try c.encode(voiceEvidence, forKey: .voiceEvidence) }
         }
     }
 
@@ -309,7 +333,8 @@ public struct ArchiveSpeakerRange: Encodable, Equatable, Sendable {
     public var startMediaMs, endMediaMs, atMs, endMs: Int64
     public var personId, name: String?
 
-    enum CodingKeys: String, CodingKey { case itemIndex, segmentId, startMediaMs, endMediaMs, at, endAt, personId, name }
+    public var voiceEvidence: [ArchiveVoiceEvidence] = []
+    enum CodingKeys: String, CodingKey { case itemIndex, segmentId, startMediaMs, endMediaMs, at, endAt, personId, name, voiceEvidence }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(itemIndex, forKey: .itemIndex)
@@ -320,6 +345,7 @@ public struct ArchiveSpeakerRange: Encodable, Equatable, Sendable {
         try c.encode(ArchiveTime.string(endMs), forKey: .endAt)
         try c.encode(personId, forKey: .personId)
         try c.encode(name, forKey: .name)
+        if !voiceEvidence.isEmpty { try c.encode(voiceEvidence, forKey: .voiceEvidence) }
     }
 }
 

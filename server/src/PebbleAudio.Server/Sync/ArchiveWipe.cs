@@ -119,6 +119,7 @@ public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConne
 		await db.FollowUps.Where(f => f.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.Notes.Where(n => n.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.People.Where(p => p.UserId == userId).ExecuteDeleteAsync(cancellationToken);
+		await db.VoiceRevocations.Where(r => r.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.CoverageDays.Where(c => c.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.SyncItems.Where(s => s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.AiReads.Where(a => a.UserId == userId).ExecuteDeleteAsync(cancellationToken);

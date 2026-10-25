@@ -262,6 +262,35 @@ phone keeps that item pending through its bounded rejection handling, then parks
 entity changes again; it must not retry it as an upsert. Deploy server support before the phone
 release. No biometric vectors, samples, or model profiles are part of either payload.
 
+Automatic names additionally carry `voiceEvidence` on each `speakerRanges` entry and on a
+conversation participant whose name has no manual assignment. It is an array of
+`{ "originID": "local-store-id", "generation": 0, "runID": "recognition-pass-id" }`.
+An absent or empty array means a manual/legacy name, which voice-profile operations preserve.
+If several automatic intervals support one exported turn, carry all their distinct provenance.
+
+`kind: "voiceRevocation", op: "upsert"` is an immutable, account-scoped privacy decision:
+
+```json
+{ "kind": "voiceRevocation", "id": "unique-decision-id", "version": 1791999182002,
+  "op": "upsert", "changedAt": "…", "payload": {
+    "originID": "local-store-id", "generation": 1, "scope": "person", "targetID": "person-id"
+  } }
+```
+
+The scope is `person` (target person ID), `run` (target recognition pass ID), or `all`
+(`targetID: null`). It removes matching automatic names whose provenance has the same origin
+and a **lower** generation. Every local revocation increments a durable counter; new explicit
+recognition uses the current generation, so a clock correction does not affect ordering.
+When a restored backup has lost its device-bound profile key, the phone permanently retires
+the old origin with generation `9223372036854775807`, then chooses a new origin. This also
+revokes matches created after the backup's older counter was saved. Parse generations as
+signed 64-bit integers, never floating-point numbers.
+The server updates retained transcript names, participants and search without removing words,
+and keeps the revocation to reject older evidence in delayed full uploads or speaker patches.
+Revocations bypass the date-sharing filter, survive local retention and unlink/relink, and
+cannot be deleted, expired, or changed under the same ID. Account archive wipe removes them
+along with the archive. Names saved manually remain. Voice material never crosses this wire.
+
 `PUT /sync/batch`
 
 ```json

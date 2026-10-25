@@ -78,6 +78,17 @@ public sealed class BatchApplier(
 					}
 
 					record = parsed.Value;
+					if (record is VoiceRevocation revocation)
+					{
+						var prior = await db.VoiceRevocations.AsNoTracking().SingleOrDefaultAsync(
+							r => r.UserId == userId && r.Id == item.Id, cancellationToken);
+						if (prior is not null && (prior.OriginID != revocation.OriginID || prior.Generation != revocation.Generation
+							|| prior.Scope != revocation.Scope || prior.TargetID != revocation.TargetID))
+						{
+							rejected.Add(new BatchRejected(kind, item.Id, "payload: voice revocations are immutable"));
+							continue;
+						}
+					}
 
 					// Outside what the person shares: not stored, and not entered in the ledger, so the phone can send
 					// the same version again once the scope widens.
@@ -127,6 +138,8 @@ public sealed class BatchApplier(
 							var transcript = (Transcript)record!;
 							var conversation = await db.Conversations.SingleOrDefaultAsync(c => c.UserId == userId && c.Id == item.Id, cancellationToken);
 							TranscriptSpeakerPatch.Apply(transcript, conversation, speakerPatch!);
+							await ArchiveVoiceRevocations.NormalizeAsync(db, userId, transcript, cancellationToken);
+							if (conversation is not null) { await ArchiveVoiceRevocations.NormalizeAsync(db, userId, conversation, cancellationToken); }
 							await ArchivePersonNames.NormalizeAsync(db, userId, transcript, cancellationToken);
 							if (conversation is not null) { await ArchivePersonNames.NormalizeAsync(db, userId, conversation, cancellationToken); }
 							transcript.Version = item.Version;
@@ -203,6 +216,7 @@ public sealed class BatchApplier(
 
 	private async Task<Upserted> UpsertAsync(Guid userId, Envelope item, SyncedRecord record, DateTimeOffset now, CancellationToken cancellationToken)
 	{
+		await ArchiveVoiceRevocations.NormalizeAsync(db, userId, record, cancellationToken);
 		await ArchivePersonNames.NormalizeAsync(db, userId, record, cancellationToken);
 		record.UserId = userId;
 		record.Version = item.Version;
@@ -237,6 +251,7 @@ public sealed class BatchApplier(
 			Note n => await db.Notes.AnyAsync(r => r.UserId == userId && r.Id == n.Id, cancellationToken),
 			Person p => await db.People.AnyAsync(r => r.UserId == userId && r.Id == p.Id, cancellationToken),
 			CoverageDay c => await db.CoverageDays.AnyAsync(r => r.UserId == userId && r.DayKey == c.DayKey, cancellationToken),
+			VoiceRevocation r => await db.VoiceRevocations.AnyAsync(v => v.UserId == userId && v.Id == r.Id, cancellationToken),
 			_ => throw new InvalidOperationException($"No table for {record.GetType().Name}."),
 		};
 
@@ -245,6 +260,10 @@ public sealed class BatchApplier(
 		if (record is Person namedPerson)
 		{
 			await ArchivePersonNames.ApplyAsync(db, userId, namedPerson.Id, namedPerson.Name, cancellationToken);
+		}
+		if (record is VoiceRevocation revoked)
+		{
+			await ArchiveVoiceRevocations.ApplyAsync(db, userId, revoked, cancellationToken);
 		}
 		if (exists)
 		{
@@ -466,6 +485,11 @@ public sealed class BatchApplier(
 		if (!WireNames.TryParse(opText, out SyncOp op))
 		{
 			error = opText is null ? "op: missing" : $"op: '{opText}' is not known";
+			return false;
+		}
+		if (kind == SyncKind.VoiceRevocation && op != SyncOp.Upsert)
+		{
+			error = "op: voice revocations are permanent upserts";
 			return false;
 		}
 

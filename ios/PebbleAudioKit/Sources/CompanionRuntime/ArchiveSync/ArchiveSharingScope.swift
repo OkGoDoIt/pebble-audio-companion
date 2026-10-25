@@ -218,7 +218,7 @@ public struct ArchiveScopeGate: Sendable {
             return ms.map { .instant($0) } ?? .undated
         }
         switch kind {
-        case .person:
+        case .person, .voiceRevocation:
             return .undated
         case .recap, .coverage:
             return .day(id)

@@ -7,6 +7,47 @@ import Transcription
 @testable import CompanionRuntime
 
 @Suite struct ArchiveSpeakerPatchTests {
+    @Test func automaticProvenanceSurvivesExportButManualNamesHaveNoRevocableEvidence() async throws {
+        let pieces = try ArchiveTranscriptExportTests.pieces()
+        let piece = pieces[1]
+        let transcript = try #require(piece.transcript)
+        let turn = try #require(transcript.piece(piece.member).segments.first)
+        let person = Person(id: UUID().uuidString.lowercased(), name: "Alex")
+        let automatic = VoiceResolvedAttribution(attribution: VoiceAutomaticAttribution(
+            personId: person.id, segmentId: piece.member.segmentId,
+            startMediaMs: turn.startMs, endMediaMs: turn.endMs,
+            sourceRevision: "digest", recipeID: "test", score: 0.9, margin: 0.2,
+            calibrationID: "test", runID: "history-run", archiveOriginID: "local-store", archiveGeneration: 7), person: person)
+        var identity = SpeakerIdentitySnapshot(automaticAttributions: [automatic])
+        func export(_ identity: SpeakerIdentitySnapshot) -> ArchiveTranscriptPayload {
+            ArchiveExport.transcript(conversationId: "c", pieces: [piece], gaps: [], speakerNames: [:],
+                sourceHash: "identity", identity: identity)
+        }
+        let named = try #require(export(identity).speakerRanges.first { $0.personId == person.id })
+        #expect(named.voiceEvidence == [ArchiveVoiceEvidence(originID: "local-store", generation: 7, runID: "history-run")])
+        identity.corrections = [SpeakerCorrection(id: "human", segmentId: piece.member.segmentId,
+            startMediaMs: turn.startMs, endMediaMs: turn.endMs, person: person, createdAtMs: 1)]
+        let manual = try #require(export(identity).speakerRanges.first { $0.personId == person.id })
+        #expect(manual.voiceEvidence.isEmpty)
+
+        let db = try AppDatabase.inMemory()
+        let outbox = ArchiveOutbox(db: db)
+        try await outbox.setActive(true)
+        try await VoiceIdentityStore(db: db).clearAutomatic()
+        let row = try #require(try await outbox.pending(limit: 20).first { $0.kind == .voiceRevocation })
+        let builder = ArchivePayloadBuilder(sources: .init(database: db,
+            readMeta: { _ in nil }, listSegments: { [] }, transcript: { _ in nil }, transcriptVersion: { _ in "" }))
+        guard case .payload(let data, _, _) = try await builder.build(row) else {
+            Issue.record("Durable revocations need an archive payload even without retained recordings")
+            return
+        }
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["scope"] as? String == "all")
+        #expect(object["generation"] as? Int64 == 1)
+        #expect(object["targetID"] is NSNull)
+        #expect(try await ArchiveScopeGate.date(of: .voiceRevocation, id: row.entityId, in: db) == .undated)
+    }
+
     @Test func retainedTailSendsOnlySpeakerOverlayAndKeepsTheFullServerPieceKey() async throws {
         let db = try AppDatabase.inMemory()
         let pieces = try ArchiveTranscriptExportTests.pieces()

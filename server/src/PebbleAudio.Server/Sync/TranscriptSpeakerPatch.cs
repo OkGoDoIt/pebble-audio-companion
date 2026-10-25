@@ -16,6 +16,7 @@ public static class TranscriptSpeakerPatch
 		public DateTimeOffset? EndAt { get; init; }
 		public string? PersonId { get; init; }
 		public string? Name { get; init; }
+		public List<VoiceEvidence>? VoiceEvidence { get; init; }
 	}
 
 	public sealed class Payload
@@ -45,7 +46,10 @@ public static class TranscriptSpeakerPatch
 		&& range.At is not null && range.EndAt > range.At
 		&& (range.Name is null || !string.IsNullOrWhiteSpace(range.Name) && range.Name.Length <= 512)
 		&& (range.PersonId is null || !string.IsNullOrWhiteSpace(range.PersonId) && range.PersonId.Length <= 512)
-		&& (range.Name is not null || range.PersonId is null);
+		&& (range.Name is not null || range.PersonId is null)
+		&& (range.VoiceEvidence is null || range.VoiceEvidence.Count <= 256
+			&& range.VoiceEvidence.All(ArchiveVoiceRevocations.Valid)
+			&& (range.VoiceEvidence.Count == 0 || range.Name is not null && range.PersonId is not null));
 
 	public static bool Apply(Transcript transcript, Conversation? conversation, Payload patch)
 	{
@@ -97,6 +101,8 @@ public static class TranscriptSpeakerPatch
 			item.Name = name;
 			item.PersonId = personId;
 			item.IdentityResolved = true;
+			item.VoiceEvidence = name is null ? [] : intersecting.SelectMany(r => r.VoiceEvidence ?? [])
+				.DistinctBy(e => (e.OriginID, e.Generation, e.RunID)).ToList();
 		}
 
 		if (changed)
@@ -123,8 +129,16 @@ public static class TranscriptSpeakerPatch
 			{
 				Label = i.Speaker ?? i.PersonId ?? "?", Name = i.Name,
 				PersonId = i.PersonId ?? UniqueLegacyPerson(old, i.Name!),
+				VoiceEvidence = i.VoiceEvidence,
 			})
-			.Concat(audioOnly).DistinctBy(p => p.PersonId is { } person ? $"id:{person}" : $"name:{p.Name}").ToList();
+			.Concat(audioOnly).GroupBy(p => p.PersonId is { } person ? $"id:{person}" : $"name:{p.Name}")
+			.Select(group =>
+			{
+				var person = group.First();
+				person.VoiceEvidence = group.Any(p => p.VoiceEvidence.Count == 0) ? []
+					: group.SelectMany(p => p.VoiceEvidence).DistinctBy(e => (e.OriginID, e.Generation, e.RunID)).ToList();
+				return person;
+			}).ToList();
 	}
 
 	private static string? UniqueLegacyPerson(List<ConversationSpeaker> old, string name)

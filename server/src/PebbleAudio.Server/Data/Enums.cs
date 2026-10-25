@@ -16,6 +16,7 @@ public enum SyncKind
 	Note,
 	Person,
 	Coverage,
+	VoiceRevocation,
 }
 
 /// <summary>

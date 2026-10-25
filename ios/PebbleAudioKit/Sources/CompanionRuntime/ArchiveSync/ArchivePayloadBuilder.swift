@@ -93,6 +93,12 @@ public struct ArchivePayloadBuilder: Sendable {
         case .note: return try await simple(row) { try await note(row.entityId) }
         case .person: return try await simple(row) { try await person(row.entityId) }
         case .coverage: return try await simple(row) { try await coverage(row.entityId) }
+        case .voiceRevocation:
+            return try await simple(row) {
+                guard let record = try await VoiceArchiveRevocationStore(db: sources.database).load(id: row.entityId) else { return nil }
+                return try Self.encode(ArchiveVoiceRevocationPayload(originID: record.originID,
+                    generation: record.generation, scope: record.scope.rawValue, targetID: record.targetID))
+            }
         }
     }
 
@@ -276,16 +282,30 @@ public struct ArchivePayloadBuilder: Sendable {
         let pieces = try await pieces(of: record, withTranscripts: true, masks: false)
         let identity = try await SpeakerCorrectionStore(db: sources.database)
             .snapshot(segmentIds: record.members.map(\.segmentId))
+        var manuallyNamed = Set(record.legacyAssignments.map(\.personId))
+        for correction in identity.corrections where record.members.contains(where: {
+            $0.segmentId == correction.segmentId && ($0.startMediaMs ?? 0) < correction.endMediaMs
+                && ($0.endMediaMs ?? Int64.max) > correction.startMediaMs
+        }) {
+            if let person = correction.person { manuallyNamed.insert(person.id) }
+        }
         let participants = pieces.flatMap { piece in
             SpeakerAttribution.people(in: piece.member, transcript: piece.transcript,
                                       identity: identity, legacyAssignments: record.legacyAssignments)
         }.map { person in
             // The transcript's turns carry raw provider labels; this list identifies people,
             // including local-ASR speech which has no provider label at all.
-            ArchiveConversationPayload.Speaker(
+            var speaker = ArchiveConversationPayload.Speaker(
                 label: record.speakers.first(where: { $0.personId == person.id })?.label
                     ?? "person:\(person.id)",
                 personId: person.id, name: person.name)
+            if !manuallyNamed.contains(person.id) {
+                speaker.voiceEvidence = Array(Set(record.members.flatMap { member in
+                    ArchiveExport.voiceEvidence(personId: person.id, segmentId: member.segmentId,
+                        start: member.startMediaMs ?? 0, end: member.endMediaMs ?? Int64.max, identity: identity)
+                })).sorted { ($0.originID, $0.generation, $0.runID) < ($1.originID, $1.generation, $1.runID) }
+            }
+            return speaker
         }
         let gaps = ArchiveExport.gaps(pieces, window: record.window)
         let missingMs = ArchiveExport.missingMs(pieces, window: record.window)

@@ -79,6 +79,7 @@ public enum ContractCheck {
             "model", "createdAt", "editedAt",
         ],
         .person: ["name"],
+        .voiceRevocation: ["originID", "generation", "scope", "targetID"],
         .coverage: ["dayKey", "timeZone", "spans", "recordedMs", "quietMs", "missingMs"],
     ]
 
@@ -209,6 +210,11 @@ public enum ContractCheck {
             }
         case .person:
             guard try p.string("name") != nil else { throw p.missing("name") }
+        case .voiceRevocation:
+            guard try p.string("originID") != nil else { throw p.missing("originID") }
+            try p.integer("generation")
+            try p.oneOf("scope", ["all", "person", "run"])
+            try p.string("targetID")
         case .coverage:
             try dayId(id)
             if let day = try p.string("dayKey"), day != id {

@@ -32,6 +32,9 @@ public sealed class ConversationSpeaker
 	public string? PersonId { get; set; }
 
 	public string? Name { get; set; }
+	private List<VoiceEvidence>? _voiceEvidence = [];
+	// Older JSON rows have no such collection; EF materializes the absent field as null.
+	public List<VoiceEvidence> VoiceEvidence { get => _voiceEvidence ??= []; set => _voiceEvidence = value; }
 }
 
 /// <summary>
@@ -110,6 +113,8 @@ public sealed class TranscriptItem
 	public long? EndMediaMs { get; set; }
 	/// <summary>True includes an explicit unnamed decision; readers must not restore a broad label name.</summary>
 	public bool? IdentityResolved { get; set; }
+	private List<VoiceEvidence>? _voiceEvidence = [];
+	public List<VoiceEvidence> VoiceEvidence { get => _voiceEvidence ??= []; set => _voiceEvidence = value; }
 
 	public string? Text { get; set; }
 

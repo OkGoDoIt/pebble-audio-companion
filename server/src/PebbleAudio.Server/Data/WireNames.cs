@@ -15,6 +15,7 @@ public static class WireNames
 		SyncKind.Note => "note",
 		SyncKind.Person => "person",
 		SyncKind.Coverage => "coverage",
+		SyncKind.VoiceRevocation => "voiceRevocation",
 	};
 
 	public static string ToWire(this SyncOp op) => op switch

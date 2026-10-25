@@ -615,6 +615,19 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<string>("PersonId");
 
+                            b1.ComplexCollection(typeof(List<Dictionary<string, object>>), "VoiceEvidence", "PebbleAudio.Server.Data.Conversation.People#ConversationSpeaker.VoiceEvidence#VoiceEvidence", b2 =>
+                                {
+                                    b2.IsRequired();
+
+                                    b2.Property<long>("Generation");
+
+                                    b2.Property<string>("OriginID")
+                                        .IsRequired();
+
+                                    b2.Property<string>("RunID")
+                                        .IsRequired();
+                                });
+
                             b1
                                 .ToJson("People")
                                 .HasColumnType("jsonb");
@@ -1539,6 +1552,19 @@ namespace PebbleAudio.Server.Data.Migrations
 
                             b1.Property<string>("Text");
 
+                            b1.ComplexCollection(typeof(List<Dictionary<string, object>>), "VoiceEvidence", "PebbleAudio.Server.Data.Transcript.Items#TranscriptItem.VoiceEvidence#VoiceEvidence", b2 =>
+                                {
+                                    b2.IsRequired();
+
+                                    b2.Property<long>("Generation");
+
+                                    b2.Property<string>("OriginID")
+                                        .IsRequired();
+
+                                    b2.Property<string>("RunID")
+                                        .IsRequired();
+                                });
+
                             b1
                                 .ToJson("Items")
                                 .HasColumnType("jsonb");
@@ -1551,6 +1577,47 @@ namespace PebbleAudio.Server.Data.Migrations
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("SearchVector"), "GIN");
 
                     b.ToTable("Transcripts");
+                });
+
+            modelBuilder.Entity("PebbleAudio.Server.Data.VoiceRevocation", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ExpiredOnPhoneAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Generation")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OriginID")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetID")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("UserId", "Id");
+
+                    b.HasIndex("UserId", "OriginID", "Generation");
+
+                    b.ToTable("VoiceRevocations");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
@@ -1872,6 +1939,15 @@ namespace PebbleAudio.Server.Data.Migrations
                 });
 
             modelBuilder.Entity("PebbleAudio.Server.Data.Transcript", b =>
+                {
+                    b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PebbleAudio.Server.Data.VoiceRevocation", b =>
                 {
                     b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
                         .WithMany()

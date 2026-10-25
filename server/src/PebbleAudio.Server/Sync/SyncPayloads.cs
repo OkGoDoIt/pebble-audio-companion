@@ -20,6 +20,10 @@ internal static class SyncPayloads
 		SyncKind.Note => Map(Deserialize<NotePayload>(payload), p => Note(id, p)),
 		SyncKind.Person => Map(Deserialize<PersonPayload>(payload), p => Person(id, p)),
 		SyncKind.Coverage => Map(Deserialize<CoveragePayload>(payload), p => Coverage(id, p)),
+		SyncKind.VoiceRevocation => Map(Deserialize<VoiceRevocation>(payload), p =>
+			ArchiveVoiceRevocations.Valid(p) ? Parsed<VoiceRevocation>.Ok(new VoiceRevocation
+			{ Id = id, OriginID = p.OriginID, Generation = p.Generation, Scope = p.Scope, TargetID = p.TargetID })
+			: Parsed<VoiceRevocation>.Fail("payload: invalid voice revocation")),
 	};
 
 	private static Parsed<SyncedRecord> Map<TPayload, TEntity>(Parsed<TPayload> payload, Func<TPayload, Parsed<TEntity>> read)
@@ -173,7 +177,13 @@ internal static class SyncPayloads
 				return Missing<Conversation>("people[].label");
 			}
 
-			people.Add(new ConversationSpeaker { Label = speaker.Label, PersonId = speaker.PersonId, Name = speaker.Name });
+			if (speaker.VoiceEvidence is { } evidence && (evidence.Count > 256 || !evidence.All(ArchiveVoiceRevocations.Valid)
+				|| evidence.Count > 0 && (speaker.PersonId is null || speaker.Name is null)))
+			{
+				return Parsed<Conversation>.Fail("payload: invalid people voice evidence");
+			}
+			people.Add(new ConversationSpeaker { Label = speaker.Label, PersonId = speaker.PersonId, Name = speaker.Name,
+				VoiceEvidence = speaker.VoiceEvidence ?? [] });
 		}
 
 		return Parsed<Conversation>.Ok(new Conversation
@@ -266,6 +276,7 @@ internal static class SyncPayloads
 			items[index].EndMediaMs = anchor.EndMediaMs;
 			items[index].PersonId = anchor.PersonId;
 			items[index].IdentityResolved = true;
+			items[index].VoiceEvidence = anchor.VoiceEvidence ?? [];
 		}
 
 		return Parsed<Transcript>.Ok(new Transcript
@@ -534,6 +545,7 @@ internal static class SyncPayloads
 		public string? Label { get; init; }
 		public string? PersonId { get; init; }
 		public string? Name { get; init; }
+		public List<VoiceEvidence>? VoiceEvidence { get; init; }
 	}
 
 	private sealed class GapPayload

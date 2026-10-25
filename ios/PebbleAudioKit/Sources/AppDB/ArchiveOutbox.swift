@@ -40,6 +40,7 @@ public enum ArchiveEntityKind: String, Codable, Sendable, CaseIterable {
     case note
     case person
     case coverage
+    case voiceRevocation
 }
 
 /// `upsert` carries a payload; `delete` is the person deleting it (the server deletes it and
@@ -611,6 +612,8 @@ public struct ArchiveOutbox: Sendable {
                 sql: Self.enqueueSQL(kind: "'note'", id: "id", op: "'upsert'", from: "notes"))
             try d.execute(
                 sql: Self.enqueueSQL(kind: "'person'", id: "id", op: "'upsert'", from: "people"))
+            try d.execute(
+                sql: Self.enqueueSQL(kind: "'voiceRevocation'", id: "id", op: "'upsert'", from: "voice_archive_revocations"))
             var days = Set<String>()
             for row in try Row.fetchAll(
                 d, sql: "SELECT startMs, endMs, timezone FROM conversations")

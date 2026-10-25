@@ -25,6 +25,8 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 
 	public DbSet<Person> People => Set<Person>();
 
+	public DbSet<VoiceRevocation> VoiceRevocations => Set<VoiceRevocation>();
+
 	public DbSet<CoverageDay> CoverageDays => Set<CoverageDay>();
 
 	public DbSet<SyncItem> SyncItems => Set<SyncItem>();
@@ -63,7 +65,11 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 			entity.HasIndex(c => new { c.UserId, c.DayKey });
 			entity.HasIndex(c => new { c.UserId, c.StartedAt });
 			entity.ComplexCollection(c => c.Pieces, pieces => pieces.ToJson());
-			entity.ComplexCollection(c => c.People, people => people.ToJson());
+			entity.ComplexCollection(c => c.People, people =>
+			{
+				people.ToJson();
+				people.ComplexCollection(p => p.VoiceEvidence).UsePropertyAccessMode(PropertyAccessMode.Property);
+			});
 			entity.ComplexCollection(c => c.Gaps, gaps =>
 			{
 				gaps.ToJson();
@@ -78,13 +84,23 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 		builder.Entity<Transcript>(entity =>
 		{
 			entity.HasKey(t => new { t.UserId, t.ConversationId });
-			entity.ComplexCollection(t => t.Items, items => items.ToJson());
+			entity.ComplexCollection(t => t.Items, items =>
+			{
+				items.ToJson();
+				items.ComplexCollection(i => i.VoiceEvidence).UsePropertyAccessMode(PropertyAccessMode.Property);
+			});
 			entity.HasGeneratedTsVectorColumn(t => t.SearchVector, SearchSql.TextSearchConfig, t => new { t.Text })
 				.HasIndex(t => t.SearchVector)
 				.HasMethod("GIN");
 		});
 
 		builder.Entity<Recap>(entity => entity.HasKey(r => new { r.UserId, r.DayKey }));
+
+		builder.Entity<VoiceRevocation>(entity =>
+		{
+			entity.HasKey(r => new { r.UserId, r.Id });
+			entity.HasIndex(r => new { r.UserId, r.OriginID, r.Generation });
+		});
 
 		builder.Entity<Brief>(entity =>
 		{
@@ -182,6 +198,7 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 		ConfigureOwner<FollowUp>(builder);
 		ConfigureOwner<Note>(builder);
 		ConfigureOwner<Person>(builder);
+		ConfigureOwner<VoiceRevocation>(builder);
 		ConfigureOwner<CoverageDay>(builder);
 		ConfigureOwner<SyncItem>(builder);
 		ConfigureOwner<SyncPreferences>(builder);
