@@ -35,7 +35,7 @@ public actor VoiceRecognitionService {
     public nonisolated let updates = StateSubject<Int>(0)
     public static let initialPolicy = SpeakerMatchPolicy(
         minimumSimilarity: 0.55, minimumMargin: 0.10, minimumExamples: 2,
-        calibrationID: "public-read-speech-cactus-f145212-v1")
+        calibrationID: "public-read-speech-cactus-f145212-codec-variants-v2")
     private let store: VoiceIdentityStore
     private let history: VoiceHistoryPlanStore
     private let files: SegmentFileReader
@@ -272,17 +272,47 @@ public actor VoiceRecognitionService {
         guard prior.count + fresh.count <= 32 else { throw VoiceEnrollmentError.profileFull }
         let encoder = JSONEncoder()
         let confirmation = UUID().uuidString.lowercased()
-        let examples = try fresh.map { turn -> VoiceConfirmedExample in
+        // The watch's codec changes the embedding distribution. Keep one alternate acoustic
+        // view of each real phone crop, never count it as another independent voice sample.
+        let codecAudio: Data?
+        if audio.sourceID.hasPrefix("enrollment:"), !fresh.isEmpty {
+            codecAudio = try await Task.detached(priority: .utility) {
+                try VoiceEnrollmentAudioCodec.watchVariant(audio.pcm16LE)
+            }.value
+        } else { codecAudio = nil }
+        var examples: [VoiceConfirmedExample] = []
+        for turn in fresh {
+            try checkEnrollment(generation)
             let embedding = turn.embedding!
-            return VoiceConfirmedExample(personId: personId, confirmationID: confirmation,
+            var variants: [SpeakerEmbedding] = []
+            if let codecAudio {
+                let start = (turn.startSample - audio.sourceStartSample) * 2
+                let end = (turn.endSample - audio.sourceStartSample) * 2
+                let evidence = SpeakerAudioEvidence(sourceID: audio.sourceID,
+                    sourceRevision: audio.sourceRevision, sessionID: audio.sessionID,
+                    startSample: turn.startSample, endSample: turn.endSample,
+                    speechOnly: true, singleSpeaker: true, containsDiscontinuity: false)
+                // Acoustic segmentation and explicit human confirmation already established
+                // these exact crop bounds; encoding does not change the speaker or the range.
+                if let variant = try await analyzer.confirmedEmbedding(for: SpeakerAudioSample(
+                    pcm16LE: codecAudio.subdata(in: start..<end), evidence: evidence)) {
+                    guard variant.recipe == embedding.recipe else {
+                        throw SpeakerRecognitionError.invalidCorpus("Enrollment variants must use the same embedding model")
+                    }
+                    variants = [variant]
+                }
+            }
+            let payload = StoredEnrollmentEmbedding(primary: embedding, variants: variants)
+            examples.append(VoiceConfirmedExample(personId: personId, confirmationID: confirmation,
                 sessionID: audio.sessionID, segmentId: audio.sourceID,
                 startMediaMs: Int64(turn.startSample / 16), endMediaMs: Int64(turn.endSample / 16),
                 sourceRevision: audio.sourceRevision, recipeID: analysis.recipeID,
                 recipeJSON: try encoder.encode(embedding.recipe),
-                embeddingJSON: try protector.seal(encoder.encode(embedding)),
+                embeddingJSON: try protector.seal(encoder.encode(payload)),
                 qualityJSON: try encoder.encode(EnrollmentQuality(
                     speechConfidence: turn.speechConfidence,
-                    durationSeconds: Double(turn.endSample - turn.startSample) / 16_000)))
+                    durationSeconds: Double(turn.endSample - turn.startSample) / 16_000,
+                    augmentation: variants.isEmpty ? nil : VoiceEnrollmentAudioCodec.recipe))))
         }
         try checkEnrollment(generation)
         if !examples.isEmpty {
@@ -298,6 +328,27 @@ public actor VoiceRecognitionService {
     private struct EnrollmentQuality: Codable {
         let speechConfidence: Double
         let durationSeconds: Double
+        let augmentation: String?
+    }
+
+    private struct StoredEnrollmentEmbedding: Codable {
+        var version = 1
+        let primary: SpeakerEmbedding
+        let variants: [SpeakerEmbedding]
+
+        static func decode(_ plaintext: Data) throws -> StoredEnrollmentEmbedding {
+            let decoder = JSONDecoder()
+            if let stored = try? decoder.decode(Self.self, from: plaintext) {
+                guard stored.version == 1, stored.variants.count <= 1,
+                      stored.variants.allSatisfy({ $0.recipe == stored.primary.recipe }) else {
+                    throw VoiceProfileProtectionError.invalidEnvelope
+                }
+                return stored
+            }
+            // The initial single-vector payload remains readable after this additive upgrade.
+            return try StoredEnrollmentEmbedding(primary: decoder.decode(SpeakerEmbedding.self,
+                from: plaintext), variants: [])
+        }
     }
 
     /// A human selection is necessary but cannot prove purity. Reject overlap and multiple
@@ -473,10 +524,10 @@ public actor VoiceRecognitionService {
         let corpus = try examples.compactMap { example -> ConfirmedSpeakerExample? in
             guard example.recipeID == analysis.recipeID,
                   let person = UUID(uuidString: example.personId) else { return nil }
-            let embedding = try JSONDecoder().decode(SpeakerEmbedding.self,
-                from: protector.open(example.embeddingJSON))
+            let embedding = try StoredEnrollmentEmbedding.decode(protector.open(example.embeddingJSON))
             return ConfirmedSpeakerExample(id: example.id, personID: person,
-                confirmationID: example.confirmationID, sessionID: example.sessionID, embedding: embedding)
+                confirmationID: example.confirmationID, sessionID: example.sessionID,
+                embedding: embedding.primary, embeddingVariants: embedding.variants)
         }
         return try analysis.turns.compactMap { turn in
             guard !turn.overlap, turn.speechConfidence >= 0.7, let embedding = turn.embedding,

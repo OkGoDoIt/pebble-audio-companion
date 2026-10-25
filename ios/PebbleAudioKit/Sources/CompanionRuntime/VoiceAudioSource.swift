@@ -19,7 +19,7 @@ public enum VoiceEnrollmentError: Error, LocalizedError, Equatable, Sendable {
         case .notEnoughSpeech: return "There is not enough clear speech. Try a longer, quieter passage."
         case .multipleSpeakers: return "More than one voice was detected. Choose a passage with only this person speaking."
         case .changedDuringProcessing: return "The recording or voice settings changed. Try again."
-        case .profileFull: return "This person already has 32 voice samples. Remove an older sample first."
+        case .profileFull: return "This voice profile is full. Remove an older saved sample before adding another."
         }
     }
 }

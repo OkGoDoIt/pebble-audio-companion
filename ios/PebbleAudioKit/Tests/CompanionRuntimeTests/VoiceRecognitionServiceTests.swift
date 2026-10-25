@@ -22,7 +22,18 @@ private actor VoiceTestAnalyzer: SpeakerSpeechAnalyzing {
     let resume = OneShot<Bool>()
     let shouldWait: Bool
     var calls = 0
-    init(wait: Bool = false) { shouldWait = wait }
+    var variantCalls = 0
+    let makeVariants: Bool
+    init(wait: Bool = false, variants: Bool = false) { shouldWait = wait; makeVariants = variants }
+    func confirmedEmbedding(for sample: SpeakerAudioSample) async throws -> SpeakerEmbedding? {
+        guard makeVariants else { return nil }
+        variantCalls += 1
+        #expect(sample.pcm16LE.count == 64_000)
+        #expect(sample.evidence.endSample - sample.evidence.startSample == 32_000)
+        #expect(sample.evidence.singleSpeaker && sample.evidence.speechOnly && !sample.evidence.containsDiscontinuity)
+        let raw = try VoiceRecognitionServiceTests.embedding()
+        return try SpeakerEmbedding(recipe: raw.recipe, values: [0, 1])
+    }
     func setEnabled(_ enabled: Bool) {}
     func release() {}
     func analyze(_ audio: SpeakerAnalysisAudio) async throws -> SpeakerAnalysis {
@@ -78,6 +89,50 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(await models.installs == 0)
         #expect(await service.processPending() == false)
         #expect(await analyzer.calls == 1)
+    }
+
+    @Test func encryptedCodecVariantImprovesCompatibilityWithoutInflatingIndependentSamples() async throws {
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Roger")
+        let analyzer = VoiceTestAnalyzer(variants: true)
+        let cipher = VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256))
+        let service = VoiceRecognitionService(database: db,
+            files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")), models: VoiceTestModels(),
+            analyzer: analyzer, policy: VoiceRecognitionService.initialPolicy,
+            recipeID: "test-recipe", protector: cipher)
+        let outcome = try await service.enrollPCM(personId: person.id,
+            pcm16LE: Data(repeating: 1, count: 128_000), sessionID: "one-human-confirmation")
+        let examples = try await service.examples()
+        #expect(outcome.examplesAdded == 2 && examples.count == 2)
+        #expect(await analyzer.variantCalls == 2)
+        #expect(Set(examples.map(\.confirmationID)).count == 1)
+        let store = VoiceIdentityStore(db: db)
+        try await service.setEnabled(true)
+        _ = try await store.prepareSource(segmentId: "query", revision: "query-digest")
+        try await store.enqueueJob(runID: "query", segmentId: "query", startMediaMs: 0,
+            endMediaMs: 2_000, recipeID: "test-recipe")
+        let job = try #require(try await store.claimNextJob())
+        let raw = try Self.embedding()
+        let query = try SpeakerEmbedding(recipe: raw.recipe, values: [0, 1])
+        let turn = SpeakerTurn(startSample: 0, endSample: 32_000, clusterID: "query", embedding: query,
+            overlap: false, speechConfidence: 0.95)
+        let analysis = SpeakerAnalysis(turns: [turn], recipeID: "test-recipe", elapsedMilliseconds: 0)
+        let matches = try VoiceRecognitionService.match(analysis, job: job, examples: examples,
+            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
+        #expect(matches.map(\.personId) == [person.id])
+        #expect(matches.first?.score == 1)
+        let oneCrop = try VoiceRecognitionService.match(analysis, job: job, examples: Array(examples.prefix(1)),
+            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
+        #expect(oneCrop.isEmpty, "A codec variant never satisfies the second independent-crop requirement")
+        let legacyExamples = try examples.map { source in
+            var source = source
+            source.embeddingJSON = try cipher.seal(JSONEncoder().encode(query))
+            return source
+        }
+        let legacy = try VoiceRecognitionService.match(analysis, job: job, examples: legacyExamples,
+            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
+        #expect(legacy.map(\.personId) == [person.id])
+
     }
 
     @Test func cancelDuringInferenceCannotSavePartialEnrollment() async throws {

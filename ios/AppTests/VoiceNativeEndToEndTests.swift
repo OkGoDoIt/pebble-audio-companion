@@ -39,9 +39,10 @@ private struct InstalledEvaluationVoiceModels: VoiceModelManaging {
             analyzer: analyzer, policy: VoiceRecognitionService.initialPolicy, recipeID: LocalSpeakerDiarizer.recipeID,
             protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
         let person = try await PeopleStore(db: db).createPerson(name: "Public speaker 6930")
-        let enrollment = try Data(contentsOf: base.appendingPathComponent("public-corpus/6930-75918-0001.pcm"))
+        let enrollment = try Data(contentsOf: base.appendingPathComponent("guided-public-continuous/6930-75918-0003.pcm"))
         let outcome = try await service.enrollPCM(personId: person.id, pcm16LE: enrollment,
             sessionID: "official-public-speaker-6930-chapter-75918")
+        #expect(enrollment.count == 20 * 16_000 * 2)
         #expect(outcome.examplesAdded >= 2)
         let examples = try await service.examples()
         #expect(examples.allSatisfy { !String(decoding: $0.embeddingJSON, as: UTF8.self).contains("values") })
