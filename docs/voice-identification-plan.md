@@ -1,22 +1,36 @@
 # Voice identification research and implementation plan
 
-Research checked **2026-10-25**. This is a proposed product and engineering design grounded in the current native iOS app and live primary-source documentation. No recognition model has yet been evaluated on our watch recordings; the model choice remains a measured decision. The implementation status below separates working foundations from the proposed recognition experience.
+Research checked **2026-10-25** against 34 primary sources. The native iOS implementation now uses a separate, optional voice identity layer. The research and longer-term product design below explain the choices and identify future extensions; they are not a claim that every proposed feature has shipped. Licensing evaluation is deferred at the user's direction.
 
-Build an **optional voice identity layer owned by Pebble Audio**, independent of transcription and AI. People should be able to recognize their own voice, remember other people, correct a passage, and improve earlier conversations without changing transcription providers. Manual naming must remain useful with recognition off. A wrong confident name is worse than an unnamed speaker.
-
-Start with pretrained speaker embeddings and confirmed examples, not a separate fine-tuning job for every person. Benchmark the existing Cactus embedding implementation, FluidAudio, and a hosted pyannote reference before choosing the production engine. Build the identity, correction, deletion, and undo model before allowing automatic historical updates.
+Build an **optional voice identity layer owned by Pebble Audio**, independent of transcription and AI. People can enroll their own voice, remember other people, correct an audio passage, and find voices in retained recordings without changing transcription providers. Manual naming remains useful with recognition off. A wrong confident name is worse than an unnamed speaker.
 
 ## Implementation status — October 25, 2026
 
-Licensing evaluation is deferred at the user's direction. It is not a blocker for this implementation work; the source survey below is retained as research history.
+### Implemented in native iOS
 
-The first implementation milestone adds stable people and explicit current-user association, audio-range manual corrections (including an explicit unnamed lock), a passage-scoped editor with visible save errors, duplicate-name-safe renaming, and shared attribution for transcript display, search, Muse, app intents and normal archive exports. Deleting or redacting audio removes its corrections. Explicit retranscription anchors old timed label assignments before a provider can replace its numbering. Independent OpenAI upload requests now have separate speaker-number namespaces.
+- **Actual local inference:** pinned CoreML Community-1 speech/overlap segmentation and Cactus WeSpeaker ResNet34-LM FP16 embeddings, with explicit unknown rejection. Approximately 18.34 MB of models download only when requested. Model files are revision/SHA checked, installed atomically and excluded from backup. The pretrained encoder stays fixed; confirmed examples update a person's profile without a per-person neural-network training job.
+- **People & voices:** default-off recognition, explicit current-user association, guided 20-second phone recording with microphone permission, listen/retry/save, voice profiles, grouped confirmed samples, removal/forget, and clear error/retry states. Existing watch passages are another enrollment route. Model preparation alone does not enable recognition; a successfully saved guided sample does. Voice material is encrypted with a device-bound key. Raw phone enrollment audio is discarded.
+- **Corrections:** a bounded audio preview, a clip picker for naming a voice anywhere in a conversation's stored audio (one recording section at a time, 1–30 seconds, works without a transcript), manually named clips listed as “Chosen by you” beside recognized ones, stable-person picker, duplicate-name-safe creation/rename, explicit “This is me,” and “Leave unnamed.” Remembering a voice is separate from naming and explains that it will check retained history. A rejected training sample does not discard the manual name. Existing manual choices always outrank predictions; predictions never become training examples.
+- **Honest timing:** one resolver serves transcript names, participants, search, Muse, app intents, new Ask requests, follow-up extraction and archive exports. Exact word-aligned names are used only with matching word evidence. With coarse timestamps the editor explicitly selects the full timed passage; it never guesses a displayed paragraph's acoustic boundaries. Independent audio matches have their own listen/correct UI when they cannot safely label words. All scopes respect conversation pieces, source-media clocks and gaps.
+- **Bounded processing:** new closed audio and explicitly selected past-week/all-retained history use a persistent queue and discovery cursor. Work is limited to small foreground passes with thermal/suspension cancellation and no new periodic background task. History can stop and resume across launches; durable Undo preserves later manual corrections. Disabling stops new recognition while keeping existing names and profiles.
+- **Deletion and race handling:** source deletion, redaction, correction of an example, forgotten profiles, model/key incompatibility and library wipe invalidate stale work. A missing device key disables recognition and clears derived private material while preserving ordinary people, manual names and audio. Temporary key lock does not destroy profiles.
+- **Archives:** names-only patches preserve longer retained transcripts when the phone has only a recent audio tail. Stable person IDs support rename/delete. Automatic attributions carry source-device provenance and generation, and durable person/run/all revocations prevent delayed sync from resurrecting removed automatic names. Manual names, transcript words, gaps and unaffected retained prefixes are preserved.
 
-A new isolated `SpeakerRecognition` module provides validated, recipe-versioned embeddings, confirmed examples, an unknown-rejecting matcher, and a held-out-session evaluation harness. Its Cactus adapter is disabled by default and requires an explicitly supplied model. It does not download weights, enroll people, or name app transcripts. Real native inference succeeded in an iOS simulator using public speech and pinned WeSpeaker FP16 weights; this verifies compatibility only. Reproduction and measured timings: [`ios/Tools/SpeakerEvaluation/README.md`](../ios/Tools/SpeakerEvaluation/README.md).
+### Evidence and release boundary
 
-**Still to build:** enrollment and voice-profile storage, consent/processing controls, model delivery, acoustic speech/overlap quality gates, calibrated thresholds on held-out watch recordings, phone resource measurements, diarization for ASR providers without speaker turns, historical suggestion/review/undo, sync of voice profiles and cross-device conflict handling, and the Android implementation. Manual corrections in this milestone do not train a model or automatically identify other recordings. A renamed person updates already-linked passages, which is different from finding new voice matches.
+Reproducible model evaluation, immutable model revisions, public corpus IDs, threshold selection, codec tests and timing measurements are in [`ios/Tools/SpeakerEvaluation/README.md`](../ios/Tools/SpeakerEvaluation/README.md), with machine-readable results beside it. The native end-to-end test uses the production service, real models, encrypted profiles and actual watch-codec data; it is opt-in and reports a skip when its external corpus is unavailable. It must not be counted as passing merely because ordinary unit tests pass.
 
-**Known limits:** existing server archives whose leading audio has expired are intentionally not replaced by their shorter local tail. Consequently, corrections to such retained server copies need a future archive patch/merge protocol. Untimed legacy names cannot be safely anchored when explicitly retranscribing; those names are cleared for that segment and logged for review, rather than assigned to a potentially different voice. Conversation cuts must continue to respect source audio ranges; a new ASR turn spanning conflicting corrections remains unnamed. Voice identification is not authorization for Muse actions.
+The immutable October 25 backup supplied 2,895 raw logs and 1,827 transcripts. We evaluated 40 bounded private crops from 10 segments locally. Those recordings establish decoding/inference behavior, **not identity accuracy**: the surviving legacy assignment is orphaned and supplies no reliable wearer ground truth. No person is silently enrolled from being loudest or most common, and no private recording was uploaded to a model vendor. Public labeled evaluation supplies the known/unknown comparisons. Phone-to-watch channel transfer and low-volume overlap are explicitly measured limitations, not inferred away from public verification scores.
+
+Current release evidence and exact commits are recorded in the workspace [implementation progress log](../../UPSTREAM_THIRD_PARTY_BACKGROUND_AUDIO_IMPLEMENTATION_PLAN.md). Simulator tests and a signed Release build do not establish an installed or battery-validated phone release. G17 must be connected for installation and the required ten-minute/next-morning resource checks.
+
+Production UI captures: [People & voices](mockups/voices/built/settings-phone.png), [guided setup](mockups/voices/built/setup-phone.png). These were captured by the separate `VoiceUITests` scheme while exercising the real app, local model installation, cancellation and persisted on/off state. Additional actual SwiftUI views were rendered at 375/820/1024 points and in dark/accessibility text, including [audio-only matches](mockups/voices/built/audio-matches-phone.png) and [large text](mockups/voices/built/audio-matches-large-text.png). The rendering harness is temporary; it is not a production screen or a substitute for device interaction tests.
+
+### Deliberate boundaries
+
+This delivery targets the active **native iOS companion**. Recognition works with local/cloud ASR routing, and without ASR, because it reads durable audio independently. It currently runs locally; no cloud recognition provider, voice-profile sync, live streaming identity, or Android voice-recognition UI is exposed. Ordinary archive sharing may include names under the existing archive setting, but never uploads voice embeddings. Profiles remain device-bound and require fresh enrollment after a device restore.
+
+The longer-term UX below also proposes one-step merge/split of people, contact links, candidate suggestions, saved-answer staleness badges and more detailed per-condition evaluation. These are not in the current UI. Users can select and reassign precisely timed passages, pick any clip of up to 30 seconds from a conversation's stored audio and name its speaker (even with no transcript), preserve separate people with the same display name, remove bad confirmed samples and undo automatic history runs. Automated recognition can abstain or be wrong, especially with distant/overlapping speech; it is never authorization for Muse actions. Expired source audio cannot be newly analyzed. Untimed legacy labels cannot safely survive a provider's replacement speaker numbering; those labels are cleared with a diagnostic rather than reassigned to a different voice.
 
 ## 1. Separate the three problems
 
@@ -80,7 +94,7 @@ pyannote currently advertises a €19/month Developer plan with usage credit; ex
 
 Local inference removes per-minute cloud billing but adds model distribution, phone energy, memory and thermal costs. Own-cloud inference adds queueing, compute utilization, maintenance, secrets and deletion responsibilities. The existing archive server is not evidence that it has suitable GPU capacity. Eagle's local inference still needs its license-network behavior tested in airplane mode and after cold start.
 
-## 3. Fit with the current app
+## 3. Original integration audit (before implementation)
 
 The active iOS implementation is native SwiftUI/Swift under `ios/`, with Apple Speech and selectable Parakeet (Cactus/Core AI), Soniox/OpenAI batch, and live providers. The old KMP speaker store is not a shared acoustic-identity system. Android needs the same semantic contract with an appropriate native adapter; a Swift-only implementation must not be reported as Android support.
 
@@ -103,7 +117,7 @@ Conversations are **pieces of segments**, and may split/join or change provision
 
 Existing Cactus privacy configuration disables telemetry/cloud handoff before initialization (`Local/CactusPrivacyConfiguration.swift`). Any new embedding model handle must pass through that same protection. Verify actual network behavior for every local runtime; an SDK label saying “on-device” is insufficient.
 
-## 4. User experience
+## 4. Product design and further UX extensions
 
 Follow the accepted [native redesign decisions](redesign/2026-08-30-direction-decisions.md): short flows, direct controls, no new top-level tab or mandatory setup ceremony.
 
@@ -318,7 +332,7 @@ Deleting a partial conversation silences only its pieces today. Recognition must
 
 The current live view already documents that phone playback can be re-recorded by the watch (`ios/App/Screens/Live/LiveTimeline.swift`). Enrollment preview is a real product contamination risk, not just an adversarial scenario.
 
-## 10. Evaluation and delivery sequence
+## 10. Evaluation methodology and original delivery sequence
 
 ### First benchmark
 
@@ -366,10 +380,10 @@ Visually inspect onboarding, recognition unavailable, mixed-speaker correction, 
 
 After every eventual phone deployment, follow the workspace battery gate: `scripts/phone-cost-report.sh` at ten minutes and next morning, with separate MetricKit/system crash review and running-build attribution. Compare workload-matched enabled/disabled runs; plugged-in observations alone cannot establish battery drain. A failing gate requires rollback/profiling under the existing deployment procedure.
 
-## 11. Decisions proposed now and questions left to evidence
+## 11. Design decisions and future comparisons
 
 Adopt now: optional recognition; app-owned persistent people; explicit self identity; provider-independent audio evidence; manual corrections outrank inference; separate naming from learning; unknown is valid; no training from guesses; reversible history updates; shared privacy model; no use as authentication.
 
 Decide from the benchmark: Cactus versus FluidAudio/default runtime, whether a cloud option materially improves the watch domain, required clean speech, conservative matching thresholds, model memory scheduling and feasible live latency. Validate the proposed recent-history default and correction scope with a usable prototype.
 
-The first concrete implementation should combine milestone A with the isolated benchmark adapter. Adding automatic names to the existing segment-label map before those foundations would multiply the current retranscription, same-name and self-identity defects.
+The implementation above combines stable people and audio-span decisions with an isolated, reproducible benchmark and the native runtime. Future engines must preserve these foundations rather than adding automatic names directly to provider speaker labels.
