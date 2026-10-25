@@ -457,7 +457,7 @@ public struct PipelinePass: Sendable {
         // Voice identification never inherits background ASR/AI permission, even on a
         // charger. Each foreground call is at most two short windows; no speech is uploaded.
         if try await stage(.recognizeVoices, fallback: false, heavy: true,
-                           when: steps.isForeground(), steps.recognizeVoices) {
+                           when: steps.isForeground() && !steps.isCatchUpActive(), steps.recognizeVoices) {
             processed = true; archiveChanged = true
         }
 

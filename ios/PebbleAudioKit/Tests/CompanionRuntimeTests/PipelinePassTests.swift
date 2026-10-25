@@ -59,6 +59,20 @@ import Testing
         )
     }
 
+    @Test func foregroundVoiceStageWaitsForAnAlreadyRunningBackgroundCatchUp() async throws {
+        let calls = CallRecorder(), stages = StageRecorder()
+        let pass = pass(clock: TestClock(), recorder: stages) { steps in
+            steps.isForeground = { true }
+            steps.isCatchUpActive = { true }
+            steps.drainQueue = { false } // The transcription processing mutex is held by the burst.
+            steps.recognizeVoices = { calls.record("voice-model"); return true }
+        }
+        _ = try await pass.run()
+        #expect(calls.calls.isEmpty)
+        // Stage observation records even skipped steps; the model closure must not run.
+        #expect(stages.stages.contains(.regroup))
+    }
+
     @Test func backgroundPassEarlyReturnsBeforeAnyHeavyWork() async throws {
         let clock = TestClock()
         let recorder = StageRecorder()

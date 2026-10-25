@@ -14,6 +14,7 @@ import Transcription
         let id = "local"
         private let lock = NSLock()
         private var count = 0
+        var afterTask: (@Sendable () async throws -> Void)?
         var transcribed: Int { lock.withLock { count } }
 
         func isAvailable() async -> Bool { true }
@@ -22,6 +23,7 @@ import Transcription
             pcmChunks: AsyncThrowingStream<Data, Error>, sampleRateHz: Int
         ) async throws -> TranscriptionResult {
             lock.withLock { count += 1 }
+            try await afterTask?()
             return TranscriptionResult(text: "hello", providerId: id, modelUsed: "model")
         }
     }
@@ -89,6 +91,49 @@ import Transcription
         let (service, provider) = try makeService(segments: 3)
         _ = try await service.drainQueue()
         #expect(provider.transcribed == 3)
+    }
+
+    @Test func aForegroundBudgetLeavesTheRemainderForTheNextPass() async throws {
+        let (service, provider) = try makeService(segments: 5)
+        #expect(try await service.drainQueue(maximumTasks: 2))
+        #expect(provider.transcribed == 2)
+        #expect(try await service.drainQueue())
+        #expect(provider.transcribed == 5)
+    }
+
+    @Test(arguments: [false, true])
+    func composedRuntimeYieldsASRBacklogToVoiceOnlyWhenEnabled(_ enabled: Bool) async throws {
+        let provider = CountingProvider()
+        let counts = CallRecorder()
+        let fixture = try RuntimeFixture(localTranscriptionProvider: provider,
+            withVoiceRecognition: true, observeStage: { stage in
+                if stage == .recognizeVoices { counts.record(String(provider.transcribed)) }
+            })
+        for index in 0..<3 { try fixture.queue.enqueue("queued-\(index)") }
+        try await VoiceIdentityStore(db: fixture.database).setMode(enabled ? .local : .off)
+        await fixture.runtime.start()
+        #expect(await waitUntil { !counts.calls.isEmpty })
+        await fixture.runtime.stop()
+        #expect(counts.calls.first == (enabled ? "1" : "3"))
+    }
+
+    @Test func enablingVoicesDuringASRDrainYieldsAtTheNextTaskBoundary() async throws {
+        let provider = CountingProvider()
+        let counts = CallRecorder()
+        let fixture = try RuntimeFixture(localTranscriptionProvider: provider,
+            withVoiceRecognition: true, observeStage: { stage in
+                if stage == .recognizeVoices { counts.record(String(provider.transcribed)) }
+            })
+        provider.afterTask = { [weak fixture] in
+            guard let fixture else { return }
+            try await VoiceIdentityStore(db: fixture.database).setMode(.local)
+            fixture.runtime.notifyVoiceConfigurationChanged()
+        }
+        for index in 0..<3 { try fixture.queue.enqueue("queued-\(index)") }
+        await fixture.runtime.start()
+        #expect(await waitUntil { !counts.calls.isEmpty })
+        await fixture.runtime.stop()
+        #expect(counts.calls.first == "1")
     }
 
     /// `shouldContinue` answers true `limit - 1` times, then false forever.

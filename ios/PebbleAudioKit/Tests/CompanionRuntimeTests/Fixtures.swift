@@ -7,6 +7,7 @@ import LiveAudio
 import Receiver
 import SearchKit
 import SegmentStore
+import SpeakerRecognition
 import StatusUI
 import Transcription
 import WireProtocol
@@ -465,6 +466,9 @@ final class RuntimeFixture: @unchecked Sendable {
         /// Wires the real `BackgroundUploadWiring` coordinator onto `uploads`. Off by default so
         /// the rest of the suite keeps its no-cloud runtime.
         withBackgroundUploads: Bool = false,
+        localTranscriptionProvider: (any TranscriptionProvider)? = nil,
+        withVoiceRecognition: Bool = false,
+        observeStage: @escaping @Sendable (PipelineStage) -> Void = { _ in },
         /// Audio the coordinator "reads" for a segment; nil means the segment has no audio.
         segmentAudio: @escaping @Sendable (String, CloudAudioFormat) async -> SegmentAudio? = {
             _, _ in SegmentAudio(wav: Data(repeating: 7, count: 64), sampleRateHz: 16_000)
@@ -501,7 +505,7 @@ final class RuntimeFixture: @unchecked Sendable {
         coverageTriggers = coverageRelay
 
         let router = TranscriptionModeRouter(
-            local: nil, remote: nil, mode: { settingsBox.transcriptionMode }
+            local: localTranscriptionProvider, remote: nil, mode: { settingsBox.transcriptionMode }
         )
         let store = self.store
         let processor = TranscriptionProcessor(
@@ -666,9 +670,12 @@ final class RuntimeFixture: @unchecked Sendable {
                 deferredDeletes: deferredDeletes,
                 startup: startup,
                 snapshots: snapshots,
-                foreground: foreground
+                foreground: foreground,
+                voiceRecognition: withVoiceRecognition ? VoiceRecognitionService(database: database,
+                    files: SegmentFileReader(root: root),
+                    models: SpeakerModelStore(root: root.appendingPathComponent("unused-voice-models"))) : nil
             ),
-            onStage: { stages.record($0) }
+            onStage: { stages.record($0); observeStage($0) }
         )
     }
 

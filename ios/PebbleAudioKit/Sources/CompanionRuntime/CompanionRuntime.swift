@@ -756,12 +756,24 @@ public actor CompanionRuntime {
             // drain only carries on while the charger policy that admitted the pass still
             // holds — unplugging mid-backlog ends it at the next segment, not at the end.
             drainQueue: {
-                try await env.transcription.drainQueue(
+                // Give foreground acoustic identity a turn even behind a large ASR backlog.
+                // This reads only the setting; it never loads or runs either voice model.
+                let voiceEnabled: Bool
+                if env.voiceRecognition != nil, foreground.value {
+                    voiceEnabled = (try? await VoiceIdentityStore(db: env.database).configuration().mode) == .local
+                } else { voiceEnabled = false }
+                return try await env.transcription.drainQueue(
+                    maximumTasks: voiceEnabled ? 1 : nil,
                     shouldContinue: {
-                        foreground.value
-                            || BackgroundWorkPolicy.decide(
-                                env.settings.backgroundCatchUp, foreground.devicePower
-                            ).isRun
+                        if foreground.value {
+                            // A settings wake cannot interrupt a native ASR call. Re-read at
+                            // its boundary so enabling voices mid-drain yields the next turn.
+                            guard env.voiceRecognition != nil else { return true }
+                            return (try? await VoiceIdentityStore(db: env.database).configuration().mode) != .local
+                        }
+                        return BackgroundWorkPolicy.decide(
+                            env.settings.backgroundCatchUp, foreground.devicePower
+                        ).isRun
                     },
                     isForeground: { foreground.value }
                 ) {
@@ -777,7 +789,7 @@ public actor CompanionRuntime {
             coldStorageIfDue: { await env.coldStorage?.sweepIfDue() ?? false },
             classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
             recognizeVoices: {
-                guard foreground.value, let voice = env.voiceRecognition else { return false }
+                guard foreground.value, !foreground.catchUpActive, let voice = env.voiceRecognition else { return false }
                 let didWork = await voice.foregroundPass(segmentStore: env.store)
                 let segments = await voice.takeChangedSegmentIds()
                 var conversations = Set<String>()

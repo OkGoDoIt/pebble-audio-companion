@@ -192,8 +192,8 @@ public actor TranscriptionService {
             closed.filter { !$0.isFullyTranscribed }.map(\.segmentId))
     }
 
-    /// Drains the queue to exhaustion under the processing mutex. Returns true when at least one
-    /// task advanced. `onAdvance` fires per task so diagnostics stay live during a long drain,
+    /// Drains under the processing mutex, optionally yielding after `maximumTasks`. Returns true
+    /// when at least one task advanced. `onAdvance` fires per task so diagnostics stay live during a long drain,
     /// and `shouldContinue` is asked before each task after the first: a drain that was allowed
     /// to start (the phone was on a charger) stops at the next task boundary once it no longer
     /// is. On 2026-09-18 a 21-segment local backlog kept a pass at 22 CPU-s/min for eight
@@ -201,7 +201,8 @@ public actor TranscriptionService {
     /// of the pass.
     @discardableResult
     public func drainQueue(
-        shouldContinue: @Sendable () -> Bool = { true },
+        maximumTasks: Int? = nil,
+        shouldContinue: @Sendable () async -> Bool = { true },
         isForeground: @Sendable () -> Bool = { false },
         onAdvance: @Sendable () async -> Void = {}
     ) async throws -> Bool {
@@ -209,13 +210,14 @@ public actor TranscriptionService {
         draining = true
         defer { draining = false }
         resetOrphanedRunningTasks()
-        var processed = false
-        while try await nextTaskAfterCheckingTheHold(foreground: isForeground()) != nil {
-            processed = true
+        var processed = 0
+        while processed < max(0, maximumTasks ?? Int.max) {
+            guard try await nextTaskAfterCheckingTheHold(foreground: isForeground()) != nil else { break }
+            processed += 1
             await onAdvance()
-            guard shouldContinue() else { break }
+            guard await shouldContinue() else { break }
         }
-        return processed
+        return processed > 0
     }
 
     /// Advances at most `maxSegments` tasks (the BGProcessing / WorkManager catch-up shape).
