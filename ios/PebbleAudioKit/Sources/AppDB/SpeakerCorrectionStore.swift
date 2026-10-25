@@ -37,14 +37,36 @@ public struct SpeakerIdentitySnapshot: Equatable, Sendable {
     public var revision: Int64
     public var currentUserPersonId: String?
     public var corrections: [SpeakerCorrection]
+    public var automaticAttributions: [VoiceResolvedAttribution]
 
     public init(
         revision: Int64 = 0, currentUserPersonId: String? = nil,
-        corrections: [SpeakerCorrection] = []
+        corrections: [SpeakerCorrection] = [], automaticAttributions: [VoiceResolvedAttribution] = []
     ) {
         self.revision = revision
         self.currentUserPersonId = currentUserPersonId
         self.corrections = corrections
+        self.automaticAttributions = automaticAttributions
+    }
+
+    /// Suggestions never become asserted names. Conflicting or incomplete automatic coverage
+    /// abstains, and any intersecting manual decision takes precedence over automatic work.
+    public func resolveAutomatic(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) -> VoiceAutomaticResolution? {
+        guard startMediaMs >= 0, endMediaMs > startMediaMs,
+              resolve(segmentId: segmentId, startMediaMs: startMediaMs, endMediaMs: endMediaMs) == nil else { return nil }
+        let rows = automaticAttributions.filter {
+            $0.attribution.segmentId == segmentId && $0.attribution.disposition == .recognized
+                && $0.attribution.startMediaMs < endMediaMs && $0.attribution.endMediaMs > startMediaMs
+        }.sorted { $0.attribution.startMediaMs < $1.attribution.startMediaMs }
+        guard var first = rows.first else { return nil }
+        var covered = startMediaMs
+        for row in rows {
+            guard row.attribution.startMediaMs <= covered, row.person.id == first.person.id else { return .partial }
+            covered = max(covered, row.attribution.endMediaMs)
+        }
+        guard covered >= endMediaMs else { return .partial }
+        first.person.isCurrentUser = first.person.id == currentUserPersonId
+        return .named(first)
     }
 
     /// Nil means no manual evidence intersects this interval, so legacy naming may be used.
@@ -81,6 +103,24 @@ public struct SpeakerCorrectionStore: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
+    /// Creates/reuses the explicit self person and assigns this passage in one transaction.
+    @discardableResult public func assignCurrentUser(
+        segmentId: String, startMediaMs: Int64, endMediaMs: Int64, displayName: String
+    ) async throws -> Person {
+        try Self.validate(segmentId: segmentId, start: startMediaMs, end: endMediaMs)
+        return try await db.writer.write { d in
+            let person = try PeopleStore.ensureCurrentUser(d, displayName: displayName)
+            let snapshot = try Self.fetchSnapshot(d, segmentIds: [segmentId])
+            if case .named(let existing) = snapshot.resolve(segmentId: segmentId, startMediaMs: startMediaMs, endMediaMs: endMediaMs),
+               existing.id == person.id { return person }
+            try Self.invalidateContradictedExamples(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs, personId: person.id)
+            try Self.removeRange(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
+            try Self.insert(d, id: UUID().uuidString.lowercased(), segmentId: segmentId, start: startMediaMs,
+                            end: endMediaMs, personId: person.id, createdAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+            return person
+        }
+    }
+
     /// Replaces just the selected audio, preserving the parts of older decisions outside it.
     /// This is a manual naming operation, not voice enrollment. `makeCurrentUser` and the
     /// correction commit together, so a failed assignment cannot change who "You" means.
@@ -99,6 +139,7 @@ public struct SpeakerCorrectionStore: Sendable {
             case .unnamed where personId == nil: return
             default: break
             }
+            try Self.invalidateContradictedExamples(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs, personId: personId)
             try Self.removeRange(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
             try Self.insert(d, id: UUID().uuidString.lowercased(), segmentId: segmentId,
                             start: startMediaMs, end: endMediaMs, personId: personId, createdAtMs: nowMs)
@@ -155,8 +196,15 @@ public struct SpeakerCorrectionStore: Sendable {
                 SELECT DISTINCT conversationId FROM conversation_segments
                 WHERE segmentId = ? AND COALESCE(startMediaMs, 0) < ?
                     AND (endMediaMs IS NULL OR endMediaMs > ?)
+                UNION
+                SELECT cs.conversationId FROM conversation_segments cs
+                JOIN voice_auto_attributions va ON va.segmentId = cs.segmentId
+                WHERE va.personId IN (SELECT personId FROM voice_examples
+                    WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?)
+                    AND COALESCE(cs.startMediaMs, 0) < va.endMediaMs
+                    AND (cs.endMediaMs IS NULL OR cs.endMediaMs > va.startMediaMs)
                 ORDER BY conversationId
-                """, arguments: [segmentId, endMediaMs, startMediaMs])
+                """, arguments: [segmentId, endMediaMs, startMediaMs, segmentId, endMediaMs, startMediaMs])
         }
     }
 
@@ -180,6 +228,24 @@ public struct SpeakerCorrectionStore: Sendable {
             INSERT INTO speaker_corrections (id, segmentId, startMediaMs, endMediaMs, personId, createdAtMs)
             VALUES (?, ?, ?, ?, ?, ?)
             """, arguments: [id, segmentId, start, end, personId, createdAtMs])
+    }
+
+    /// A later human correction must not leave a contradictory crop in the training corpus.
+    /// Merely naming speech never enrolls it; this only revokes incompatible earlier examples.
+    private static func invalidateContradictedExamples(
+        _ d: Database, segmentId: String, start: Int64, end: Int64, personId: String?
+    ) throws {
+        guard try d.tableExists("voice_examples") else { return }
+        let people = try String.fetchAll(d, sql: """
+            SELECT DISTINCT personId FROM voice_examples WHERE segmentId = ? AND startMediaMs < ?
+                AND endMediaMs > ? AND personId IS NOT ?
+            """, arguments: [segmentId, end, start, personId])
+        try d.execute(sql: """
+            DELETE FROM voice_examples WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ? AND personId IS NOT ?
+            """, arguments: [segmentId, end, start, personId])
+        for person in people {
+            try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE personId = ?", arguments: [person])
+        }
     }
 
     private static func removeRange(_ d: Database, segmentId: String, start: Int64, end: Int64) throws {
@@ -209,6 +275,7 @@ public struct SpeakerCorrectionStore: Sendable {
         let state = try Row.fetchOne(d, sql: "SELECT * FROM speaker_identity_state WHERE id = 1")
         let currentUser: String? = state?["currentUserPersonId"]
         var corrections: [SpeakerCorrection] = []
+        var automatic: [VoiceResolvedAttribution] = []
         // Bound SQLite's variables for large exports/backfills. No audio or transcript is read.
         let unique = Array(Set(segmentIds)).sorted()
         for offset in stride(from: 0, to: unique.count, by: 400) {
@@ -228,9 +295,11 @@ public struct SpeakerCorrectionStore: Sendable {
                                              startMediaMs: row["startMediaMs"], endMediaMs: row["endMediaMs"],
                                              person: person, createdAtMs: row["createdAtMs"])
                 }
+            automatic += try VoiceIdentityStore.fetchAutomatic(d, segmentIds: batch, currentUserPersonId: currentUser)
         }
         return SpeakerIdentitySnapshot(revision: state?["revision"] ?? 0,
-                                       currentUserPersonId: currentUser, corrections: corrections)
+                                       currentUserPersonId: currentUser, corrections: corrections,
+                                       automaticAttributions: automatic)
     }
 
     // MARK: - Additive schema and transactional change propagation
@@ -273,7 +342,7 @@ public struct SpeakerCorrectionStore: Sendable {
                     statements: [revision] + markPerson("OLD.currentUserPersonId") + markPerson("NEW.currentUserPersonId"))
     }
 
-    private static func trigger(
+    static func trigger(
         _ d: Database, name: String, event: String, table: String,
         when condition: String? = nil, statements: [String]
     ) throws {
@@ -286,7 +355,7 @@ public struct SpeakerCorrectionStore: Sendable {
             """)
     }
 
-    private static func markRange(_ row: String) -> [String] {
+    static func markRange(_ row: String) -> [String] {
         ["conversation", "transcript"].map { kind in
             ArchiveOutbox.enqueueSQL(kind: "'\(kind)'", id: "cs.conversationId", op: "'upsert'",
                 from: "conversation_segments cs",

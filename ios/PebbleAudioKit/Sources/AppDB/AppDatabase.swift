@@ -887,6 +887,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("speaker-identity-foundation-v1") { db in
             try SpeakerCorrectionStore.installSchema(db)
         }
+        migrator.registerMigration("voice-recognition-v1") { db in
+            try VoiceIdentityStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

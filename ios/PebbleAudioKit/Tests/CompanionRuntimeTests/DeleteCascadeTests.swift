@@ -293,6 +293,13 @@ import Transcription
                                   personId: person.id, makeCurrentUser: true)
         try await corrections.set(segmentId: "also-gone", startMediaMs: 0, endMediaMs: 100,
                                   personId: nil)
+        let voices = VoiceIdentityStore(db: fixture.database)
+        _ = try await voices.prepareSource(segmentId: "enrollment:phone", revision: "phone-pcm-digest")
+        let context = try #require(try await voices.workContext(segmentId: "enrollment:phone"))
+        #expect(try await voices.commitExample(VoiceConfirmedExample(
+            personId: person.id, confirmationID: "human", sessionID: "phone", segmentId: "enrollment:phone",
+            startMediaMs: 0, endMediaMs: 2_000, sourceRevision: "phone-pcm-digest", recipeID: "recipe",
+            recipeJSON: Data("{}".utf8), embeddingJSON: Data("[1,0]".utf8), qualityJSON: Data("{}".utf8)), token: context.token))
 
         #expect(await fixture.runtime.deleteAllRecordings() == 0)
 
@@ -300,6 +307,8 @@ import Transcription
         #expect(snapshot.corrections.isEmpty)
         #expect(snapshot.currentUserPersonId == person.id)
         #expect(try await people.listPeople().map(\.person.id) == [person.id])
+        #expect(try await voices.examples().isEmpty)
+        #expect(try await voices.workContext(segmentId: "enrollment:phone") == nil)
     }
 
     /// The regression the fix above introduced: "Delete All Recordings" closed the STORE's open

@@ -1670,6 +1670,24 @@ public struct PeopleStore: Sendable {
     public let db: AppDatabase
     public init(db: AppDatabase) { self.db = db }
 
+    /// Called only after the person chooses to set up their own voice. Concurrent setup
+    /// screens reuse one explicit self association; display names are never searched.
+    public func ensureCurrentUser(displayName: String) async throws -> Person {
+        try await db.writer.write { try Self.ensureCurrentUser($0, displayName: displayName) }
+    }
+
+    static func ensureCurrentUser(_ d: Database, displayName: String) throws -> Person {
+        if let row = try Row.fetchOne(d, sql: """
+            SELECT p.* FROM people p JOIN speaker_identity_state s ON s.currentUserPersonId = p.id WHERE s.id = 1
+            """) { return Person(id: row["id"], name: row["name"], isCurrentUser: true) }
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw VoiceIdentityError.invalidRecord }
+        let person = Person(id: UUID().uuidString.lowercased(), name: name, isCurrentUser: true)
+        try d.execute(sql: "INSERT INTO people(id,name) VALUES (?,?)", arguments: [person.id, person.name])
+        try SpeakerCorrectionStore.setCurrentUser(d, personId: person.id)
+        return person
+    }
+
     @discardableResult
     public func createPerson(name: String) async throws -> Person {
         let person = Person(id: UUID().uuidString.lowercased(), name: name)
@@ -1729,6 +1747,7 @@ public struct PeopleStore: Sendable {
                             AS isCurrentUser,
                         (SELECT COUNT(*) FROM speaker_assignments sa WHERE sa.personId = p.id)
                             + (SELECT COUNT(*) FROM speaker_corrections sc WHERE sc.personId = p.id)
+                            + (SELECT COUNT(*) FROM voice_auto_attributions va WHERE va.personId = p.id AND va.disposition = 'recognized')
                             AS count,
                         IFNULL((SELECT MAX(rowid) FROM speaker_assignments sa2
                                 WHERE sa2.personId = p.id), -1) AS lastUse
@@ -1810,9 +1829,15 @@ public struct PeopleStore: Sendable {
                     WHERE sc.personId = ?
                         AND sc.endMediaMs > COALESCE(cs.startMediaMs, 0)
                         AND (cs.endMediaMs IS NULL OR sc.startMediaMs < cs.endMediaMs)
+                    UNION
+                    SELECT cs.conversationId FROM conversation_segments cs
+                    JOIN voice_auto_attributions va ON va.segmentId = cs.segmentId
+                    WHERE va.personId = ? AND va.disposition = 'recognized'
+                        AND va.endMediaMs > COALESCE(cs.startMediaMs, 0)
+                        AND (cs.endMediaMs IS NULL OR va.startMediaMs < cs.endMediaMs)
                     ORDER BY conversationId
                     """,
-                arguments: [personId, personId])
+                arguments: [personId, personId, personId])
         }
     }
 
