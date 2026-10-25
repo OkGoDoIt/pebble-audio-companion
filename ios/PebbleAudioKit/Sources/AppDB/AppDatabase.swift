@@ -889,6 +889,7 @@ public struct AppDatabase: Sendable {
         }
         migrator.registerMigration("voice-recognition-v1") { db in
             try VoiceIdentityStore.installSchema(db)
+            try VoiceHistoryPlanStore.installSchema(db)
         }
         try migrator.migrate(writer)
     }

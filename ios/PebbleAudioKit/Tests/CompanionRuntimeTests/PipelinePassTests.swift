@@ -43,6 +43,7 @@ import Testing
                 // Grouping precedes the AI layer and never waits on it — the whole UI reads the
                 // grouped tables.
                 .regroup,
+                .recognizeVoices,
                 .judgeAudio,
                 .enrich,
                 .donate,
@@ -487,7 +488,7 @@ final class Recorder: @unchecked Sendable {
         #expect(
             recorder.stages == [
                 .reconsiderDisabled, .enqueueClosedSegments, .drainQueue, .retention, .coldStorage,
-                .classifyAudio, .regroup, .judgeAudio,
+                .classifyAudio, .regroup, .recognizeVoices, .judgeAudio,
                 .enrich, .donate, .followUps, .recap, .briefs, .liveLocal, .liveCloudPrune, .wavExport,
                 .idleModelRelease,
             ]

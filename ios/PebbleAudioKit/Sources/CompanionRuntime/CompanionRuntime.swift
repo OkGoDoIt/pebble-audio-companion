@@ -42,6 +42,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
     /// What recorded audio holds (conversation or not). Optional so a runtime built without it
     /// behaves exactly as before: nothing is classified and nothing is masked.
     public var audioContent: AudioContentService?
+    /// Optional local speaker matching; independent of transcription and disabled by default.
+    public var voiceRecognition: VoiceRecognitionService?
     /// The iCloud Drive cold tier. Optional so a runtime built without it behaves exactly as
     /// before: nothing leaves the phone.
     public var coldStorage: ColdAudioTier?
@@ -70,7 +72,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
         log: RuntimeLog = .silent,
         audioContent: AudioContentService? = nil,
         coldStorage: ColdAudioTier? = nil,
-        archiveSync: ArchiveSyncService? = nil
+        archiveSync: ArchiveSyncService? = nil,
+        voiceRecognition: VoiceRecognitionService? = nil
     ) {
         self.database = database
         self.store = store
@@ -93,6 +96,7 @@ public struct CompanionRuntimeEnvironment: Sendable {
         self.audioContent = audioContent
         self.coldStorage = coldStorage
         self.archiveSync = archiveSync
+        self.voiceRecognition = voiceRecognition
     }
 }
 
@@ -210,6 +214,8 @@ public actor CompanionRuntime {
         }
     }
 
+    public nonisolated func notifyVoiceConfigurationChanged() { wake.signal() }
+
     private func noteBriefsOwed() {
         passMemory?.noteBriefsOwed(atMs: clock.nowMs)
     }
@@ -301,6 +307,8 @@ public actor CompanionRuntime {
         // the first pipeline pass must not immediately repeat it — this is bookkeeping, not work.
         await retention.noteSweptElsewhere()
         await environment.transcription.startUploader()
+        do { try await environment.voiceRecognition?.reconcileProfileProtection() }
+        catch { log.failure("voice profile access", error) }
         // No `environment.recap.start()`: the recap engine's own 15-minute loop regenerated and
         // condensed the whole day with none of the pass's rules — on battery, in Low Power Mode,
         // with "Only When Open", and inside thermal holds (the flight recorder has it at 09-21
@@ -380,6 +388,7 @@ public actor CompanionRuntime {
         await environment.recap.stop()
         await environment.live.stop()
         await environment.transcription.stopUploader()
+        await environment.voiceRecognition?.release()
         await environment.receiver.stop()
     }
 
@@ -389,6 +398,7 @@ public actor CompanionRuntime {
         guard foreground.value != value else { return }
         foreground.value = value
         await environment.live.setForeground(value)
+        await environment.voiceRecognition?.setForeground(value)
         if let archiveSync = environment.archiveSync {
             await archiveSync.setForeground(value)
             // Background entry hands what changed while the app was open to the background
@@ -429,6 +439,7 @@ public actor CompanionRuntime {
     /// System memory warning.
     public func releaseLocalModel(reason: String) async {
         await environment.transcription.releaseModel(reason)
+        await environment.voiceRecognition?.release()
     }
 
     // --- user-facing operations -------------------------------------------------------------------
@@ -728,7 +739,10 @@ public actor CompanionRuntime {
             isCatchUpActive: { foreground.catchUpActive },
             // The pass only ever releases on its way into the background: the soft release, so
             // a charger pass that just lost its charger lets the segment in flight finish.
-            releaseModel: { reason in await env.transcription.releaseModelWhenIdle(reason) },
+            releaseModel: { reason in
+                await env.transcription.releaseModelWhenIdle(reason)
+                await env.voiceRecognition?.release()
+            },
             reconsiderDisabled: {
                 try await env.transcription.reconsiderDisabled(foreground: foreground.value)
             },
@@ -758,6 +772,19 @@ public actor CompanionRuntime {
             enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
             coldStorageIfDue: { await env.coldStorage?.sweepIfDue() ?? false },
             classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
+            recognizeVoices: {
+                guard foreground.value, let voice = env.voiceRecognition else { return false }
+                let didWork = await voice.foregroundPass(segmentStore: env.store)
+                let segments = await voice.takeChangedSegmentIds()
+                var conversations = Set<String>()
+                let identity = SpeakerCorrectionStore(db: env.database)
+                for segment in segments {
+                    conversations.formUnion((try? await identity.affectedConversationIds(
+                        segmentId: segment, startMediaMs: 0, endMediaMs: Int64.max)) ?? [])
+                }
+                if !conversations.isEmpty { await env.enrichment.donate(conversationIds: Array(conversations)) }
+                return didWork || !segments.isEmpty
+            },
             // The backlog of older segments is read only on a charger; today's any time.
             judgeAudio: {
                 try await env.audioContent?.judgePass(

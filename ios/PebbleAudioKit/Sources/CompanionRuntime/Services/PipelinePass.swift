@@ -24,6 +24,8 @@ public enum PipelineStage: String, Sendable, Equatable, CaseIterable {
     /// whose speech evidence and the AI stages behind it read the result. See
     /// `AudioContentService`.
     case classifyAudio
+    /// Bounded acoustic identity work, foreground only, independent of ASR availability.
+    case recognizeVoices
     /// Rebuild the conversation grouping. Cheap, local, AI-free — and its OWN stage, because
     /// the entire UI reads the grouped tables and must never wait on the AI layer to see them.
     case regroup
@@ -68,6 +70,7 @@ public struct PipelineSteps: Sendable {
     /// Classifies segments whose transcripts changed. Returns true when it wrote anything, so
     /// a backfill comes straight back for the rest.
     public var classifyAudio: @Sendable () async throws -> Bool
+    public var recognizeVoices: @Sendable () async throws -> Bool
     /// One AI-reading pass (`AudioContentService.judgePass`). True when it saved a reading.
     public var judgeAudio: @Sendable () async throws -> Bool
     /// Rebuilds the conversation grouping the whole UI reads. Returns whether its STRUCTURE
@@ -138,6 +141,7 @@ public struct PipelineSteps: Sendable {
         enforceRetentionIfDue: @escaping @Sendable () async -> Bool = { false },
         coldStorageIfDue: @escaping @Sendable () async -> Bool = { false },
         classifyAudio: @escaping @Sendable () async throws -> Bool = { false },
+        recognizeVoices: @escaping @Sendable () async throws -> Bool = { false },
         judgeAudio: @escaping @Sendable () async throws -> Bool = { false },
         regroup: @escaping @Sendable () async throws -> Bool = { true },
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
@@ -169,6 +173,7 @@ public struct PipelineSteps: Sendable {
         self.enforceRetentionIfDue = enforceRetentionIfDue
         self.coldStorageIfDue = coldStorageIfDue
         self.classifyAudio = classifyAudio
+        self.recognizeVoices = recognizeVoices
         self.judgeAudio = judgeAudio
         self.regroup = regroup
         self.enrich = enrich
@@ -448,6 +453,13 @@ public struct PipelinePass: Sendable {
         //    silences the stages behind it.
         let groupingChanged = try await stage(.regroup, fallback: true, steps.regroup)
         if groupingChanged { archiveChanged = true }
+
+        // Voice identification never inherits background ASR/AI permission, even on a
+        // charger. Each foreground call is at most two short windows; no speech is uploaded.
+        if try await stage(.recognizeVoices, fallback: false, heavy: true,
+                           when: steps.isForeground(), steps.recognizeVoices) {
+            processed = true; archiveChanged = true
+        }
 
         // 7-10 run only when there is something new for them to see. In the FOREGROUND that is
         //      always: the person is looking, and the live title and Today card are expected to
