@@ -198,4 +198,48 @@ struct SpeakerNamesPerSegmentTests {
         #expect(result.transcript.compactMap { if case .turn(let turn) = $0 { turn.personId } else { nil } }.isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func correctingAudioOnlyMatchRemainsEditableIncludingLeaveUnnamed(coarseTranscript: Bool) async throws {
+        let database = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: database).createPerson(name: "Alice")
+        let corrections = SpeakerCorrectionStore(db: database)
+        let members = [ConversationMember(segmentId: "s", startMediaMs: 10_000, endMediaMs: 30_000)]
+        let transcripts = coarseTranscript ? ["s": Library.transcript("s", [
+            Library.turn("A whole sentence with coarse timing.", 10_000, 29_000, "")])] : [:]
+        try await corrections.set(segmentId: "s", startMediaMs: 12_000, endMediaMs: 16_000, personId: person.id)
+        var identity = try await corrections.snapshot(segmentIds: ["s"])
+        var result = await LiveWorld.walkMembers(members, metas: ["s": Library.meta("s", index: 0)],
+            transcripts: transcripts, assignments: [], identities: identity)
+        let named = try #require(result.voiceMatches.first)
+        #expect(result.voiceMatches.count == 1)
+        #expect(named.person?.id == person.id && !named.isAutomatic)
+        #expect(named.correction.canIdentifyPassage && !named.correction.isVoiceMatch)
+        #expect(named.playbackStartMs == 2_000 && named.playbackEndMs == 6_000)
+
+        try await corrections.set(segmentId: "s", startMediaMs: 12_000, endMediaMs: 16_000, personId: nil)
+        identity = try await corrections.snapshot(segmentIds: ["s"])
+        result = await LiveWorld.walkMembers(members, metas: ["s": Library.meta("s", index: 0)],
+            transcripts: transcripts, assignments: [], identities: identity)
+        let unnamed = try #require(result.voiceMatches.first)
+        #expect(result.voiceMatches.count == 1)
+        #expect(unnamed.person == nil && !unnamed.isAutomatic)
+        #expect(unnamed.name == "Unnamed voice")
+        #expect(unnamed.correction.canIdentifyPassage)
+        #expect(unnamed.correction.sourceStartMs == 12_000 && unnamed.correction.sourceEndMs == 16_000)
+    }
+
+    @Test func unnamedAudioCanBeSelectedWithoutTranscriptWithinItsOwnedPiece() async throws {
+        let result = await LiveWorld.walkMembers([
+            ConversationMember(segmentId: "s", startMediaMs: 10_000, endMediaMs: 30_000)],
+            metas: ["s": Library.meta("s", index: 0)], transcripts: [:], assignments: [])
+        let piece = try #require(result.voiceSelectionPieces.first)
+        #expect(piece.sourceStartMs == 10_000 && piece.sourceEndMs == 30_000)
+        #expect(piece.playbackStartMs == 0 && piece.playbackEndMs == 20_000)
+        let clip = try #require(piece.clip(atPlaybackMs: 15_000, durationMs: 30_000))
+        #expect(clip.sourceStartMs == 25_000 && clip.sourceEndMs == 30_000)
+        #expect(clip.mediaOffsetMs == 15_000 && clip.mediaEndMs == 20_000)
+        #expect(clip.canRememberVoice && clip.isAudioOnly)
+        #expect(piece.clip(atPlaybackMs: 0, durationMs: 0) == nil)
+    }
+
 }

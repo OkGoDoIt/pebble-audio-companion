@@ -28,6 +28,8 @@ struct ConversationScreen: View {
     /// a fetch is a thing this screen asked for, and its outcome is shown where it was asked.
     @State private var fetchingAudio = false
     @State private var fetchError: String?
+    @State private var selectingVoiceClip = false
+    @State private var pendingVoiceClip: TranscriptTurn?
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
@@ -89,12 +91,26 @@ struct ConversationScreen: View {
         .conversationEntityAwareness(id: conversationId)
         .sheet(item: $model.renameTurn, onDismiss: { player.pause() }) { turn in
             SpeakerRenameSheet(conversationId: conversationId, turn: turn,
-                               onPlay: (turn.identificationMediaOffsetMs ?? turn.mediaOffsetMs).map { offset in {
+                               onPlay: model.display?.audioAvailability == .onPhone && model.display?.player != nil
+                                ? (turn.identificationMediaOffsetMs ?? turn.mediaOffsetMs).map { offset in {
                                    if let end = turn.identificationMediaEndMs ?? turn.mediaEndMs { player.play(fromMs: offset, untilMs: end) }
                                    else { player.play(fromMs: offset) }
-                               } }, onStop: { player.pause() }) {
+                               } } : nil, onStop: { player.pause() }) {
                 Task { await load() }
             }
+        }
+        .sheet(isPresented: $selectingVoiceClip, onDismiss: {
+            player.pause()
+            if let clip = pendingVoiceClip { pendingVoiceClip = nil; model.renameTurn = clip }
+        }) {
+            VoiceClipSelectionSheet(pieces: model.display?.voiceSelectionPieces ?? [],
+                initialPlaybackMs: player.positionMs, onPlay: { turn in
+                    if let start = turn.mediaOffsetMs, let end = turn.mediaEndMs {
+                        player.play(fromMs: start, untilMs: end)
+                    }
+                }, onStop: { player.pause() }, onChoose: { turn in
+                    player.pause(); pendingVoiceClip = turn; selectingVoiceClip = false
+                })
         }
         .sheet(isPresented: $model.showTagEditor, onDismiss: { Task { await load() } }) {
             TagEditorSheet(conversationId: conversationId)
@@ -242,6 +258,12 @@ struct ConversationScreen: View {
     private func blocks(_ display: ConversationDisplay) -> some View {
         lifecycleCard(display.lifecycle)
             .padding(.horizontal, Tokens.screenMargin)
+        if display.player != nil, display.audioAvailability == .onPhone, !display.voiceSelectionPieces.isEmpty {
+            Button { player.pause(); selectingVoiceClip = true } label: {
+                Label("Name a voice in this recording", systemImage: "person.wave.2")
+                    .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.foregroundStyle(Tokens.tint).padding(.horizontal, Tokens.screenMargin)
+        }
         if !display.voiceMatches.isEmpty {
             ConversationVoiceMatchesCard(matches: display.voiceMatches,
                 canPlay: display.player != nil && display.audioAvailability == .onPhone,

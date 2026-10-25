@@ -298,6 +298,7 @@ struct ConversationDisplay: Equatable {
     var endedAt: Date?
     /// Matched audio whose exact words cannot safely be attributed in the transcript.
     var voiceMatches: [ConversationVoiceMatch] = []
+    var voiceSelectionPieces: [ConversationAudioPiece] = []
 
     var shareText: String {
         var lines = [title, metaLine]
@@ -309,25 +310,48 @@ struct ConversationDisplay: Equatable {
     }
 }
 
+/// A closed stored-audio piece. Selection never crosses into another conversation or segment.
+struct ConversationAudioPiece: Equatable, Identifiable {
+    var id: String
+    var segmentId: String
+    var sourceStartMs: Int64
+    var sourceEndMs: Int64
+    var playbackStartMs: Int64
+    var playbackEndMs: Int64 { playbackStartMs + max(0, sourceEndMs - sourceStartMs) }
+
+    func clip(atPlaybackMs position: Int64, durationMs: Int64 = 10_000) -> TranscriptTurn? {
+        guard sourceStartMs >= 0, sourceEndMs > sourceStartMs, playbackStartMs >= 0, durationMs > 0 else { return nil }
+        let position = min(max(position, playbackStartMs), playbackEndMs - 1)
+        let start = sourceStartMs + position - playbackStartMs
+        let end = start + min(durationMs, 30_000, sourceEndMs - start)
+        return TranscriptTurn(id: "selected:\(id):\(start):\(end)", speakerLabel: "", name: "Who’s speaking?", role: .unresolved,
+            text: "Listen to this audio clip, then choose who is speaking.", segmentId: segmentId,
+            mediaOffsetMs: position, mediaEndMs: position + end - start,
+            sourceStartMs: start, sourceEndMs: end, isAudioOnly: true)
+    }
+}
+
 struct ConversationVoiceMatch: Equatable, Identifiable {
     var id: String
-    var person: Person
+    var person: Person?
     var segmentId: String
     var sourceStartMs: Int64
     var sourceEndMs: Int64
     var playbackStartMs: Int64
     var playbackEndMs: Int64
+    var isAutomatic = true
 
-    var name: String { person.isCurrentUser ? "You" : person.name }
+    var name: String { person.map { $0.isCurrentUser ? "You" : $0.name } ?? "Unnamed voice" }
     var timeLabel: String {
         func stamp(_ ms: Int64) -> String { "\(ms / 60_000):" + String(format: "%02lld", (ms / 1_000) % 60) }
         return "\(stamp(playbackStartMs))–\(stamp(playbackEndMs))"
     }
     var correction: TranscriptTurn {
-        TranscriptTurn(id: id, speakerLabel: "", name: name, role: person.isCurrentUser ? .you : .other,
+        TranscriptTurn(id: id, speakerLabel: "", name: name,
+            role: person.map { $0.isCurrentUser ? .you : .other } ?? .unresolved,
             text: "Listen to this audio clip to check who is speaking.", segmentId: segmentId,
-            mediaOffsetMs: playbackStartMs, mediaEndMs: playbackEndMs, personId: person.id,
-            isVoiceMatch: true, sourceStartMs: sourceStartMs, sourceEndMs: sourceEndMs, isAudioOnly: true)
+            mediaOffsetMs: playbackStartMs, mediaEndMs: playbackEndMs, personId: person?.id,
+            isVoiceMatch: isAutomatic, sourceStartMs: sourceStartMs, sourceEndMs: sourceEndMs, isAudioOnly: true)
     }
 }
 

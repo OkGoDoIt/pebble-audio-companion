@@ -99,6 +99,7 @@ final class LiveWorld {
         var transcribedAtMs: Int64?
         var zone: TimeZone?
         var voiceMatches: [ConversationVoiceMatch] = []
+        var voiceSelectionPieces: [ConversationAudioPiece] = []
     }
 
     /// Turns the loaded metas and transcripts into the screen's rows — OFF the main actor.
@@ -163,6 +164,12 @@ final class LiveWorld {
                 let before = result.mediaMs
                 let clock = SegmentMediaClock(meta)
                 let span = PieceSpan(member, clock: clock, frameDurationMs: Int64(meta.frameDurationMs))
+                let selectionEnd = min(span.mediaMs.upperBound, clock.mediaSpanMs)
+                if !meta.isOpen, selectionEnd > span.mediaMs.lowerBound {
+                    result.voiceSelectionPieces.append(ConversationAudioPiece(
+                        id: "\(segmentId):\(span.mediaMs.lowerBound):\(selectionEnd)", segmentId: segmentId,
+                        sourceStartMs: span.mediaMs.lowerBound, sourceEndMs: selectionEnd, playbackStartMs: before))
+                }
                 let namedPeople = Set(built.items.compactMap { item -> String? in
                     if case .turn(let turn) = item { return turn.personId }; return nil
                 })
@@ -176,10 +183,35 @@ final class LiveWorld {
                         playbackStartMs: before + span.offset(ofSegmentMediaMs: start),
                         playbackEndMs: before + span.offset(ofSegmentMediaMs: end)))
                 }
+                // A manually corrected audio clip must remain editable even when there are
+                // no words, or the ASR timing cannot expose that exact range in a paragraph.
+                // This also retains explicit unnamed locks after their automatic row vanishes.
+                for correction in identities.corrections where correction.segmentId == segmentId {
+                    let start = max(correction.startMediaMs, span.mediaMs.lowerBound)
+                    let end = min(correction.endMediaMs, span.mediaMs.upperBound, clock.mediaSpanMs)
+                    guard end > start else { continue }
+                    let represented = built.items.contains { item in
+                        guard case .turn(let turn) = item else { return false }
+                        return turn.canIdentifyPassage && !turn.isVoiceMatch
+                            && turn.sourceStartMs == start && turn.sourceEndMs == end
+                            && turn.personId == correction.person?.id
+                    }
+                    guard !represented else { continue }
+                    let person = correction.person.map {
+                        Person(id: $0.id, name: $0.name, isCurrentUser: identities.currentUserPersonId == $0.id)
+                    }
+                    result.voiceMatches.append(ConversationVoiceMatch(id: "manual:\(correction.id):\(start):\(end)",
+                        person: person, segmentId: segmentId, sourceStartMs: start, sourceEndMs: end,
+                        playbackStartMs: before + span.offset(ofSegmentMediaMs: start),
+                        playbackEndMs: before + span.offset(ofSegmentMediaMs: end), isAutomatic: false))
+                }
                 result.transcript.append(contentsOf: built.items)
                 result.missingTicks.append(
                     contentsOf: built.missingMediaOffsets.map { Double(before + $0) })
                 result.mediaMs += built.mediaMs
+            }
+            result.voiceMatches.sort {
+                ($0.playbackStartMs, $0.playbackEndMs, $0.id) < ($1.playbackStartMs, $1.playbackEndMs, $1.id)
             }
             return result
         }.value
@@ -464,7 +496,8 @@ extension LiveWorld: ConversationDataSource {
             // A live conversation has no end yet; the scrubber says "now" rather than naming the
             // last moment audio happened to arrive.
             endedAt: source.isLive ? nil : end,
-            voiceMatches: walked.voiceMatches
+            voiceMatches: walked.voiceMatches,
+            voiceSelectionPieces: walked.voiceSelectionPieces
         )
     }
 

@@ -14,17 +14,19 @@ struct ConversationVoiceMatchesCard: View {
 
     private var names: String {
         var seen = Set<String>()
-        return matches.filter { seen.insert($0.person.id).inserted }.map(\.name).joined(separator: ", ")
+        return matches.filter { seen.insert($0.person?.id ?? "unnamed").inserted }.map(\.name).joined(separator: ", ")
     }
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                Label("Recognized in the audio", systemImage: "waveform")
+                Label(matches.allSatisfy(\.isAutomatic) ? "Recognized in the audio" : "Voices in the audio", systemImage: "waveform")
                     .font(AppFont.cardHead).foregroundStyle(Tokens.label)
                 Text(names).font(AppFont.subBody).foregroundStyle(Tokens.secondaryBody)
-                Text("Listen to a clip to confirm or change a name. These matches can’t be placed precisely beside the transcript yet.")
+                Text(matches.allSatisfy(\.isAutomatic)
+                     ? "Listen to a clip to confirm or change a name. These matches can’t be placed precisely beside the transcript yet."
+                     : "Listen to a clip to review or change who is speaking. Names you chose are kept until you change them.")
                     .font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                Button("Review voice matches (\(matches.count))") { reviewing = true }
+                Button("Review voices (\(matches.count))") { reviewing = true }
                     .buttonStyle(.borderedTint)
             }
         }
@@ -33,10 +35,12 @@ struct ConversationVoiceMatchesCard: View {
                 List {
                     ForEach(matches) { match in
                         HStack(spacing: 12) {
-                            VoiceAvatar(name: match.person.name, isCurrentUser: match.person.isCurrentUser)
+                            VoiceAvatar(name: match.person?.name ?? "?", isCurrentUser: match.person?.isCurrentUser ?? false)
                             Button { onPlay(match) } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(match.name).font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                                    Text(match.isAutomatic ? "Recognized" : "Chosen by you")
+                                        .font(AppFont.footnote).foregroundStyle(Tokens.meta)
                                     Label(match.timeLabel, systemImage: "play.fill")
                                         .font(AppFont.footnote.monospacedDigit()).foregroundStyle(Tokens.tint)
                                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -48,7 +52,7 @@ struct ConversationVoiceMatchesCard: View {
                     }
                 }
                 .scrollContentBackground(.hidden).background(Tokens.ground)
-                .navigationTitle("Voice matches").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("Voices in the audio").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(Copy.Common.done) { reviewing = false } } }
                 .sheet(item: $selected, onDismiss: onStop) { match in
                     SpeakerRenameSheet(conversationId: conversationId, turn: match.correction,
