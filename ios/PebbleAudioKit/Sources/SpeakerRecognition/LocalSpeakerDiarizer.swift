@@ -25,6 +25,7 @@ public struct SpeakerTurn: Codable, Sendable, Equatable {
     /// Extracted from THIS clean interval, never borrowed from a neighboring turn.
     public let embedding: SpeakerEmbedding?
     public let overlap: Bool
+    /// Duration-weighted mean speech probability for the included frames, not the weakest edge.
     public let speechConfidence: Double
     public init(startSample: Int, endSample: Int, clusterID: String?, embedding: SpeakerEmbedding?,
                 overlap: Bool, speechConfidence: Double) {
@@ -57,7 +58,7 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
     private let embedding: CactusSpeakerEmbeddingProvider
     private let model: CoreMLSegmentationModel
     public static let recipeID = "coreml-community1-" + CoreMLSegmentationModel.revision
-        + "-single-window-10s-powerset-0.55-overlap-0.35-cluster-0.55-margin-0.10-subwindows-v2"
+        + "-single-window-10s-powerset-0.55-overlap-0.35-cluster-0.55-margin-0.10-subwindows-mean-confidence-v3"
 
     public init(embeddingModelDirectory: URL, segmentationModelDirectory: URL) {
         embedding = CactusSpeakerEmbeddingProvider(model: CactusSpeakerModel(directory: embeddingModelDirectory))
@@ -122,7 +123,7 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
             let pcm = audio.pcm16LE.subdata(in: (offset * 2)..<(windowEnd * 2))
             let scores = try await segmentation.scores(pcm16LE: pcm, model: model, authorize: authorize)
             try authorize()
-            let intervals = Self.splitForEmbeddings(Self.intervals(scores, sampleCount: windowEnd - offset))
+            let intervals = Self.splitForEmbeddings(Self.intervals(scores, sampleCount: windowEnd - offset), scores: scores)
             var embeddings: [Int: SpeakerEmbedding] = [:]
             for (index, interval) in intervals.enumerated() where (1...3).contains(interval.kind) {
                 // Short turns are represented but cannot become biometric enrollment evidence.
@@ -192,15 +193,26 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
 
     /// Split a >=4s clean span into disjoint 2–3.34s observations. This provides multiple
     /// independent exemplars during guided enrollment and bounds missed-change contamination.
-    private static func splitForEmbeddings(_ intervals: [Interval]) -> [Interval] {
+    private static func splitForEmbeddings(_ intervals: [Interval], scores: [Float]) -> [Interval] {
         intervals.flatMap { interval in
             let length = interval.end - interval.start
-            guard (1...3).contains(interval.kind), length >= 64_000 else { return [interval] }
-            let count = max(2, (length + 47_999) / 48_000)
+            let count = (1...3).contains(interval.kind) && length >= 64_000
+                ? max(2, (length + 47_999) / 48_000) : 1
             return (0..<count).map { index in
-                Interval(start: interval.start + index * length / count,
-                    end: interval.start + (index + 1) * length / count,
-                    kind: interval.kind, confidence: interval.confidence)
+                let start = interval.start + index * length / count
+                let end = interval.start + (index + 1) * length / count
+                // Aggregate over THIS emitted crop, including any bridged quiet frames.
+                // A lone uncertain onset/offset must not define the whole passage's quality.
+                let firstFrame = start * 589 / 160_000
+                let lastFrame = min(589, (end * 589 + 159_999) / 160_000)
+                var speechWeight = 0.0
+                for frame in firstFrame..<lastFrame {
+                    let overlap = max(0, min(end, (frame + 1) * 160_000 / 589)
+                        - max(start, frame * 160_000 / 589))
+                    speechWeight += Double(1 - scores[frame * 7]) * Double(overlap)
+                }
+                return Interval(start: start, end: end, kind: interval.kind,
+                    confidence: speechWeight / Double(end - start))
             }
         }
     }
@@ -234,7 +246,6 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
             guard kind != 0 else { continue }
             let confidence = Double(1 - p[0])
             if let last = result.last, last.kind == kind, start - last.end <= 2_400 {
-                result[result.count - 1].confidence = min(last.confidence, confidence)
                 result[result.count - 1].end = end
             } else { result.append(Interval(start: start, end: end, kind: kind, confidence: confidence)) }
         }

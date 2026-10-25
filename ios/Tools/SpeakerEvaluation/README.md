@@ -104,10 +104,13 @@ bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID evaluate \
 ```
 
 The **full production segmentation→subwindow embedding→Swift matcher** path was also run on
-all39 held-out/enrollment clips using the same frozen policy. It produced20 enrollment examples
-and65 eligible probe turns:36/38 known turns correctly named,2 abstained,0 wrong names, and27/27
-unknown turns rejected. Every18 known probe clip received at least one correct name; all12
-unknown clips stayed unnamed. No clip was omitted; two probe turns were too short for embedding.
+all39 held-out/enrollment clips using the same frozen policy **and the service's enrollment
+purity/≥0.7 speech-confidence gates**. Eight of nine enrollment clips were accepted, producing18
+examples. One known single-person enrollment clip was conservatively rejected because a0.4s
+fragment received a spurious second cluster. The65 eligible probe turns produced34/38 correct
+known names,4 known abstentions,0 wrong names, and27/27 unknown turns rejected. Seventeen of18
+known probe clips received at least one correct name; one stayed unnamed. All12 unknown clips
+stayed unnamed. No probe clip was omitted; two probe turns were too short for embedding.
 Turns from the same utterance are correlated, so these are not65 independent identity trials.
 
 ```sh
@@ -156,6 +159,25 @@ Measured final adapter times on the same simulator: sequential24.8s→3.353s, un
 balanced9s→0.359s (the latter extracts only one eligible embedding). Core ML alone measured
 ~8–12ms per ten-second window on the Apple M5 Pro host CPU; embedding inference dominates. Model loading,
 verification and concurrent host activity affect totals. No phone energy claim follows.
+
+A service integration test exposed an early aggregation bug: taking the minimum frame
+probability made one uncertain speech boundary reject an otherwise clean eight-second sample.
+The analyzer now reports each emitted crop's duration-weighted mean speech probability. The
+per-frame speech/overlap gates are unchanged; that public sample produces three consistent
+embeddings with mean confidences0.9793/1.0000/0.9933. The benchmark above includes this fix.
+
+Continuous long public utterances were also tested through the enrollment eligibility gate:
+20.0s/18.525s/20.0s from three known people each yielded exactly one cluster, no overlap, and
+8/7/7 usable examples. Artificially concatenating independent same-person recordings instead
+introduced extra clusters at edit boundaries; continuous recordings are the relevant setup test.
+
+```sh
+python3 ios/Tools/SpeakerEvaluation/prepare-guided-fixtures.py \
+  /tmp/pebble-speaker-evaluation/public-heldout /tmp/pebble-speaker-evaluation/guided-public-continuous
+bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID analyze-corpus \
+  /tmp/pebble-speaker-evaluation/model /tmp/pebble-speaker-evaluation/Segmentation.mlmodelc \
+  /tmp/pebble-speaker-evaluation/guided-public-continuous/manifest.json
+```
 
 The 2–30s embedding duration, −60dBFS RMS floor,1% clipping ceiling,0.55 single-class confidence,
 0.35 overlap sum and clustering margin are engineering policies, not calibrated quality scores.

@@ -5,7 +5,8 @@ import Testing
 private actor SegmentationFixture: SpeakerSegmentationEngine {
     let kinds: [Int]
     var calls: [Int] = []
-    init(_ kinds: [Int]) { self.kinds = kinds }
+    let weakBoundary: Bool
+    init(_ kinds: [Int], weakBoundary: Bool = false) { self.kinds = kinds; self.weakBoundary = weakBoundary }
     func scores(pcm16LE: Data, model: CoreMLSegmentationModel,
                 authorize: @escaping @Sendable () throws -> Void) throws -> [Float] {
         try authorize()
@@ -13,6 +14,7 @@ private actor SegmentationFixture: SpeakerSegmentationEngine {
         calls.append(pcm16LE.count)
         var output = [Float](repeating: 0, count: 589 * 7)
         for frame in 0..<589 { output[frame * 7 + kind] = 1 }
+        if weakBoundary, kind != 0 { output[kind] = 0.56; output[0] = 0.44 }
         return output
     }
     func release() {}
@@ -59,6 +61,16 @@ private actor EmbeddingFixture: SpeakerEmbeddingEngine {
         #expect(result.turns[0].startSample == 32_000)
         #expect(result.turns.last?.endSample == 512_000)
         #expect(await engine.calls == 12)
+    }
+
+    @Test func oneUncertainBoundaryFrameDoesNotRejectAnOtherwiseCleanPassage() async throws {
+        let segmentation = SegmentationFixture([1], weakBoundary: true)
+        let analyzer = analyzer(segmentation, EmbeddingFixture())
+        await analyzer.setEnabled(true)
+        let result = try await analyzer.analyze(input(pcm(1000, seconds: 3)))
+        let turn = try #require(result.turns.first)
+        #expect(turn.embedding != nil)
+        #expect(turn.speechConfidence > 0.99)
     }
 
     @Test func missedChangeWithinOneModelSlotDoesNotPoolDifferentVoices() async throws {

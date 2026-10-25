@@ -177,23 +177,56 @@
       "production Swift SpeakerMatcher"
     ],
     "counts": {
-      "correctlyNamed": 36,
+      "correctlyNamed": 34,
       "falseSelf": 0,
       "incorrectlyNamed": 0,
       "known": 38,
-      "knownAbstained": 2,
-      "named": 36,
+      "knownAbstained": 4,
+      "named": 34,
       "total": 65,
       "unknown": 27,
       "unknownRejected": 27
     },
     "enrollmentClips": 9,
-    "enrollmentEmbeddings": 20,
+    "enrollmentEmbeddings": 18,
     "probeClips": 30,
-    "knownClipsWithCorrectName": 18,
+    "knownClipsWithCorrectName": 17,
     "unknownClipsWithoutName": 12,
     "probeClipsWithoutEmbedding": 0,
     "excludedProbeTurnsWithoutEmbedding": 2,
-    "note": "Turns from the same clip are correlated, not 65 independent people. Per-turn errors and per-clip coverage are reported separately."
-  }
+    "note": "Turns from the same clip are correlated, not 65 independent people. Per-turn errors and per-clip coverage are reported separately.",
+    "acceptedEnrollmentClips": 8,
+    "rejectedEnrollmentClips": 1,
+    "rejectedEnrollmentReason": "A short spurious second cluster on one known single-person clip; conservative purity rejection.",
+    "knownClipsWithoutName": 1,
+    "eligibility": "Same whole-selection overlap/multi-cluster enrollment guard and per-turn speechConfidence>=0.7 as VoiceRecognitionService.",
+    "speechConfidence": "Duration-weighted mean for each emitted crop; a single uncertain boundary frame does not reject the full passage."
+  },
+  "continuousEnrollmentRegression": [
+    {
+      "publicUtteranceID": "6930-75918-0003",
+      "pcmSHA256": "eca9f181a551f1e18d04d043f0ff6a37b19029ca763439323ff0e994577ea736",
+      "audioSeconds": 20.0,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 8
+    },
+    {
+      "publicUtteranceID": "1320-122617-0007",
+      "pcmSHA256": "a766d7269441926e2cb542c821514403c5b004a0e056580f02c89ad19c359081",
+      "audioSeconds": 18.525,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 7
+    },
+    {
+      "publicUtteranceID": "260-123288-0015",
+      "pcmSHA256": "d9b6dce70cb71e55ce370ede54178d1ada4e7c7422bc1d8f0cd5f53022f37eb7",
+      "audioSeconds": 20.0,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 7
+    }
+  ],
+  "continuousEnrollmentCaveat": "All three continuous public clips pass the service purity gate. Artificial concatenation of independent same-person recordings caused false extra clusters at edit boundaries; that is not a continuous microphone sample."
 }

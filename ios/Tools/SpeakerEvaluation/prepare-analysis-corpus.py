@@ -14,6 +14,7 @@ analysis = json.loads(pathlib.Path(sys.argv[2]).read_text())
 output = pathlib.Path(sys.argv[3])
 corpus = dict(enrollment=[], probes=[], selfPersonID=None)
 coverage = collections.Counter()
+rejected_enrollment = []
 for result in analysis:
     row = metadata[result['id']]
     if row.get('labelSource') != 'openslr/librispeech_asr clean test official speaker_id/chapter_id':
@@ -22,7 +23,18 @@ for result in analysis:
     turns = result.get('analysis', {}).get('turns', [])
     if 'error' in result:
         raise ValueError('Analyze failed: ' + result['id'])
-    eligible = [t for t in turns if t.get('embedding')]
+    eligible = [t for t in turns if t.get('embedding') and not t['overlap']
+                and t.get('clusterID') and t['speechConfidence'] >= .7
+                and t['endSample'] - t['startSample'] >= 32000]
+    # Apply the service's whole-selection purity guard, not just the embedding matcher.
+    if row['partition'] == 'enrollment':
+        clusters = {t['clusterID'] for t in turns if t.get('clusterID')}
+        reason = ('multiple-speakers-or-overlap' if len(clusters) > 1 or any(t['overlap'] for t in turns)
+                  else 'not-enough-speech' if not eligible else None)
+        if reason:
+            rejected_enrollment.append(dict(id=row['id'], reason=reason))
+            coverage['rejectedEnrollmentClips'] += 1
+            continue
     coverage[row['partition'] + 'ClipsWithoutEmbedding'] += not bool(eligible)
     coverage[row['partition'] + 'TurnsWithoutEmbedding'] += len(turns) - len(eligible)
     for turn in eligible:
@@ -39,5 +51,5 @@ for result in analysis:
             corpus['probes'].append(sample)
 policy = dict(minimumSimilarity=.55, minimumMargin=.10, minimumExamples=2,
               calibrationID='public-read-speech-cactus-f145212-v1')
-output.write_text(json.dumps(dict(policy=policy, corpus=corpus, analysisCoverage=dict(coverage)), indent=2))
+output.write_text(json.dumps(dict(policy=policy, corpus=corpus, analysisCoverage=dict(coverage), rejectedEnrollment=rejected_enrollment), indent=2))
 print(json.dumps(dict(coverage=coverage, enrollmentEmbeddings=len(corpus['enrollment']), probes=len(corpus['probes'])), indent=2))
