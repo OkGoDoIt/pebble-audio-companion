@@ -23,7 +23,7 @@ import Foundation
 /// A compile that finishes removes its own folder; one the process dies inside does not, and
 /// nothing — not iOS, not the framework, not this app — ever looked at the folder again.
 public enum ScratchFileSweep {
-    public static let prefixes = ["cactus_stt-", "pebble-flac-", "cactus_download_"]
+    public static let prefixes = ["cactus_stt-", "pebble-flac-", "cactus_download_", "voice-enrollment-"]
     public static let minimumAgeMs: Int64 = 10 * 60_000
 
     /// A parent folder under the scratch directory, and the prefix of the per-run subfolders

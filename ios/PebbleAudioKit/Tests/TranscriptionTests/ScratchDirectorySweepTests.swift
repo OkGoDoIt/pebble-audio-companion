@@ -49,4 +49,19 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
         #expect(ScratchFileSweep.run(in: dir) == ScratchFileSweep.Result(files: 0, bytes: 0))
     }
+    @Test func abandonedEnrollmentAudioIsSweptButCurrentSampleIsKept() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let old = dir.appendingPathComponent("voice-enrollment-old.wav")
+        let fresh = dir.appendingPathComponent("voice-enrollment-current.wav")
+        try Data(repeating: 1, count: 32).write(to: old)
+        try Data(repeating: 2, count: 64).write(to: fresh)
+        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(-3_600)], ofItemAtPath: old.path)
+        _ = ScratchFileSweep.run(in: dir)
+        #expect(!fm.fileExists(atPath: old.path))
+        #expect(fm.fileExists(atPath: fresh.path))
+    }
+
 }
