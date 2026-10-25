@@ -152,7 +152,7 @@ let package = Package(
             name: "CompanionRuntime",
             dependencies: [
                 "Receiver", "Transcription", "Intelligence", "LiveAudio", "SearchKit",
-                "Migration", "StatusUI", "AppDB", "SegmentStore", "AudioCodec", "MuseLink",
+                "Migration", "StatusUI", "AppDB", "SegmentStore", "AudioCodec", "MuseLink", "SpeakerRecognition",
             ],
             swiftSettings: swiftSettings
         ),

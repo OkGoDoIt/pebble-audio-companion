@@ -1,0 +1,199 @@
+{
+  "date": "2026-10-25",
+  "status": "small-public-corpus-calibration-not-watch-identity-accuracy",
+  "runtime": "production Swift adapter; bundled Cactus iOS arm64 simulator binary; CoreML CPU",
+  "embeddingRevision": "f145212639b5cea874482e70002935daa987fe44",
+  "actualEmbeddingPrecision": "FP16",
+  "segmentationRevision": "7eab74f3463c736418d0eb10296261ae581146c9",
+  "policy": {
+    "minimumSimilarity": 0.55,
+    "minimumMargin": 0.1,
+    "minimumExamples": 2,
+    "calibrationID": "public-read-speech-cactus-f145212-v1"
+  },
+  "dataset": {
+    "name": "OpenSLR LibriSpeech test-clean",
+    "source": "https://www.openslr.org/12",
+    "metadata": "https://huggingface.co/datasets/openslr/librispeech_asr",
+    "labelSource": "official speaker_id and chapter_id",
+    "enrolledPeople": 3,
+    "enrollmentClipsPerPerson": 3,
+    "maximumClipSeconds": 8,
+    "knownProbeChaptersDisjointFromEnrollment": true,
+    "heldoutKnownUtterancesNotInTuning": true,
+    "heldoutUnknownPeopleNotInTuning": true,
+    "policyFrozenBeforeHeldoutDownload": true,
+    "language": "English",
+    "speechStyle": "read books"
+  },
+  "conditions": {
+    "public-corpus": {
+      "known": 15,
+      "unknown": 16,
+      "correctlyNamed": 14,
+      "incorrectlyNamed": 0,
+      "knownAbstained": 1,
+      "unknownRejected": 16,
+      "qualityRejectedKnown": 0
+    },
+    "public-heldout": {
+      "known": 18,
+      "unknown": 12,
+      "correctlyNamed": 18,
+      "incorrectlyNamed": 0,
+      "knownAbstained": 0,
+      "unknownRejected": 12,
+      "qualityRejectedKnown": 0
+    },
+    "public-codec/speex": {
+      "known": 15,
+      "unknown": 16,
+      "correctlyNamed": 13,
+      "incorrectlyNamed": 0,
+      "knownAbstained": 2,
+      "unknownRejected": 16,
+      "qualityRejectedKnown": 0
+    },
+    "public-codec/quiet-speex": {
+      "known": 14,
+      "unknown": 16,
+      "correctlyNamed": 12,
+      "incorrectlyNamed": 0,
+      "knownAbstained": 2,
+      "unknownRejected": 16,
+      "qualityRejectedKnown": 1
+    },
+    "public-codec/quiet-speex-restored": {
+      "known": 15,
+      "unknown": 16,
+      "correctlyNamed": 13,
+      "incorrectlyNamed": 0,
+      "knownAbstained": 2,
+      "unknownRejected": 16,
+      "qualityRejectedKnown": 0
+    }
+  },
+  "caveats": [
+    "Small corpus; zero observed wrong names is not a population error bound.",
+    "No trusted held-out watch identity labels exist in inspected backups.",
+    "Speex conditions apply same codec/level to enrollment and probe; not a phone-to-watch transfer test.",
+    "CoreML can miss quieter overlapping speakers; detected non-overlap is not proof of purity.",
+    "Anonymous clustering can oversegment similar voices."
+  ],
+  "codec": {
+    "sampleRate": 16000,
+    "format": "Speex wideband, fixed-point app encoder/decoder",
+    "quality": 6,
+    "complexity": 1,
+    "bitrate": 9800,
+    "quietInputGain": 0.05,
+    "restoredOutputGain": 20
+  },
+  "segmentationFixtures": {
+    "sequential": {
+      "audioSeconds": 24.8,
+      "elapsedMilliseconds": 3352.7040481567383,
+      "turns": 10,
+      "embeddedTurns": 9,
+      "detectedOverlapSeconds": []
+    },
+    "unbalanced-overlap": {
+      "audioSeconds": 9,
+      "elapsedMilliseconds": 1372.6550340652466,
+      "turns": 4,
+      "embeddedTurns": 3,
+      "detectedOverlapSeconds": [
+        [
+          3.3785625,
+          3.837
+        ]
+      ]
+    },
+    "balanced-overlap": {
+      "audioSeconds": 9,
+      "elapsedMilliseconds": 359.097957611084,
+      "turns": 3,
+      "embeddedTurns": 1,
+      "detectedOverlapSeconds": [
+        [
+          2.275,
+          7.2325625
+        ]
+      ]
+    },
+    "limitations": "Constructed source spans include natural pauses. Balanced mixture2\u20137s; unbalanced mixture3\u20136s. Not a DER benchmark."
+  },
+  "watchUnlabeled": {
+    "clips": 40,
+    "totalAudioSeconds": 212.56,
+    "errors": 0,
+    "emptySpeechClips": 4,
+    "turns": 90,
+    "embeddedTurns": 56,
+    "overlapClips": 8,
+    "totalElapsedMilliseconds": 31042.057871818542,
+    "identityAccuracy": null,
+    "labels": "Provider labels not trusted ground truth; no person inferred from wearer or loudness."
+  },
+  "alternativeEncoders": [
+    {
+      "name": "wespeaker",
+      "modelSHA256": "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012",
+      "runtime": "sherpa-onnx-2.0.0",
+      "threshold": 0.75,
+      "margin": 0.1,
+      "counts": {
+        "known": 15,
+        "unknown": 16,
+        "correctlyNamed": 12,
+        "incorrectlyNamed": 0,
+        "knownAbstained": 3,
+        "unknownRejected": 16
+      },
+      "scope": "same tuning clips, exploratory thresholds; not held-out model comparison"
+    },
+    {
+      "name": "campplus",
+      "modelSHA256": "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+      "runtime": "sherpa-onnx-2.0.0",
+      "threshold": 0.8,
+      "margin": 0.1,
+      "counts": {
+        "known": 15,
+        "unknown": 16,
+        "correctlyNamed": 5,
+        "incorrectlyNamed": 0,
+        "knownAbstained": 10,
+        "unknownRejected": 16
+      },
+      "scope": "same tuning clips, exploratory thresholds; not held-out model comparison"
+    }
+  ],
+  "hostCPU": "Apple M5 Pro",
+  "heldoutFullPipeline": {
+    "stages": [
+      "production CoreML segmentation",
+      "production bounded subwindow embedding",
+      "production Swift SpeakerMatcher"
+    ],
+    "counts": {
+      "correctlyNamed": 36,
+      "falseSelf": 0,
+      "incorrectlyNamed": 0,
+      "known": 38,
+      "knownAbstained": 2,
+      "named": 36,
+      "total": 65,
+      "unknown": 27,
+      "unknownRejected": 27
+    },
+    "enrollmentClips": 9,
+    "enrollmentEmbeddings": 20,
+    "probeClips": 30,
+    "knownClipsWithCorrectName": 18,
+    "unknownClipsWithoutName": 12,
+    "probeClipsWithoutEmbedding": 0,
+    "excludedProbeTurnsWithoutEmbedding": 2,
+    "note": "Turns from the same clip are correlated, not 65 independent people. Per-turn errors and per-clip coverage are reported separately."
+  }
+}

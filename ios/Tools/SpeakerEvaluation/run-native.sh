@@ -2,8 +2,8 @@
 # Build the real package adapter as a simulator command-line tool. No app install/deploy,
 # model download, private audio upload, or changes to the app's settings/container.
 set -euo pipefail
-if [[ $# != 4 ]]; then
-    echo "usage: $0 SIMULATOR_UDID smoke|evaluate LOCAL_MODEL_DIR PCM16LE_OR_MANIFEST" >&2
+if [[ $# -lt 4 || $# -gt 5 ]]; then
+    echo "usage: $0 SIMULATOR_UDID smoke|evaluate MODEL_DIR PCM_OR_MANIFEST; or SIMULATOR_UDID analyze|analyze-corpus EMBEDDING_DIR SEGMENTATION_DIR PCM_OR_MANIFEST" >&2
     exit 2
 fi
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,10 +18,16 @@ xcrun --sdk iphonesimulator swiftc "${flags[@]}" -parse-as-library -emit-object 
     -module-name Transcription \
     -emit-module-path "$work/Transcription.swiftmodule" \
     "$kit/Sources/Transcription/Local/CactusPrivacyConfiguration.swift" -o "$work/privacy.o"
+sources=()
+for source in "$kit"/Sources/SpeakerRecognition/*.swift; do
+    [[ "$source" == */SpeakerModelStore.swift ]] || sources+=("$source")
+done
 xcrun --sdk iphonesimulator swiftc "${flags[@]}" -parse-as-library -O \
     -I "$work" -I "$kit/Sources/CCactus/include" \
-    "$kit"/Sources/SpeakerRecognition/*.swift "$tool_dir/NativeMain.swift" "$work/privacy.o" \
+    "${sources[@]}" "$tool_dir/NativeMain.swift" "$work/privacy.o" \
     "$kit/Frameworks/CactusBinary.xcframework/ios-arm64-simulator/libCactusBinary.a" \
     -framework Foundation -framework Accelerate -framework CoreML -framework Security \
     -framework SystemConfiguration -framework CFNetwork -lc++ -lz -o "$work/speaker-native"
-xcrun simctl spawn "$1" "$work/speaker-native" "$2" "$3" "$4"
+simulator="$1"
+shift
+xcrun simctl spawn "$simulator" "$work/speaker-native" "$@"

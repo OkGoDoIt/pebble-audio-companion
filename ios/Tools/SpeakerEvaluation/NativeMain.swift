@@ -31,6 +31,10 @@ import Foundation
 
     static func main() async throws {
         let args = CommandLine.arguments
+        if args.count == 5, ["analyze", "analyze-corpus"].contains(args[1]) {
+            try await analyze(args)
+            return
+        }
         guard args.count == 4, ["smoke", "evaluate"].contains(args[1]) else {
             throw SpeakerRecognitionError.invalidCorpus("Usage: speaker-native smoke MODEL_DIR PCM16LE | evaluate MODEL_DIR MANIFEST.json")
         }
@@ -97,6 +101,47 @@ import Foundation
             await provider.setEnabled(false)
             throw error
         }
+    }
+
+    struct AnalysisInput: Decodable {
+        let id: String
+        let pcmPath: String
+        let sourceID: String
+        let sourceRevision: String
+        let sessionID: String
+        let sourceStartSample: Int
+    }
+    struct AnalysisOutput: Encodable {
+        let id: String
+        let analysis: SpeakerAnalysis?
+        let error: String?
+    }
+    static func analyze(_ args: [String]) async throws {
+        let analyzer = LocalSpeakerDiarizer(embeddingModelDirectory: URL(fileURLWithPath: args[2]),
+            segmentationModelDirectory: URL(fileURLWithPath: args[3]))
+        await analyzer.setEnabled(true)
+        do {
+            if args[1] == "analyze" {
+                let data = try Data(contentsOf: URL(fileURLWithPath: args[4]))
+                try printJSON(try await analyzer.analyze(SpeakerAnalysisAudio(pcm16LE: data,
+                    sourceID: "explicit-fixture", sourceRevision: "fixture", sessionID: "fixture", sourceStartSample: 0)))
+            } else {
+                let manifestURL = URL(fileURLWithPath: args[4])
+                let inputs = try JSONDecoder().decode([AnalysisInput].self, from: Data(contentsOf: manifestURL))
+                var results: [AnalysisOutput] = []
+                for input in inputs {
+                    do {
+                        let file = URL(fileURLWithPath: input.pcmPath, relativeTo: manifestURL.deletingLastPathComponent())
+                        let result = try await analyzer.analyze(SpeakerAnalysisAudio(pcm16LE: Data(contentsOf: file),
+                            sourceID: input.sourceID, sourceRevision: input.sourceRevision,
+                            sessionID: input.sessionID, sourceStartSample: input.sourceStartSample))
+                        results.append(AnalysisOutput(id: input.id, analysis: result, error: nil))
+                    } catch { results.append(AnalysisOutput(id: input.id, analysis: nil, error: String(describing: error))) }
+                }
+                try printJSON(results)
+            }
+            await analyzer.setEnabled(false)
+        } catch { await analyzer.setEnabled(false); throw error }
     }
 
     static func printJSON<T: Encodable>(_ value: T) throws {
