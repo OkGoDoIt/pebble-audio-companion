@@ -1,4 +1,5 @@
 import AppDB
+import CompanionRuntime
 import Foundation
 import SearchKit
 import SegmentStore
@@ -53,6 +54,7 @@ enum TranscriptItems {
         segments: [SearchKit.TranscriptSegment],
         words: [SearchKit.TranscriptWord] = [],
         assignments: [SpeakerAssignment],
+        identities: SpeakerIdentitySnapshot = .init(),
         /// Media time consumed by the pieces already walked, so each turn can carry its
         /// position on the CONVERSATION's scrubber rather than one local to this segment.
         mediaBeforeMemberMs: Int64 = 0,
@@ -136,20 +138,31 @@ enum TranscriptItems {
                 // The provider labelled THIS segment's speakers, so a name is looked up, and
                 // filed, under the segment as well as the label (`SpeakerKey`).
                 let key = speech.speaker.map { SpeakerKey(segmentId: segmentId, label: $0) }
+                let sourceStart = passesMediaThrough
+                    ? speech.startMs : clock.media(fromWall: speech.startMs)
+                let sourceEnd = passesMediaThrough
+                    ? speech.endMs : clock.media(fromWall: speech.endMs)
+                let person = SpeakerAttribution.person(
+                    segmentId: segmentId, startMediaMs: sourceStart, endMediaMs: sourceEnd,
+                    speaker: speech.speaker, identity: identities, legacyAssignments: assignments)
                 result.lastTurnId = itemId
                 result.items.append(
                     .turn(
                         TranscriptTurn(
                             id: itemId,
                             speakerLabel: key?.stored ?? "",
-                            name: speakerName(key, assignments: assignments),
-                            role: speakerRole(key, assignments: assignments),
+                            name: person.map { $0.isCurrentUser ? "You" : $0.name }
+                                ?? key.map { speakerLabel($0.label) } ?? "Speaker",
+                            role: person.map { $0.isCurrentUser ? .you : .other } ?? .unresolved,
                             text: speech.text,
                             startedAt: startedAt,
                             segmentId: segmentId,
                             mediaOffsetMs: startOffset,
                             mediaEndMs: endOffset,
-                            words: wordSpans
+                            words: wordSpans,
+                            personId: person?.id,
+                            sourceStartMs: sourceStart,
+                            sourceEndMs: sourceEnd
                         )))
             case .silenceBreak:
                 break  // an unlabeled visual break; the card's row spacing carries it
@@ -242,8 +255,7 @@ enum TranscriptItems {
         guard let match = SpeakerAssignment.match(speaker, in: assignments) else {
             return .unresolved
         }
-        // The wearer is whoever the user named "You"; everyone else is a counterpart.
-        return match.personName.caseInsensitiveCompare("You") == .orderedSame ? .you : .other
+        return match.isCurrentUser ? .you : .other
     }
 
     /// The recording's own zone (Q16), so stamps keep the times things happened at.

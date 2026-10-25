@@ -174,11 +174,15 @@ struct TranscriptLayout: Equatable {
     /// of labels.
     ///
     /// The same speaker is the same label in the same segment (`SpeakerKey`), or the same
-    /// person by name: a named person talking across a segment boundary is still one run,
+    /// person by stable identity: a named person talking across a segment boundary is still one run,
     /// while two unnamed "Speaker 1"s either side of it may be two people.
     static func continuesRun(_ previous: TranscriptTurn, with turn: TranscriptTurn) -> Bool {
-        let sameSpeaker =
-            previous.speakerLabel == turn.speakerLabel || previous.role != .unresolved
+        let sameSpeaker: Bool
+        if previous.personId != nil || turn.personId != nil {
+            sameSpeaker = previous.personId != nil && previous.personId == turn.personId
+        } else {
+            sameSpeaker = !previous.speakerLabel.isEmpty && previous.speakerLabel == turn.speakerLabel
+        }
         return sameSpeaker && previous.name == turn.name
             && previous.role == turn.role && previous.isInProgress == turn.isInProgress
     }

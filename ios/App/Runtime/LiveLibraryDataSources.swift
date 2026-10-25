@@ -118,7 +118,8 @@ final class LiveWorld {
         _ members: [ConversationMember],
         metas: [String: SegmentMeta],
         transcripts: [String: SegmentTranscript],
-        assignments: [SpeakerAssignment]
+        assignments: [SpeakerAssignment],
+        identities: SpeakerIdentitySnapshot = .init()
     ) async -> WalkedMembers {
         await Task.detached(priority: .userInitiated) {
             var result = WalkedMembers()
@@ -147,6 +148,7 @@ final class LiveWorld {
                             text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
                     },
                     assignments: assignments,
+                    identities: identities,
                     mediaBeforeMemberMs: result.mediaMs,
                     // Durable transcripts are timed against the STORED audio: the processor
                     // decodes the frame log and hands that to the provider, so gaps are simply
@@ -396,9 +398,12 @@ extension LiveWorld: ConversationDataSource {
         let memberIds = pieces.map(\.segmentId)
         let metas = await Self.loadMetas(memberIds, files: composition.files)
         let storedTranscripts = await Self.loadTranscripts(memberIds, store: composition.transcripts)
+        let identities = try await SpeakerCorrectionStore(db: composition.database)
+            .snapshot(segmentIds: memberIds)
 
         let walked = await Self.walkMembers(
-            pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments)
+            pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments,
+            identities: identities)
         let marked =
             (try? await MomentStore(db: composition.database).moments(
                 fromWallMs: source.startMs, to: max(source.startMs + 1, source.endMs))) ?? []
@@ -1926,6 +1931,51 @@ extension LiveWorld: PeopleDataSource {
         try await composition.people.listPeople().map(\.person)
     }
 
+    func createPerson(name: String) async throws -> Person {
+        try await composition.people.createPerson(name: name)
+    }
+
+    func assignPassage(_ turn: TranscriptTurn, personId: String?, makeCurrentUser: Bool) async throws {
+        guard turn.canIdentifyPassage, let start = turn.sourceStartMs, let end = turn.sourceEndMs else {
+            throw SpeakerEditorError.timingUnavailable
+        }
+        let store = SpeakerCorrectionStore(db: composition.database)
+        var affected = try await store.affectedConversationIds(
+            segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end)
+        if makeCurrentUser {
+            let old = try await composition.people.currentUserPersonId()
+            for id in Set([old, personId].compactMap { $0 }) {
+                affected += try await composition.people.conversationIds(assignedTo: id)
+            }
+        }
+        try await store.set(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end,
+                            personId: personId, makeCurrentUser: makeCurrentUser)
+        await reindex(Array(Set(affected)))
+    }
+
+    func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? {
+        if let start = turn.sourceStartMs, let end = turn.sourceEndMs {
+            let snapshot = try await SpeakerCorrectionStore(db: composition.database)
+                .snapshot(segmentIds: [turn.segmentId])
+            switch snapshot.resolve(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end) {
+            case .named(let person): return person
+            case .unnamed, .partial: return nil
+            case nil: break
+            }
+        }
+        return try await assignedPerson(conversationId: conversationId, label: turn.speakerLabel)
+    }
+
+    func setCurrentUser(personId: String?) async throws {
+        let old = try await composition.people.currentUserPersonId()
+        var affected: [String] = []
+        for id in Set([old, personId].compactMap { $0 }) {
+            affected += try await composition.people.conversationIds(assignedTo: id)
+        }
+        try await composition.people.setCurrentUser(personId: personId)
+        await reindex(Array(Set(affected)))
+    }
+
     func assign(conversationId: String, label: String, personName: String) async throws {
         let trimmed = personName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -1947,13 +1997,12 @@ extension LiveWorld: PeopleDataSource {
     func assignedPerson(conversationId: String, label: String) async throws -> Person? {
         let assignments = try await composition.people.assignments(forConversation: conversationId)
         return SpeakerAssignment.match(stored: label, in: assignments)
-            .map { Person(id: $0.personId, name: $0.personName) }
+            .map { Person(id: $0.personId, name: $0.personName, isCurrentUser: $0.isCurrentUser) }
     }
 
     /// Q17: one row update in `people`, and every conversation assigned to them follows,
     /// because assignments reference the person by id and never copy the name.
     func renamePerson(id: String, to newName: String) async throws {
-        // Read before the rename: a rename onto an existing name merges and deletes this id.
         let named = (try? await composition.people.conversationIds(assignedTo: id)) ?? []
         try await composition.people.renamePerson(id: id, to: newName)
         await reindex(named)

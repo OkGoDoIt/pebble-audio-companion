@@ -43,11 +43,9 @@ extension Copy {
         static let onPhoneBody = "No key and no account. Transcripts are rougher than the cloud's."
 
         static let cloudTitle = "In the cloud"
-        /// Verified: `speakerLabelsEnabled` is literally `cloudTranscriptionEnabled`, so speaker
-        /// names are a real, exclusive consequence of cloud transcription — worth naming, because
-        /// it is the difference people actually notice.
+        /// Cloud diarization separates speakers; the person supplies their names.
         static let cloudBody =
-            "The most accurate transcripts, with speaker names, and every AI feature works. "
+            "The most accurate transcripts, with separate speakers, and every AI feature works. "
             + "You add a key for each provider that needs one."
 
         static let laterTitle = "Later"
@@ -104,7 +102,7 @@ extension Copy {
         static let transcriptsInCloud = "In the cloud"
         /// Verified: `CloudProvider` has exactly these two cases, and speaker labels are gated on
         /// cloud transcription.
-        static let transcriptsInCloudBody = "Soniox or OpenAI. Sharper, and it names the speakers."
+        static let transcriptsInCloudBody = "Soniox or OpenAI. Sharper, with separate speakers."
 
         // AI axis.
         static let aiOnPhone = "On this phone"

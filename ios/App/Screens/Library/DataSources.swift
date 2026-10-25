@@ -148,6 +148,16 @@ struct TranscriptTurn: Equatable, Identifiable {
     /// rendered text. Empty is the honest degraded case (older rows, providers with no word
     /// timings): playback then highlights the whole turn rather than pretending to know more.
     var words: [TranscriptWordSpan] = []
+    /// Identity never depends on the displayed name (two people may both be Alex).
+    var personId: String? = nil
+    /// Original segment media coordinates, independent of conversation cuts and playback offset.
+    var sourceStartMs: Int64? = nil
+    var sourceEndMs: Int64? = nil
+
+    var canIdentifyPassage: Bool {
+        guard !isInProgress, !segmentId.isEmpty, let sourceStartMs, let sourceEndMs else { return false }
+        return sourceStartMs >= 0 && sourceEndMs > sourceStartMs
+    }
 }
 
 /// A non-speech row: calm known-quiet, or genuine loss. Never conflated.
@@ -520,13 +530,16 @@ protocol TagEditorDataSource: AnyObject {
 @MainActor
 protocol PeopleDataSource: AnyObject {
     func people() async throws -> [Person]
+    func createPerson(name: String) async throws -> Person
+    func assignPassage(_ turn: TranscriptTurn, personId: String?, makeCurrentUser: Bool) async throws
+    func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person?
+    func setCurrentUser(personId: String?) async throws
     /// Assign a diarization label to a person by name (find-or-create), per plan 6.3.
     func assign(conversationId: String, label: String, personName: String) async throws
     /// Who this label is currently assigned to in this conversation, if anyone. Distinguishes
     /// "named" from "the diarizer's own Speaker 2", which the displayed name cannot.
     func assignedPerson(conversationId: String, label: String) async throws -> Person?
-    /// Global rename (Q17) — every conversation assigned to this person follows, and renaming
-    /// onto an existing name merges the two, so a typo can be corrected rather than duplicated.
+    /// Global rename; equal display names never merge identities.
     func renamePerson(id: String, to newName: String) async throws
     /// Clears this label's assignment. The person stays in the registry; the turns go back to
     /// the unresolved "Speaker N" they came from.

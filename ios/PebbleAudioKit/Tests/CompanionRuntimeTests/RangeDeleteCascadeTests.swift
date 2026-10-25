@@ -251,7 +251,13 @@ import WireProtocol
         let metaBefore = try #require(await fixture.store.readMeta(segmentId))
         let silence = try SpeexSilence.frame()
 
+        let identities = SpeakerCorrectionStore(db: fixture.database)
+        let person = try await world.people.createPerson(name: "Sam")
+        try await identities.set(segmentId: segmentId, startMediaMs: 0, endMediaMs: 60_000, personId: person.id)
         let deleted = await world.cascade.deleteConversation(budget.id)
+        let identity = try await identities.snapshot(segmentIds: [segmentId])
+        #expect(identity.resolve(segmentId: segmentId, startMediaMs: 0, endMediaMs: 30_000) == .named(person))
+        #expect(identity.resolve(segmentId: segmentId, startMediaMs: 30_000, endMediaMs: 60_000) == nil)
 
         // The segment is shared, so it still exists: nothing was deleted WHOLE.
         #expect(deleted.isEmpty)
@@ -599,8 +605,11 @@ import WireProtocol
         try await split(world, segmentId, at: 12_000)
         #expect(!fixture.transcriptStore.redactions(segmentId).isEmpty)
 
+        let identities = SpeakerCorrectionStore(db: fixture.database)
+        try await identities.set(segmentId: segmentId, startMediaMs: 0, endMediaMs: 1_000, personId: nil)
         // The retention path: the segment goes as a segment, whoever owned what.
         #expect(await world.cascade.deleteSegment(segmentId))
+        #expect(try await identities.snapshot(segmentIds: [segmentId]).corrections.isEmpty)
 
         #expect(try await world.cuts.overrides().isEmpty)
         #expect(try await world.cuts.committed().isEmpty)

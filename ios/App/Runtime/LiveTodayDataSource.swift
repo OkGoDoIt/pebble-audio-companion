@@ -347,6 +347,8 @@ final class LiveTodayDataSource {
         // app feel laggy while a recording was live.
         let pieces = detail?.pieces ?? []
         let allMemberIds = pieces.map(\.segmentId)
+        let identities = (try? await SpeakerCorrectionStore(db: composition.database)
+            .snapshot(segmentIds: allMemberIds)) ?? .init()
         let metas = await LiveWorld.loadMetas(allMemberIds, files: composition.files)
         let durables = await LiveWorld.loadTranscripts(allMemberIds, store: composition.transcripts)
 
@@ -403,6 +405,7 @@ final class LiveTodayDataSource {
                         text: $0.text, startMs: $0.startMs, endMs: $0.endMs)
                 },
                 assignments: assignments,
+                identities: identities,
                 // The two producers disagree about which clock they are on: a durable
                 // transcript is timed against the stored audio (the processor feeds the
                 // provider the decoded frame log, gaps absent), while the live preview offsets

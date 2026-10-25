@@ -13,12 +13,12 @@ import Testing
 struct SpeakerNamesPerSegmentTests {
     typealias Library = PieceLibrary
 
-    private func rows(_ assignments: [SpeakerAssignment]) async throws -> [TranscriptTurn] {
+    private func rows(_ assignments: [SpeakerAssignment], identities: SpeakerIdentitySnapshot = .init()) async throws -> [TranscriptTurn] {
         let db = try await Library.sharedLibrary()
         let pieces = try await Library.pieces(of: Library.second, in: db)
         let walked = await LiveWorld.walkMembers(
             pieces, metas: Library.metas, transcripts: Library.transcripts,
-            assignments: assignments)
+            assignments: assignments, identities: identities)
         return Library.turnRows(walked)
     }
 
@@ -72,4 +72,45 @@ struct SpeakerNamesPerSegmentTests {
         #expect(TranscriptLayout.continuesRun(alex[0], with: alex[2]))
         #expect(!TranscriptLayout.continuesRun(alex[0], with: alex[1]))
     }
+    @Test func correctionUsesSegmentAudioAndOverridesChangedProviderLabels() async throws {
+        let original = try await rows([])
+        let selected = try #require(original.last)
+        let start = try #require(selected.sourceStartMs)
+        let end = try #require(selected.sourceEndMs)
+        #expect(selected.canIdentifyPassage)
+        let person = Person(id: "me", name: "Roger")
+        let identity = SpeakerIdentitySnapshot(currentUserPersonId: "me", corrections: [
+            SpeakerCorrection(id: "x", segmentId: "seg-b", startMediaMs: start,
+                              endMediaMs: end, person: person, createdAtMs: 0)
+        ])
+        let corrected = try await rows([named("seg-b#1", "Wrong")], identities: identity)
+        #expect(corrected.last?.name == "You")
+        #expect(corrected.last?.role == .you)
+        #expect(corrected.last?.personId == "me")
+        #expect(corrected.first?.personId == nil)
+    }
+
+    @Test func unnamedLockWinsAndLiteralYouIsNotTheCurrentUser() async throws {
+        let original = try await rows([named("seg-b#1", "You")])
+        let selected = try #require(original.last)
+        #expect(selected.role == .other)
+        let identity = SpeakerIdentitySnapshot(corrections: [
+            SpeakerCorrection(id: "x", segmentId: "seg-b",
+                              startMediaMs: try #require(selected.sourceStartMs),
+                              endMediaMs: try #require(selected.sourceEndMs),
+                              person: nil, createdAtMs: 0)
+        ])
+        let corrected = try await rows([named("seg-b#1", "You")], identities: identity)
+        #expect(corrected.last?.name == "Speaker 1")
+        #expect(corrected.last?.personId == nil)
+    }
+
+    @Test func equalNamesWithDifferentIdsNeverJoinARun() async throws {
+        let turns = try await rows([
+            SpeakerAssignment(conversationId: Library.second, label: "seg-a#1", personId: "a", personName: "Sam"),
+            SpeakerAssignment(conversationId: Library.second, label: "seg-b#1", personId: "b", personName: "Sam")
+        ])
+        #expect(!TranscriptLayout.continuesRun(turns[0], with: turns[2]))
+    }
+
 }

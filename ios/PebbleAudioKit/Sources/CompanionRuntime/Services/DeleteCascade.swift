@@ -290,6 +290,9 @@ public actor DeleteCascade {
             log.failure("segment delete", error)
             return false
         }
+        do { try await SpeakerCorrectionStore(db: annotations.db).delete(segmentId: segmentId) } catch {
+            log.failure("speaker correction delete", error)
+        }
         do { try await transcription.deleteTranscriptionData(segmentId) } catch {
             log.failure("transcription delete", error)
         }
@@ -400,6 +403,10 @@ public actor DeleteCascade {
             return false
         }
 
+        do {
+            try await SpeakerCorrectionStore(db: annotations.db).removeRange(
+                segmentId: segmentId, startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
+        } catch { log.failure("speaker correction redaction", error) }
         do { try await transcription.redactTranscript(segmentId, mediaRangeMs: range) } catch {
             log.failure("transcript redaction", error)
         }

@@ -12,8 +12,19 @@ import Foundation
 
 extension Copy {
     enum Speaker {
+        static let title = "Who’s speaking?"
+        static let passage = "This passage"
+        static let passageFooter = "This changes only the selected passage. Voice recognition is not enabled."
+        static let thisIsMe = "This is me"
+        static let you = "You"
+        static let unnamed = "Leave unnamed"
+        static let newPerson = "Add a new person"
+        static let timingUnavailable = "Speaker timing isn’t available for this passage yet."
+        static let loadFailed = "Couldn’t load people. Try again."
+        static let saveFailed = "Couldn’t save this change. Your selection is still here; try again."
+        static let retry = "Try again"
         static let peopleHeader = "People"
-        static let peopleFooter = "Swipe a name to rename or remove them everywhere."
+        static let peopleFooter = "Touch and hold a name to rename it, mark it as you, or remove the person everywhere."
         static let namePlaceholder = "Name"
 
         static let rename = "Rename"
