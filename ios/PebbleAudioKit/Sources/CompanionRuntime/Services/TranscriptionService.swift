@@ -1,3 +1,4 @@
+import AppDB
 import Foundation
 import Receiver
 import SegmentStore
@@ -12,6 +13,7 @@ public actor TranscriptionService {
     private let processor: TranscriptionProcessor
     private let transcriptStore: FileTranscriptStore
     private let store: SegmentStore
+    private let database: AppDatabase
     private let cloudHealth: CloudHealthMonitor?
     private let connectivityCheck: (any CloudConnectivityCheck)?
     private let uploader: BackgroundCloudUploadCoordinator?
@@ -38,6 +40,7 @@ public actor TranscriptionService {
         processor: TranscriptionProcessor,
         transcriptStore: FileTranscriptStore,
         store: SegmentStore,
+        database: AppDatabase,
         settings: any RuntimeSettings,
         clock: RuntimeClock,
         cloudHealth: CloudHealthMonitor? = nil,
@@ -52,6 +55,7 @@ public actor TranscriptionService {
         self.processor = processor
         self.transcriptStore = transcriptStore
         self.store = store
+        self.database = database
         self.settings = settings
         self.clock = clock
         self.cloudHealth = cloudHealth
@@ -344,6 +348,12 @@ public actor TranscriptionService {
     /// No-op for the open segment.
     public func reprocessSegment(_ segmentId: String) async throws {
         guard let meta = await store.readMeta(segmentId), !meta.isOpen else { return }
+        let names = try await LegacySpeakerMigration.anchorBeforeReprocessing(
+            segmentId: segmentId, transcript: transcriptStore.loadWithoutWords(segmentId),
+            database: database, nowMs: clock.nowMs)
+        if names.unanchoredAssignments > 0 {
+            log.write("retranscription: \(names.unanchoredAssignments) old speaker assignment(s) need review; no reliable audio range")
+        }
         if try queue.requeue(segmentId) == nil {
             _ = try queue.enqueue(segmentId)
         }

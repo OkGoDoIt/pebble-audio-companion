@@ -72,6 +72,7 @@ import Transcription
             processor: processor,
             transcriptStore: FileTranscriptStore(root: root, nowMs: { clock.nowMs }),
             store: SegmentStore(root: root, nowMs: { clock.nowMs }),
+            database: db,
             settings: RuntimeSettingsBox(
                 RuntimeSettingsSnapshot(
                     captureIntent: .active, transcriptionMode: mode,

@@ -553,6 +553,7 @@ final class RuntimeFixture: @unchecked Sendable {
             processor: processor,
             transcriptStore: transcriptStore,
             store: store,
+            database: database,
             settings: settingsBox,
             clock: clock,
             uploader: uploadCoordinator,

@@ -545,6 +545,7 @@ final class AppComposition {
             processor: processor,
             transcriptStore: transcripts,
             store: store,
+            database: database,
             settings: settingsBox,
             clock: clock,
             cloudHealth: cloudHealth,
