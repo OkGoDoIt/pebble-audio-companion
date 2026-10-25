@@ -5,6 +5,7 @@ import Testing
 @MainActor final class VoiceTestSource: VoiceRecognitionDataSource {
     enum Failure: Error { case unavailable }
     var state = VoiceSettingsDisplay()
+    var snapshotOverride: (@MainActor () async throws -> VoiceSettingsDisplay)?
     var failPreparation = false
     var failEnrollment = false
     var preparationCount = 0
@@ -13,7 +14,10 @@ import Testing
     var scopes: [Int?] = []
     var cancelled = false
     var removedExampleIDs: [String] = []
-    func snapshot() async throws -> VoiceSettingsDisplay { state }
+    func snapshot() async throws -> VoiceSettingsDisplay {
+        if let snapshotOverride { return try await snapshotOverride() }
+        return state
+    }
     func updates() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func prepareModels(progress: @escaping @Sendable (Double) -> Void) async throws {
         preparationCount += 1
@@ -95,6 +99,24 @@ struct VoiceSettingsModelTests {
         #expect(model.display.people.isEmpty)
         await model.cancelEnrollment()
         #expect(source.cancelled)
+    }
+
+    @Test func staleRefreshCannotRestoreAnOlderModeOrError() async {
+        let source = VoiceTestSource()
+        var continuations: [CheckedContinuation<VoiceSettingsDisplay, any Error>] = []
+        source.snapshotOverride = { try await withCheckedThrowingContinuation { continuations.append($0) } }
+        let model = VoiceSettingsModel(source: source)
+        let old = Task { await model.refresh() }
+        while continuations.count < 1 { await Task.yield() }
+        let latest = Task { await model.refresh() }
+        while continuations.count < 2 { await Task.yield() }
+        continuations[1].resume(returning: VoiceSettingsDisplay(enabled: true))
+        await latest.value
+        continuations[0].resume(throwing: VoiceTestSource.Failure.unavailable)
+        await old.value
+        #expect(model.display.enabled)
+        #expect(model.errorMessage == nil)
+        #expect(model.loaded)
     }
 
     @Test func oneConfirmationIsOneVisibleSampleWithAllEvidenceRemovedTogether() async {

@@ -9,6 +9,7 @@ final class VoiceSettingsModel {
     private(set) var working = false
     private(set) var downloadProgress: Double?
     private(set) var errorMessage: String?
+    private var refreshGeneration: UInt64 = 0
     private let injectedSource: (any VoiceRecognitionDataSource)?
     private var source: (any VoiceRecognitionDataSource)? { injectedSource ?? VoiceSources.current }
 
@@ -24,13 +25,19 @@ final class VoiceSettingsModel {
     }
 
     func refresh() async {
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         guard let source else { errorMessage = Copy.Voices.unavailable; return }
         do {
             let updated = try await source.snapshot()
+            guard generation == refreshGeneration else { return }
             if display != updated { display = updated }
             if errorMessage == Copy.Voices.loadFailed || errorMessage == Copy.Voices.unavailable { errorMessage = nil }
             loaded = true
-        } catch { errorMessage = Copy.Voices.loadFailed }
+        } catch {
+            guard generation == refreshGeneration else { return }
+            errorMessage = Copy.Voices.loadFailed
+        }
     }
 
     func enable(_ value: Bool) async -> Bool {
