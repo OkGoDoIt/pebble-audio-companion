@@ -218,8 +218,9 @@ public actor VoiceRecognitionService {
     /// embeddings and a digest/provenance, never a second recording or a WAV file.
     public func enrollPCM(personId: String, pcm16LE: Data,
                           sessionID: String) async throws -> VoiceEnrollmentOutcome {
-        try await reconcileProfileProtection()
         let generation = beginEnrollment()
+        try await reconcileProfileProtection()
+        try checkEnrollment(generation)
         guard await models.isInstalled() else { throw VoiceEnrollmentError.modelsNotInstalled }
         try checkEnrollment(generation)
         await analyzer.setEnabled(true)
@@ -390,6 +391,10 @@ public actor VoiceRecognitionService {
                     }
                 } catch VoiceEnrollmentError.audioUnavailable { /* unavailable audio remains unavailable, no download */ }
                 catch VoiceIdentityError.sourceDeleted { /* source deleted after scope was chosen */ }
+                catch VoiceIdentityError.sourceInvalidated { /* source changed or was redacted; do not revive stale evidence */ }
+                catch VoiceEnrollmentError.unsupportedAudio {
+                    lastMessage = "Some recordings use an unsupported audio format and were skipped."
+                }
                 catch VoiceIdentityError.capacityExceeded { if advanced { changed() }; return advanced }
                 try await history.advance(runID: plan.runID, startMs: meta.startWallMs,
                     segmentId: meta.segmentId, queued: queued, complete: meta.segmentId == candidates.last?.segmentId)

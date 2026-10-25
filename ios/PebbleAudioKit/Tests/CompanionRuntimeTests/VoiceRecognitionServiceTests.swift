@@ -39,6 +39,16 @@ private actor VoiceTestAnalyzer: SpeakerSpeechAnalyzing {
     }
 }
 
+private struct UnavailableVoiceKey: VoiceProfileProtecting {
+    let locked: Bool
+    func hasKey() throws -> Bool {
+        if locked { throw VoiceProfileProtectionError.deviceLocked }
+        return false
+    }
+    func seal(_ plaintext: Data) throws -> Data { throw VoiceProfileProtectionError.keyMissing }
+    func open(_ envelope: Data) throws -> Data { throw VoiceProfileProtectionError.keyMissing }
+}
+
 @Suite struct VoiceRecognitionServiceTests {
     static func embedding() throws -> SpeakerEmbedding {
         try SpeakerEmbedding(recipe: SpeakerEmbeddingRecipe(modelID: "test", modelRevision: "1",
@@ -79,10 +89,46 @@ private actor VoiceTestAnalyzer: SpeakerSpeechAnalyzing {
             pcm16LE: Data(repeating: 1, count: 128_000), sessionID: "explicit-session") }
         _ = await analyzer.started.value()
         service.cancelEnrollment()
-        await analyzer.resume.complete(true)
+        analyzer.resume.complete(true)
         do { _ = try await task.value; Issue.record("Cancelled enrollment should not save") }
         catch is CancellationError {}
         #expect(try await VoiceIdentityStore(db: db).examples().isEmpty)
+    }
+
+    @Test func restoredMissingKeyClearsOnlyDerivedIdentityButLockedKeyPreservesIt() async throws {
+        for locked in [false, true] {
+            let db = try AppDatabase.inMemory()
+            let person = try await PeopleStore(db: db).createPerson(name: "Roger")
+            let store = VoiceIdentityStore(db: db)
+            try await store.setMode(.local)
+            _ = try await store.prepareSource(segmentId: "existing-audio", revision: "digest")
+            let context = try #require(try await store.workContext(segmentId: "existing-audio"))
+            #expect(try await store.commitExample(VoiceConfirmedExample(personId: person.id,
+                confirmationID: "human", sessionID: "session", segmentId: "existing-audio",
+                startMediaMs: 0, endMediaMs: 2_000, sourceRevision: "digest", recipeID: "recipe",
+                recipeJSON: Data("{}".utf8), embeddingJSON: Data("{}".utf8), qualityJSON: Data("{}".utf8)),
+                token: context.token))
+            try await SpeakerCorrectionStore(db: db).set(segmentId: "existing-audio", startMediaMs: 0,
+                endMediaMs: 2_000, personId: person.id, makeCurrentUser: true)
+            let service = VoiceRecognitionService(database: db,
+                files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")), models: VoiceTestModels(),
+                analyzer: VoiceTestAnalyzer(), policy: VoiceRecognitionService.initialPolicy,
+                recipeID: "recipe", protector: UnavailableVoiceKey(locked: locked))
+            if locked {
+                await #expect(throws: VoiceProfileProtectionError.deviceLocked) { try await service.status() }
+                #expect(try await store.configuration().mode == .local)
+                #expect(try await store.examples().count == 1)
+            } else {
+                let status = try await service.status()
+                #expect(status.configuration.mode == .off)
+                #expect(status.lastMessage?.contains("Set up the voices again") == true)
+                #expect(try await store.examples().isEmpty)
+            }
+            let manual = try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["existing-audio"])
+            #expect(manual.currentUserPersonId == person.id)
+            #expect(manual.corrections.first?.person?.id == person.id)
+            #expect(try await store.workContext(segmentId: "existing-audio") != nil)
+        }
     }
 
     @Test func enrollmentRejectsOverlapAndDifferentAcousticVoicesEvenWithOneHumanLabel() throws {
