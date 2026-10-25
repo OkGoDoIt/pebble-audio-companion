@@ -3,7 +3,7 @@
 # model download, private audio upload, or changes to the app's settings/container.
 set -euo pipefail
 if [[ $# -lt 4 || $# -gt 5 ]]; then
-    echo "usage: $0 SIMULATOR_UDID smoke|evaluate MODEL_DIR PCM_OR_MANIFEST; or SIMULATOR_UDID analyze|analyze-corpus EMBEDDING_DIR SEGMENTATION_DIR PCM_OR_MANIFEST" >&2
+    echo "usage: $0 SIMULATOR_UDID smoke|evaluate|export-embeddings MODEL_DIR PCM_OR_MANIFEST; or SIMULATOR_UDID analyze|analyze-corpus EMBEDDING_DIR SEGMENTATION_DIR PCM_OR_MANIFEST" >&2
     exit 2
 fi
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

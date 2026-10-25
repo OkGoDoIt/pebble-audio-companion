@@ -52,6 +52,20 @@ import Foundation
             manifest["samples"] = rows
             try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
                 .write(to: destination.appendingPathComponent("manifest.json"))
+            if let metadataData = try? Data(contentsOf: input.appendingPathComponent("metadata.json")),
+               let metadata = try JSONSerialization.jsonObject(with: metadataData) as? [[String: Any]] {
+                let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as! String, $0) })
+                let transformed = metadata.map { original -> [String: Any] in
+                    var row = original
+                    if let sample = byID[row["id"] as! String] {
+                        row["pcmPath"] = sample["pcmPath"]
+                        row["sourceRevision"] = (sample["evidence"] as! [String: Any])["sourceRevision"]
+                    }
+                    return row
+                }
+                try JSONSerialization.data(withJSONObject: transformed, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: destination.appendingPathComponent("metadata.json"))
+            }
             print("Prepared \(name): \(rows.count) labeled clips")
         }
     }

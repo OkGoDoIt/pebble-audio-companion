@@ -9,7 +9,7 @@
     "minimumSimilarity": 0.55,
     "minimumMargin": 0.1,
     "minimumExamples": 2,
-    "calibrationID": "public-read-speech-cactus-f145212-v1"
+    "calibrationID": "public-read-speech-cactus-f145212-codec-variants-v2"
   },
   "dataset": {
     "name": "OpenSLR LibriSpeech test-clean",
@@ -170,7 +170,34 @@
     }
   ],
   "hostCPU": "Apple M5 Pro",
-  "heldoutFullPipeline": {
+  "continuousEnrollmentRegression": [
+    {
+      "publicUtteranceID": "6930-75918-0003",
+      "pcmSHA256": "eca9f181a551f1e18d04d043f0ff6a37b19029ca763439323ff0e994577ea736",
+      "audioSeconds": 20.0,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 8
+    },
+    {
+      "publicUtteranceID": "1320-122617-0007",
+      "pcmSHA256": "a766d7269441926e2cb542c821514403c5b004a0e056580f02c89ad19c359081",
+      "audioSeconds": 18.525,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 7
+    },
+    {
+      "publicUtteranceID": "260-123288-0015",
+      "pcmSHA256": "d9b6dce70cb71e55ce370ede54178d1ada4e7c7422bc1d8f0cd5f53022f37eb7",
+      "audioSeconds": 20.0,
+      "clusters": 1,
+      "overlapTurns": 0,
+      "usableExamples": 7
+    }
+  ],
+  "continuousEnrollmentCaveat": "All three continuous public clips pass the service purity gate. Artificial concatenation of independent same-person recordings caused false extra clusters at edit boundaries; that is not a continuous microphone sample.",
+  "heldoutRawPCMPipeline": {
     "stages": [
       "production CoreML segmentation",
       "production bounded subwindow embedding",
@@ -202,31 +229,111 @@
     "eligibility": "Same whole-selection overlap/multi-cluster enrollment guard and per-turn speechConfidence>=0.7 as VoiceRecognitionService.",
     "speechConfidence": "Duration-weighted mean for each emitted crop; a single uncertain boundary frame does not reject the full passage."
   },
-  "continuousEnrollmentRegression": [
-    {
-      "publicUtteranceID": "6930-75918-0003",
-      "pcmSHA256": "eca9f181a551f1e18d04d043f0ff6a37b19029ca763439323ff0e994577ea736",
-      "audioSeconds": 20.0,
-      "clusters": 1,
-      "overlapTurns": 0,
-      "usableExamples": 8
+  "baselinePolicyID": "public-read-speech-cactus-f145212-v1",
+  "channelTransfer": {
+    "protocol": "Natural public phone PCM captures capped/padded to 20 seconds; explicit person labels; one whole-stream actual watch Speex 9800 bps view; each variant extracted at the exact confirmed raw crop; probe chapters disjoint from all enrollment chapters.",
+    "enrollmentCaptures": [
+      {
+        "id": "6930-75918-0003",
+        "sessionID": "librispeech-6930-75918",
+        "pcmSHA256": "eca9f181a551f1e18d04d043f0ff6a37b19029ca763439323ff0e994577ea736",
+        "recordingSeconds": 20,
+        "naturalAudioSeconds": 20.0
+      },
+      {
+        "id": "1320-122612-0011",
+        "sessionID": "librispeech-1320-122612",
+        "pcmSHA256": "97f32d83d80dcee4cf6b2eeb0d03d357333c3f85558e868d70776a43e6bd4bca",
+        "recordingSeconds": 20,
+        "naturalAudioSeconds": 13.695
+      },
+      {
+        "id": "260-123440-0004",
+        "sessionID": "librispeech-260-123440",
+        "pcmSHA256": "999cd5fcddab2fa2b17e19fccc4797f3260d1296036751773b9aa8bdea230fa6",
+        "recordingSeconds": 20,
+        "naturalAudioSeconds": 12.02
+      }
+    ],
+    "realCrops": 16,
+    "variantCrops": 16,
+    "variantsCountAsAdditionalEvidence": false,
+    "knownProbeClips": 18,
+    "unknownProbeClips": 12,
+    "eligibility": {
+      "realEnrollmentCrops": 16,
+      "eligibleProbeTurns": 61,
+      "probeClipsWithoutEligibleTurns": [
+        {
+          "id": "6930-76324-0007",
+          "personID": "ffa212b7-ab64-5299-8f74-1764abd7f574"
+        },
+        {
+          "id": "8463-287645-0003",
+          "personID": null
+        }
+      ]
     },
-    {
-      "publicUtteranceID": "1320-122617-0007",
-      "pcmSHA256": "a766d7269441926e2cb542c821514403c5b004a0e056580f02c89ad19c359081",
-      "audioSeconds": 18.525,
-      "clusters": 1,
-      "overlapTurns": 0,
-      "usableExamples": 7
+    "modes": {
+      "raw": {
+        "counts": {
+          "correctlyNamed": 0,
+          "falseSelf": 0,
+          "incorrectlyNamed": 0,
+          "known": 36,
+          "knownAbstained": 36,
+          "named": 0,
+          "total": 61,
+          "unknown": 25,
+          "unknownRejected": 25
+        },
+        "knownClipsCorrectlyNamed": 0,
+        "unknownClipsNamed": 0
+      },
+      "codec": {
+        "counts": {
+          "correctlyNamed": 20,
+          "falseSelf": 0,
+          "incorrectlyNamed": 0,
+          "known": 36,
+          "knownAbstained": 16,
+          "named": 20,
+          "total": 61,
+          "unknown": 25,
+          "unknownRejected": 25
+        },
+        "knownClipsCorrectlyNamed": 13,
+        "unknownClipsNamed": 0
+      },
+      "augmented": {
+        "counts": {
+          "correctlyNamed": 20,
+          "falseSelf": 0,
+          "incorrectlyNamed": 0,
+          "known": 36,
+          "knownAbstained": 16,
+          "named": 20,
+          "total": 61,
+          "unknown": 25,
+          "unknownRejected": 25
+        },
+        "knownClipsCorrectlyNamed": 13,
+        "unknownClipsNamed": 0
+      }
     },
-    {
-      "publicUtteranceID": "260-123288-0015",
-      "pcmSHA256": "d9b6dce70cb71e55ce370ede54178d1ada4e7c7422bc1d8f0cd5f53022f37eb7",
-      "audioSeconds": 20.0,
-      "clusters": 1,
-      "overlapTurns": 0,
-      "usableExamples": 7
+    "retry": "Initial 260-123440-0002 was rejected for multiple clusters. The next substantial utterance, 0004, was accepted after fixing the unsupported new-cluster claim for a short unembeddable final window. The failed enrollment attempt is reported.",
+    "limitations": [
+      "Small public read-English corpus, not actual phone-to-watch microphone transfer.",
+      "No thresholds lowered; substantial known-speaker abstention remains.",
+      "Zero wrong names observed is not a population false-match bound."
+    ],
+    "exactNativeServiceControl": {
+      "enrollment": "6930-75918-0003: 20 seconds of raw phone PCM with codec variants",
+      "knownSpeexProbe": "6930-76324-0002",
+      "acceptedKnownScore": 0.6546,
+      "unknownSpeexProbe": "2094-142345-0000",
+      "maximumUnknownScore": 0.1621,
+      "serviceResult": "VoiceNativeEndToEndTests passed in the iOS simulator, including encrypted database storage, manual precedence and undo. This does not establish device field accuracy."
     }
-  ],
-  "continuousEnrollmentCaveat": "All three continuous public clips pass the service purity gate. Artificial concatenation of independent same-person recordings caused false extra clusters at edit boundaries; that is not a continuous microphone sample."
+  }
 }

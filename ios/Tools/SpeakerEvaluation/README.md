@@ -9,6 +9,8 @@ The app combines a pinned Cactus WeSpeaker embedding model with a pinned Core ML
 community-1 segmentation conversion. Segmentation finds speech, local speaker slots and overlap
 independently of ASR; embeddings compare bounded clean intervals across windows/recordings.
 Anonymous slots are not people. Only explicitly confirmed examples train a person's profile.
+Phone enrollment keeps a raw embedding and one watch-codec variant of each confirmed crop.
+A variant is another rendering of the same evidence, never a second sample or confirmation.
 
 ## Exact models and runtime
 
@@ -45,6 +47,78 @@ On 2026-10-25, iPhone17/iOS27 simulator: 256 finite dimensions, normalized norm1
 repeat cosine1.0; native calls534.37/507.20ms,1.067s total including model verification/load.
 These are simulator measurements, not phone performance or battery results.
 
+## Phone enrollment → watch codec: current operating point
+
+The codec mismatch mattered in the actual service test: raw phone enrollment often abstained
+on correctly labeled Speex speech. The production fix augments each confirmed phone crop with
+one rendering through the **exact watch Speex encoder/decoder**. Encoding happens once over
+the whole phone recording; each variant is cut at its original confirmed crop's sample range.
+Watch passage enrollment is already decoded Speex and is not encoded again. The matcher takes
+the better channel score **within each real crop**, then averages the best two distinct crops.
+Two variants of one crop cannot satisfy the two-example minimum. Recipe compatibility, overlap
+checks, unknown rejection and the 0.55 cosine/0.10 margin thresholds remain enforced.
+
+The latest controlled comparison used three separate public enrollment chapters, each captured
+as20s:20s/13.695s/12.02s natural speech followed by silence where needed. All three were accepted,
+yielding16 real crops and16 optional codec variants. One earlier enrollment attempt was falsely
+rejected as multiple clusters; the next substantial utterance was used, and that failure remains
+in the report. Probe chapters are disjoint for every person. A preliminary long-utterance test
+had chapter overlap and was **excluded** from recognition results (it remains a valid purity-only
+regression). No matching threshold was lowered to make the comparison pass.
+
+| Enrollment view → Speex probes | Known turns correctly named | Known turns unnamed | Wrong names | Unknown turns rejected | Known clips with a correct name |
+|---|---:|---:|---:|---:|---:|
+| Raw phone only | 0/36 | 36 | 0 | 25/25 | 0/18 |
+| Codec view only | 20/36 | 16 | 0 | 25/25 | 13/18 |
+| Raw + codec variants (production) | 20/36 | 16 | 0 | 25/25 | 13/18 |
+
+There were18 known and12 unknown probe clips. One known and one unknown clip produced no
+eligible two-second speech crop; they remain in the clip denominator. All12 unknown clips
+stayed unnamed. This is a small English read-speech codec experiment, **not measured real
+phone-to-watch microphone transfer**, and known-speaker abstention remains substantial.
+The raw view preserves compatibility with raw recordings; it did not add recall in this
+particular codec condition. The machine-readable report separates this result from earlier
+same-condition embedding baselines below.
+
+The actual `VoiceNativeEndToEndTests` service test also passed:20s continuous phone enrollment,
+codec variants sealed in the database, an independently labeled held-out Speex recording named,
+a new person's Speex recording left unnamed, manual correction precedence, and undo. The known
+control's accepted score was0.6546; the unknown control's maximum was0.1621. Device energy and
+unreviewed watch identity accuracy are separate, unmeasured claims.
+
+Reproduce after preparing the public held-out corpus below. Dataset audio URLs can expire;
+regenerate the metadata or retain the downloaded FLAC files if a later download returns403.
+
+```sh
+python3 ios/Tools/SpeakerEvaluation/prepare-channel-enrollment.py \
+  /tmp/pebble-speaker-evaluation/public-heldout /tmp/pebble-speaker-evaluation/channel-enrollment
+bash ios/Tools/SpeakerEvaluation/speex-roundtrip.sh \
+  /tmp/pebble-speaker-evaluation/channel-enrollment /tmp/pebble-speaker-evaluation/channel-codec
+bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID analyze-corpus \
+  /tmp/pebble-speaker-evaluation/model /tmp/pebble-speaker-evaluation/Segmentation.mlmodelc \
+  /tmp/pebble-speaker-evaluation/channel-enrollment/metadata.json \
+  > /tmp/pebble-speaker-evaluation/channel-enrollment/analysis.json
+python3 ios/Tools/SpeakerEvaluation/prepare-channel-variants.py \
+  /tmp/pebble-speaker-evaluation/channel-enrollment /tmp/pebble-speaker-evaluation/channel-codec/speex \
+  /tmp/pebble-speaker-evaluation/channel-variants
+bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID export-embeddings \
+  /tmp/pebble-speaker-evaluation/model /tmp/pebble-speaker-evaluation/channel-variants/manifest.json \
+  > /tmp/pebble-speaker-evaluation/channel-variants/embeddings.json
+bash ios/Tools/SpeakerEvaluation/speex-roundtrip.sh \
+  /tmp/pebble-speaker-evaluation/public-heldout /tmp/pebble-speaker-evaluation/heldout-codec
+bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID analyze-corpus \
+  /tmp/pebble-speaker-evaluation/model /tmp/pebble-speaker-evaluation/Segmentation.mlmodelc \
+  /tmp/pebble-speaker-evaluation/heldout-codec/speex/metadata.json \
+  > /tmp/pebble-speaker-evaluation/heldout-codec/speex/analysis.json
+python3 ios/Tools/SpeakerEvaluation/prepare-channel-evaluation.py \
+  /tmp/pebble-speaker-evaluation/channel-variants \
+  /tmp/pebble-speaker-evaluation/public-heldout/metadata.json \
+  /tmp/pebble-speaker-evaluation/heldout-codec/speex/analysis.json \
+  /tmp/pebble-speaker-evaluation/channel-results
+bash ios/Tools/SpeakerEvaluation/evaluate-embeddings.sh /tmp/pebble-speaker-evaluation/channel-results/augmented.json
+# raw.json and codec.json reproduce the two comparison rows with the same evidence counts.
+```
+
 ## Public known/unknown evaluation
 
 The [OpenSLR LibriSpeech test-clean corpus](https://www.openslr.org/12) supplies explicit speaker
@@ -73,7 +147,7 @@ The tuning manifest deliberately exports every best score with threshold−1/mar
 `incorrectlyNamed` counter is **not the application policy's result**. `summarize-scores.py`
 applies the selected minimum cosine0.55/margin0.10/minimum two confirmed examples. The held-out
 manifest uses that frozen policy directly, calibrationID `public-read-speech-cactus-f145212-v1`.
-The score is the mean of the two most similar confirmed examples per person. One incomplete
+The baseline score is the mean of the two most similar confirmed examples per person. One incomplete
 profile still competes as a runner-up; incompatible recipes never match.
 
 Results on 2026-10-25 (machine-readable companion: `public-results-2026-10-25.json`):
@@ -103,7 +177,7 @@ bash ios/Tools/SpeakerEvaluation/run-native.sh SIMULATOR_UDID evaluate \
   /tmp/pebble-speaker-evaluation/model /tmp/pebble-speaker-evaluation/public-codec/speex/manifest.json
 ```
 
-The **full production segmentation→subwindow embedding→Swift matcher** path was also run on
+The **raw-PCM baseline segmentation→subwindow embedding→Swift matcher** path was also run on
 all39 held-out/enrollment clips using the same frozen policy **and the service's enrollment
 purity/≥0.7 speech-confidence gates**. Eight of nine enrollment clips were accepted, producing18
 examples. One known single-person enrollment clip was conservatively rejected because a0.4s
@@ -165,6 +239,11 @@ probability made one uncertain speech boundary reject an otherwise clean eight-s
 The analyzer now reports each emitted crop's duration-weighted mean speech probability. The
 per-frame speech/overlap gates are unchanged; that public sample produces three consistent
 embeddings with mean confidences0.9793/1.0000/0.9933. The benchmark above includes this fix.
+
+A final short window with no eligible embedding is left unknown instead of being assigned a
+new global speaker. That absence of evidence previously caused false multi-speaker enrollment
+refusals after otherwise clean speech. A distinct short slot alongside embedded speech in the
+same window still remains a separate local voice; detected overlap still blocks enrollment.
 
 Continuous long public utterances were also tested through the enrollment eligibility gate:
 20.0s/18.525s/20.0s from three known people each yielded exactly one cluster, no overlap, and

@@ -35,8 +35,8 @@ import Foundation
             try await analyze(args)
             return
         }
-        guard args.count == 4, ["smoke", "evaluate"].contains(args[1]) else {
-            throw SpeakerRecognitionError.invalidCorpus("Usage: speaker-native smoke MODEL_DIR PCM16LE | evaluate MODEL_DIR MANIFEST.json")
+        guard args.count == 4, ["smoke", "evaluate", "export-embeddings"].contains(args[1]) else {
+            throw SpeakerRecognitionError.invalidCorpus("Usage: speaker-native smoke MODEL_DIR PCM16LE | evaluate|export-embeddings MODEL_DIR MANIFEST.json")
         }
         let provider = CactusSpeakerEmbeddingProvider(model: CactusSpeakerModel(directory: URL(fileURLWithPath: args[2])))
         await provider.setEnabled(true)
@@ -93,8 +93,9 @@ import Foundation
                             condition: entry.condition, embedding: result.embedding))
                     }
                 }
-                try printJSON(SpeakerEvaluator.evaluate(SpeakerEvaluationCorpus(enrollment: enrollment,
-                    probes: probes, selfPersonID: manifest.selfPersonID), policy: manifest.policy))
+                let corpus = SpeakerEvaluationCorpus(enrollment: enrollment, probes: probes, selfPersonID: manifest.selfPersonID)
+                if args[1] == "export-embeddings" { try printJSON(EmbeddingExport(corpus: corpus, policy: manifest.policy)) }
+                else { try printJSON(SpeakerEvaluator.evaluate(corpus, policy: manifest.policy)) }
             }
             await provider.setEnabled(false)
         } catch {
@@ -102,6 +103,8 @@ import Foundation
             throw error
         }
     }
+
+    struct EmbeddingExport: Encodable { let corpus: SpeakerEvaluationCorpus; let policy: SpeakerMatchPolicy }
 
     struct AnalysisInput: Decodable {
         let id: String
