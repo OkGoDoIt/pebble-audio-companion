@@ -1,28 +1,49 @@
 import AppDB
 import Foundation
+import Intelligence
 import SearchKit
 import Transcription
 
 /// One precedence rule for the screen, search, archive and assistant transcript views.
 /// A partial or explicitly unnamed correction blocks the older whole-speaker assignment.
 public enum SpeakerAttribution {
+    public static func promptLine(_ turn: Intelligence.SpeakerAttributedTurn) -> String {
+        let name = turn.person.map {
+            $0.name + ($0.isCurrentUser ? " (current user)" : "")
+                + (turn.isVoiceMatch ? " (voice match; may be wrong)" : "")
+        }
+        return line(text: turn.text, speaker: turn.originalSpeaker, name: name)
+    }
+
+    public static func promptText(transcript: SegmentTranscript, identity: SpeakerIdentitySnapshot,
+                                  legacyAssignments: [SpeakerAssignment]) -> String {
+        guard !transcript.segments.isEmpty else { return transcript.text }
+        return attributedTurns(transcript: transcript, segmentId: transcript.segmentId, identity: identity,
+                               legacyAssignments: legacyAssignments).map(promptLine).joined(separator: "\n")
+    }
+
+    public static func attributedTurns(
+        transcript: SegmentTranscript, segmentId: String,
+        identity: SpeakerIdentitySnapshot, legacyAssignments: [SpeakerAssignment]
+    ) -> [Intelligence.SpeakerAttributedTurn] {
+        SpeakerTranscriptAttribution.attributedTurns(transcript: transcript, segmentId: segmentId,
+            identity: identity, legacyAssignments: legacyAssignments)
+    }
+
+    public static func attributedTurns(
+        segments: [Transcription.TranscriptSegment], words: [Transcription.TranscriptWord],
+        segmentId: String, identity: SpeakerIdentitySnapshot, legacyAssignments: [SpeakerAssignment]
+    ) -> [Intelligence.SpeakerAttributedTurn] {
+        SpeakerTranscriptAttribution.attributedTurns(segments: segments, words: words, segmentId: segmentId,
+            identity: identity, legacyAssignments: legacyAssignments)
+    }
+
     public static func person(
         segmentId: String, startMediaMs: Int64, endMediaMs: Int64, speaker: String?,
         identity: SpeakerIdentitySnapshot, legacyAssignments: [SpeakerAssignment]
     ) -> Person? {
-        switch identity.resolve(
-            segmentId: segmentId, startMediaMs: startMediaMs, endMediaMs: endMediaMs
-        ) {
-        case .named(let person): return person
-        case .unnamed, .partial: return nil
-        case nil:
-            guard let speaker, !speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                let assignment = SpeakerAssignment.match(
-                    SpeakerKey(segmentId: segmentId, label: speaker), in: legacyAssignments)
-            else { return nil }
-            return Person(id: assignment.personId, name: assignment.personName,
-                          isCurrentUser: assignment.personId == identity.currentUserPersonId)
-        }
+        identity.resolvedIdentity(segmentId: segmentId, startMediaMs: startMediaMs,
+            endMediaMs: endMediaMs, speaker: speaker, legacyAssignments: legacyAssignments)?.person
     }
 
     public static func name(
@@ -35,9 +56,13 @@ public enum SpeakerAttribution {
         case .named(let person): return person.name
         case .unnamed, .partial: return nil
         case nil:
-            guard let speaker, !speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { return nil }
-            return SpeakerKey(segmentId: segmentId, label: speaker).name(in: legacyNames)
+            if let speaker, !speaker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let name = SpeakerKey(segmentId: segmentId, label: speaker).name(in: legacyNames) {
+                return name
+            }
+            if case .named(let match) = identity.resolveAutomatic(segmentId: segmentId,
+                startMediaMs: startMediaMs, endMediaMs: endMediaMs) { return match.person.name }
+            return nil
         }
     }
 
@@ -56,12 +81,12 @@ public enum SpeakerAttribution {
         in member: ConversationMember, transcript: SegmentTranscript?,
         identity: SpeakerIdentitySnapshot, legacyAssignments: [SpeakerAssignment]
     ) -> [Person] {
-        let turns = transcript?.piece(member).segments ?? []
-        var people = turns.compactMap { turn in
-            person(segmentId: member.segmentId, startMediaMs: turn.startMs,
-                   endMediaMs: turn.endMs, speaker: turn.speaker, identity: identity,
-                   legacyAssignments: legacyAssignments)
-        }
+        let piece = transcript?.piece(member)
+        let turns = piece?.segments ?? []
+        var people = piece.map {
+            attributedTurns(transcript: $0, segmentId: member.segmentId,
+                identity: identity, legacyAssignments: legacyAssignments).compactMap(\.person)
+        } ?? []
         let lower = member.startMediaMs ?? 0
         let upper = member.endMediaMs ?? Int64.max
         let corrections = identity.corrections.filter {
@@ -71,6 +96,16 @@ public enum SpeakerAttribution {
             var person = person
             person.isCurrentUser = person.id == identity.currentUserPersonId
             return person
+        }
+        if turns.isEmpty {
+            people += identity.automaticAttributions.compactMap { row in
+                let a = row.attribution
+                guard a.segmentId == member.segmentId, a.disposition == .recognized,
+                    a.startMediaMs < upper, a.endMediaMs > lower,
+                    identity.resolve(segmentId: member.segmentId, startMediaMs: max(a.startMediaMs, lower),
+                                     endMediaMs: min(a.endMediaMs, upper)) == nil else { return nil }
+                return row.person
+            }
         }
         if turns.isEmpty && corrections.isEmpty {
             people += legacyAssignments.compactMap { assignment in

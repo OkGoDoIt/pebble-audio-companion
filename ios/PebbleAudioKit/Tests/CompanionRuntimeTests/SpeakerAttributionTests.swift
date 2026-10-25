@@ -22,6 +22,47 @@ struct SpeakerAttributionTests {
                            personId: old.id, personName: old.name)]
     }
 
+    private func auto(_ person: Person, start: Int64, end: Int64,
+                      disposition: VoiceAttributionDisposition = .recognized) -> VoiceResolvedAttribution {
+        VoiceResolvedAttribution(attribution: VoiceAutomaticAttribution(personId: person.id, segmentId: "s",
+            startMediaMs: start, endMediaMs: end, sourceRevision: "digest", recipeID: "recipe",
+            score: 0.95, margin: 0.2, calibrationID: "test", runID: "run", disposition: disposition), person: person)
+    }
+
+    @Test func wordAlignmentNamesOnlyCoveredWordsAndPreservesEveryOriginalCharacter() {
+        let transcript = SegmentTranscript(segmentId: "s", text: "Hello,  Alex! Bye.", modeUsed: .localOnly,
+            providerId: "test", createdAtMs: 0,
+            segments: [TranscriptSegment(text: "Hello,  Alex! Bye.", startMs: 0, endMs: 4_000)],
+            words: [TranscriptWord(text: "Hello,", startMs: 200, endMs: 1_000),
+                    TranscriptWord(text: "Alex!", startMs: 1_200, endMs: 2_000),
+                    TranscriptWord(text: "Bye.", startMs: 2_200, endMs: 3_000)])
+        let identity = SpeakerIdentitySnapshot(automaticAttributions: [auto(current, start: 360, end: 2_000)])
+        let turns = SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: "s",
+            identity: identity, legacyAssignments: [])
+        #expect(turns.map(\.text).joined() == transcript.text)
+        #expect(turns.count == 2)
+        #expect(turns.first?.person?.id == current.id)
+        #expect(turns.first?.isVoiceMatch == true)
+        #expect(turns.last?.person == nil)
+        #expect(turns.flatMap(\.words) == transcript.words)
+        let conflicted = SpeakerIdentitySnapshot(automaticAttributions: identity.automaticAttributions
+            + [auto(old, start: 900, end: 950)])
+        #expect(conflicted.resolvedWordIdentity(segmentId: "s", startMediaMs: 200, endMediaMs: 1_000,
+            speaker: nil, legacyAssignments: []) == nil)
+    }
+
+    @Test func manualLocksAndLegacyNamesOverrideAutomaticAndSuggestionsStayUnnamed() {
+        var identity = SpeakerIdentitySnapshot(automaticAttributions: [auto(current, start: 0, end: 1_000)])
+        #expect(identity.resolvedWordIdentity(segmentId: "s", startMediaMs: 100, endMediaMs: 200,
+            speaker: "1", legacyAssignments: assignments)?.person.id == old.id)
+        identity.corrections = snapshot(person: nil).corrections
+        #expect(identity.resolvedWordIdentity(segmentId: "s", startMediaMs: 100, endMediaMs: 200,
+            speaker: "1", legacyAssignments: assignments) == nil)
+        identity = SpeakerIdentitySnapshot(automaticAttributions: [auto(current, start: 0, end: 1_000, disposition: .suggestion)])
+        #expect(identity.resolvedWordIdentity(segmentId: "s", startMediaMs: 100, endMediaMs: 200,
+            speaker: nil, legacyAssignments: []) == nil)
+    }
+
     @Test(arguments: ["1", nil] as [String?])
     func explicitCorrectionNamesBothCloudAndLocalSpeech(_ label: String?) {
         let identity = snapshot(person: current)

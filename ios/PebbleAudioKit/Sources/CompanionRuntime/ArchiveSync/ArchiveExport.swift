@@ -23,7 +23,7 @@ public enum ArchiveExport {
     /// before the gap change, so the two share one re-send.)
     /// 3: range-level human corrections override legacy speaker names, including local ASR
     /// without provider labels. Explicit unnamed/partial corrections block legacy fallback.
-    public static let transcriptExportVersion = "transcript-export-3"
+    public static let transcriptExportVersion = "transcript-export-4"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
@@ -241,9 +241,17 @@ public enum ArchiveExport {
                 ? TranscriptArtefacts.loopedArtefacts(
                     in: turns.map { ArtefactTurn(text: $0.text, startMs: $0.startMs) })
                 : Array(repeating: false, count: turns.count)
+            var clean = cut
+            clean.segments = turns.enumerated().filter { !looped[$0.offset] }.map(\.element)
+            let legacy = speakerNames.map { label, name in
+                SpeakerAssignment(conversationId: conversationId, label: label,
+                                  personId: "legacy:" + label, personName: name)
+            }
+            let attributed = SpeakerAttribution.attributedTurns(transcript: clean,
+                segmentId: piece.member.segmentId, identity: identity, legacyAssignments: legacy)
             var withheldBy = Set<Int>()
             var spoken = 0
-            for (index, turn) in turns.enumerated() where !looped[index] {
+            for turn in attributed {
                 let middle = turn.startMs + max(turn.endMs - turn.startMs, 0) / 2
                 if let mask = piece.masked.firstIndex(where: { $0.range.contains(middle) }) {
                     withheldBy.insert(mask)
@@ -252,15 +260,12 @@ public enum ArchiveExport {
                 let text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
                 let wall = clock.wallRange(ofMediaStartMs: turn.startMs, endMs: turn.endMs)
-                let label = turn.speaker?.trimmingCharacters(in: .whitespaces)
+                let label = turn.originalSpeaker?.trimmingCharacters(in: .whitespaces)
                 // A provider labels each segment on its own, so a name is the one given to this
                 // label IN THIS SEGMENT (`SpeakerKey`); one given before names were scoped, in
                 // either form it was stored in, still covers the label wherever no segment name
                 // does.
-                let name = SpeakerAttribution.name(
-                    segmentId: piece.member.segmentId, startMediaMs: turn.startMs,
-                    endMediaMs: turn.endMs, speaker: label, identity: identity,
-                    legacyNames: speakerNames)
+                let name = turn.person?.name
                 items.append(
                     .turn(
                         atMs: wall.startMs, endMs: wall.endMs,

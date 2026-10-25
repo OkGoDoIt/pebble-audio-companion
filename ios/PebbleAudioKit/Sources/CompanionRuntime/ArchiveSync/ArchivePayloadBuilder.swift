@@ -30,6 +30,8 @@ public struct ArchivePayloadBuilder: Sendable {
         public var listSegments: @Sendable () async -> [SegmentMeta]
         /// The transcript without its word timings (`FileTranscriptStore.loadWithoutWords`).
         public var transcript: @Sendable (String) -> SegmentTranscript?
+        /// Used only when identities need word alignment; ordinary archive reads remain lean.
+        public var transcriptWithWords: (@Sendable (String) -> SegmentTranscript?)?
         /// One `stat` (`FileTranscriptStore.version`).
         public var transcriptVersion: @Sendable (String) -> String
         public var mask: AudioContentMask?
@@ -49,12 +51,14 @@ public struct ArchivePayloadBuilder: Sendable {
             audioContent: AudioContentStore? = nil,
             provisionalIds: @escaping @Sendable () async -> Set<String> = { [] },
             nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
-            currentZoneID: @escaping @Sendable () -> String = { TimeZone.current.identifier }
+            currentZoneID: @escaping @Sendable () -> String = { TimeZone.current.identifier },
+            transcriptWithWords: (@Sendable (String) -> SegmentTranscript?)? = nil
         ) {
             self.database = database
             self.readMeta = readMeta
             self.listSegments = listSegments
             self.transcript = transcript
+            self.transcriptWithWords = transcriptWithWords
             self.transcriptVersion = transcriptVersion
             self.mask = mask
             self.audioContent = audioContent
@@ -226,7 +230,8 @@ public struct ArchivePayloadBuilder: Sendable {
 
     /// `masks: false` skips the model-input mask, which only the transcript's turns read; the
     /// conversation's rows need the words (quiet is the time between them) but not the mask.
-    func pieces(of record: ConversationRecord, withTranscripts: Bool, masks: Bool = true)
+    func pieces(of record: ConversationRecord, withTranscripts: Bool, masks: Bool = true,
+                withWords: Bool = false)
         async throws -> [ArchiveExport.Piece]
     {
         var out: [ArchiveExport.Piece] = []
@@ -235,7 +240,8 @@ public struct ArchivePayloadBuilder: Sendable {
             out.append(
                 ArchiveExport.Piece(
                     member: member, meta: meta,
-                    transcript: withTranscripts ? sources.transcript(member.segmentId) : nil,
+                    transcript: withTranscripts ? (withWords ? (sources.transcriptWithWords ?? sources.transcript)(member.segmentId)
+                        : sources.transcript(member.segmentId)) : nil,
                     masked: withTranscripts && masks ? try await masked(meta.segmentId) : []))
         }
         return out
@@ -356,7 +362,8 @@ public struct ArchivePayloadBuilder: Sendable {
             .snapshot(segmentIds: record.members.map(\.segmentId))
         let sourceHash = try await transcriptSourceHash(record, names: names, identity: identity)
         if sourceHash == row.sentHash { return .unchanged(hash: sourceHash, pieceKey: key) }
-        let pieces = try await pieces(of: record, withTranscripts: true)
+        let pieces = try await pieces(of: record, withTranscripts: true,
+            withWords: !identity.corrections.isEmpty || !identity.automaticAttributions.isEmpty)
         let payload = ArchiveExport.transcript(
             conversationId: record.id, pieces: pieces,
             gaps: ArchiveExport.gaps(pieces, window: record.window), speakerNames: names,
