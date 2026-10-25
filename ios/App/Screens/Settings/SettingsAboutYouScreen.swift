@@ -50,6 +50,17 @@ struct SettingsAboutYouScreen: View {
                 )
             }
 
+            ListCard {
+                NavigationLink { VoiceSettingsScreen() } label: {
+                    HStack {
+                        Label(Copy.Voices.yourVoice, systemImage: "person.wave.2")
+                            .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(Tokens.chevron)
+                    }
+                }.buttonStyle(.plain)
+            }
+
             SettingsSectionHeader(title: Copy.Settings.AboutYou.sourcesSection)
             ListCard {
                 ForEach(ContextImportKind.allCases, id: \.self) { kind in

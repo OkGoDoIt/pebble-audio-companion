@@ -8,6 +8,7 @@ import Migration
 import Receiver
 import SearchKit
 import SegmentStore
+import SpeakerRecognition
 import StatusUI
 import SwiftUI
 import Transcription
@@ -42,6 +43,8 @@ final class AppComposition {
     let retention: RetentionManager
     let coldStorage: ColdAudioTier
     let transcripts: FileTranscriptStore
+    let voiceModels: SpeakerModelStore
+    let voiceRecognition: VoiceRecognitionService
 
     // --- stores -----------------------------------------------------------------------------
 
@@ -291,6 +294,10 @@ final class AppComposition {
         let coldLocator = ColdAudioLocator(files: ubiquity, nowMs: nowMs)
         let files = SegmentFileReader(root: containerRoot, coldAudio: coldLocator)
         self.files = files
+        let voiceModels = SpeakerModelStore()
+        self.voiceModels = voiceModels
+        let voiceRecognition = VoiceRecognitionService(database: database, files: files, models: voiceModels)
+        self.voiceRecognition = voiceRecognition
         let transcripts = FileTranscriptStore(root: containerRoot, nowMs: nowMs)
         self.transcripts = transcripts
 
@@ -1194,7 +1201,8 @@ final class AppComposition {
                 mask: audioContentMask,
                 audioContent: audioContentStore,
                 provisionalIds: { await enrichment.provisionalConversationIds() },
-                nowMs: nowMs
+                nowMs: nowMs,
+                transcriptWithWords: { transcripts.load($0) }
             )
         )
         let archiveSync = ArchiveSyncService(
@@ -1250,7 +1258,8 @@ final class AppComposition {
                 log: AppRuntimeLog.runtimeLog,
                 audioContent: audioContent,
                 coldStorage: coldStorage,
-                archiveSync: archiveSync
+                archiveSync: archiveSync,
+                voiceRecognition: voiceRecognition
             ),
             wake: wake
         )
@@ -1366,6 +1375,7 @@ final class AppComposition {
         if !Self.usesDemoData {
             AppDataSources.current = AppDataSources(today: today, live: today)
             AskLibraryDataSources.current = LiveLibraryDataSources.make(composition: self)
+            VoiceSources.current = LiveVoiceSource(composition: self)
             MomentsDataSources.current = LiveMoments(composition: self)
             let history = makeHistory(today: today)
             self.history = history

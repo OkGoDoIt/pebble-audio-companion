@@ -164,6 +164,20 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Automatic
 
+  # Optional real-app smoke tests; downloads public voice models only in this explicit scheme.
+  VoiceUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: VoiceUITests
+    dependencies:
+      - target: App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.voiceuitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
   # Pure-logic tests for the Shared/ helpers (no app host: nothing here touches UIKit).
   SharedTests:
     type: bundle.unit-test
@@ -208,3 +222,13 @@ schemes:
       config: Debug
       targets:
         - AppTests
+
+  VoiceUITests:
+    build:
+      targets:
+        App: all
+        VoiceUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - VoiceUITests

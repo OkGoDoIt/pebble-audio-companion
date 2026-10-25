@@ -1278,6 +1278,14 @@ extension MockWorld: PeopleDataSource {
         bump()
     }
 
+    func assignCurrentUserPassage(_ turn: TranscriptTurn, displayName: String) async throws -> Person {
+        let person: Person
+        if let current = peopleRegistry.first(where: \.isCurrentUser) { person = current }
+        else { person = try await createPerson(name: displayName) }
+        try await assignPassage(turn, personId: person.id, makeCurrentUser: true)
+        return peopleRegistry.first { $0.id == person.id } ?? person
+    }
+
     func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? {
         if let start = turn.sourceStartMs, let end = turn.sourceEndMs {
             switch identitySnapshot.resolve(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end) {

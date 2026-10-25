@@ -87,8 +87,12 @@ struct ConversationScreen: View {
         .onDisappear { player.stop() }
         // iOS 27 on-screen awareness: the open conversation, as the scene's activity (no-op below 27).
         .conversationEntityAwareness(id: conversationId)
-        .sheet(item: $model.renameTurn) { turn in
-            SpeakerRenameSheet(conversationId: conversationId, turn: turn) {
+        .sheet(item: $model.renameTurn, onDismiss: { player.pause() }) { turn in
+            SpeakerRenameSheet(conversationId: conversationId, turn: turn,
+                               onPlay: (turn.identificationMediaOffsetMs ?? turn.mediaOffsetMs).map { offset in {
+                                   if let end = turn.identificationMediaEndMs ?? turn.mediaEndMs { player.play(fromMs: offset, untilMs: end) }
+                                   else { player.play(fromMs: offset) }
+                               } }, onStop: { player.pause() }) {
                 Task { await load() }
             }
         }
@@ -238,6 +242,14 @@ struct ConversationScreen: View {
     private func blocks(_ display: ConversationDisplay) -> some View {
         lifecycleCard(display.lifecycle)
             .padding(.horizontal, Tokens.screenMargin)
+        if !display.voiceMatches.isEmpty {
+            ConversationVoiceMatchesCard(matches: display.voiceMatches,
+                canPlay: display.player != nil && display.audioAvailability == .onPhone,
+                onPlay: { player.play(fromMs: $0.playbackStartMs, untilMs: $0.playbackEndMs) },
+                onStop: { player.pause() }, conversationId: conversationId,
+                onChanged: { Task { await load() } })
+                .padding(.horizontal, Tokens.screenMargin)
+        }
         if !display.transcript.isEmpty {
             TranscriptView(
                 transcript: display.transcript,

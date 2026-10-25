@@ -113,4 +113,89 @@ struct SpeakerNamesPerSegmentTests {
         #expect(!TranscriptLayout.continuesRun(turns[0], with: turns[2]))
     }
 
+    @Test func unlabeledAsrWordsSplitAtRecognizedIdentityBoundaries() throws {
+        func match(_ id: String, _ name: String, start: Int64, end: Int64) -> VoiceResolvedAttribution {
+            VoiceResolvedAttribution(attribution: VoiceAutomaticAttribution(personId: id, segmentId: "s",
+                startMediaMs: start, endMediaMs: end, sourceRevision: "audio", recipeID: "test",
+                score: 0.9, margin: 0.2, calibrationID: "test", runID: "run"), person: Person(id: id, name: name))
+        }
+        let identities = SpeakerIdentitySnapshot(currentUserPersonId: "me", automaticAttributions: [
+            match("me", "Roger", start: 0, end: 1_900), match("sam", "Sam", start: 2_100, end: 4_000)
+        ])
+        let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+            segments: [SearchKit.TranscriptSegment(text: "Hello there. Good morning.", startMs: 0, endMs: 4_000)],
+            words: [SearchKit.TranscriptWord(text: "Hello", startMs: 0, endMs: 900),
+                    SearchKit.TranscriptWord(text: "there.", startMs: 1_000, endMs: 1_900),
+                    SearchKit.TranscriptWord(text: "Good", startMs: 2_100, endMs: 3_000),
+                    SearchKit.TranscriptWord(text: "morning.", startMs: 3_100, endMs: 4_000)],
+            assignments: [], identities: identities, timebase: .media)
+        let turns = built.items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        #expect(turns.count == 2)
+        #expect(turns.map(\.name) == ["You", "Sam"])
+        #expect(turns.map(\.personId) == ["me", "sam"])
+        #expect(turns.allSatisfy { $0.isVoiceMatch })
+        #expect(turns.map(\.text).joined(separator: " ") == "Hello there. Good morning.")
+        #expect(turns[0].sourceEndMs == 1_900)
+        #expect(turns[1].sourceStartMs == 2_100)
+    }
+
+    @Test func noWordTimingsOfferAnExplicitWholePassageWithoutInventingParagraphAudio() {
+        let text = (0..<80).map { "word\($0)" }.joined(separator: " ")
+        let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+            segments: [SearchKit.TranscriptSegment(text: text, startMs: 0, endMs: 50_000)],
+            assignments: [], timebase: .media)
+        let turns = built.items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        #expect(turns.count > 1)
+        #expect(turns.allSatisfy { $0.canIdentifyPassage })
+        #expect(turns.allSatisfy { $0.sourceStartMs == 0 && $0.sourceEndMs == 50_000 })
+        #expect(turns.allSatisfy { $0.identificationText == text })
+        #expect(turns.allSatisfy { !$0.canRememberVoice }) // Too long; guided setup remains available.
+    }
+
+    @Test func equalLengthDifferentWordsNeverNarrowAnIdentityRange() {
+        let aligner = TranscriptWordAligner(
+            words: [SearchKit.TranscriptWord(text: "sells", startMs: 1_000, endMs: 2_000)],
+            speechTexts: ["hello"])
+        #expect(!aligner.hasExactTextMatch)
+        let text = (0..<80).map { "hello\($0)" }.joined(separator: " ")
+        let words = (0..<80).map { index in
+            SearchKit.TranscriptWord(text: "sells\(index)", startMs: Int64(index) * 500, endMs: Int64(index + 1) * 500)
+        }
+        let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+            segments: [SearchKit.TranscriptSegment(text: text, startMs: 0, endMs: 50_000, speaker: "1")],
+            words: words, assignments: [], timebase: .media)
+        let turns = built.items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        #expect(turns.count > 1)
+        #expect(turns.allSatisfy { $0.identificationText == text && $0.sourceEndMs == 50_000 })
+    }
+
+    @Test func aTimedTurnCrossingAPieceCannotNameTheNeighborsAudio() {
+        let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+            segments: [SearchKit.TranscriptSegment(text: "Hello there.", startMs: 5_000, endMs: 15_000)],
+            assignments: [], timebase: .media,
+            piece: ConversationMember(segmentId: "s", startMediaMs: 0, endMediaMs: 10_000))
+        let turns = built.items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        #expect(turns.count == 1)
+        #expect(turns.allSatisfy { !$0.canIdentifyPassage })
+    }
+
+    @Test func coarseAsrStillOffersExactAudioMatchesInsideItsOwnPiece() async throws {
+        let person = Person(id: "me", name: "Roger", isCurrentUser: true)
+        let identity = SpeakerIdentitySnapshot(currentUserPersonId: "me", automaticAttributions: [
+            VoiceResolvedAttribution(attribution: VoiceAutomaticAttribution(personId: "me", segmentId: "s",
+                startMediaMs: 12_000, endMediaMs: 16_000, sourceRevision: "r", recipeID: "r",
+                score: 0.8, margin: 0.2, calibrationID: "test", runID: "run"), person: person)])
+        let result = await LiveWorld.walkMembers(
+            [ConversationMember(segmentId: "s", startMediaMs: 10_000, endMediaMs: 30_000)],
+            metas: ["s": Library.meta("s", index: 0)],
+            transcripts: ["s": Library.transcript("s", [Library.turn("A whole sentence with coarse timing.", 10_000, 29_000, "")])],
+            assignments: [], identities: identity)
+        #expect(result.voiceMatches.count == 1)
+        let match = try #require(result.voiceMatches.first)
+        #expect(match.playbackStartMs == 2_000 && match.playbackEndMs == 6_000)
+        #expect(match.correction.sourceStartMs == 12_000 && match.correction.isAudioOnly)
+        #expect(match.correction.canRememberVoice)
+        #expect(result.transcript.compactMap { if case .turn(let turn) = $0 { turn.personId } else { nil } }.isEmpty)
+    }
+
 }

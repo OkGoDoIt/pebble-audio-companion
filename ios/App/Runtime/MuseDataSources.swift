@@ -38,10 +38,8 @@ final class AppMuseData: MuseDataProvider, @unchecked Sendable {
             guard let detail = try? await library.conversation(id: row.id) else { continue }
             guard let identity = try? await SpeakerCorrectionStore(db: composition.database)
                 .snapshot(segmentIds: detail.pieces.map(\.segmentId)) else { continue }
-            let names = Dictionary(
-                ((try? await composition.people.assignments(forConversation: row.id)) ?? []).map { ($0.label, $0.personName) },
-                uniquingKeysWith: { first, _ in first })
-            var text = transcriptLines(detail.pieces, names: names, identity: identity)
+            let assignments = (try? await composition.people.assignments(forConversation: row.id)) ?? []
+            var text = transcriptLines(detail.pieces, assignments: assignments, identity: identity)
             if let query, !query.isEmpty { text = Self.passages(text, matching: query) }
             guard !text.isEmpty else { continue }
             if text.count > budget { text = String(text.prefix(budget)) + "…" }
@@ -56,18 +54,14 @@ final class AppMuseData: MuseDataProvider, @unchecked Sendable {
 
     /// One line per turn, "Name: words", the way the conversation screen reads.
     private func transcriptLines(
-        _ members: [ConversationMember], names: [String: String], identity: SpeakerIdentitySnapshot
+        _ members: [ConversationMember], assignments: [SpeakerAssignment], identity: SpeakerIdentitySnapshot
     ) -> String {
         members.compactMap { member -> String? in
-            guard let piece = ConversationText.piece(member, of: composition.transcripts.loadWithoutWords(member.segmentId))
+            guard let piece = ConversationText.piece(member, of: composition.transcripts.load(member.segmentId))
             else { return nil }
             if piece.segments.isEmpty { return piece.text.isEmpty ? nil : piece.text }
-            return piece.segments.map { turn in
-                let name = SpeakerAttribution.name(
-                    segmentId: member.segmentId, startMediaMs: turn.startMs, endMediaMs: turn.endMs,
-                    speaker: turn.speaker, identity: identity, legacyNames: names)
-                return SpeakerAttribution.line(text: turn.text, speaker: turn.speaker, name: name)
-            }.joined(separator: "\n")
+            return SpeakerAttribution.promptText(transcript: piece, identity: identity,
+                                                  legacyAssignments: assignments)
         }.joined(separator: "\n")
     }
 

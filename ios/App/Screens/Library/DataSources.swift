@@ -150,9 +150,20 @@ struct TranscriptTurn: Equatable, Identifiable {
     var words: [TranscriptWordSpan] = []
     /// Identity never depends on the displayed name (two people may both be Alex).
     var personId: String? = nil
+    var isVoiceMatch: Bool = false
     /// Original segment media coordinates, independent of conversation cuts and playback offset.
     var sourceStartMs: Int64? = nil
     var sourceEndMs: Int64? = nil
+    /// With only turn-level timestamps, confirmation explicitly covers the full timed passage.
+    var isAudioOnly = false
+    var identificationText: String? = nil
+    var identificationMediaOffsetMs: Int64? = nil
+    var identificationMediaEndMs: Int64? = nil
+
+    var canRememberVoice: Bool {
+        guard canIdentifyPassage, let sourceStartMs, let sourceEndMs else { return false }
+        return (2_000...30_000).contains(sourceEndMs - sourceStartMs)
+    }
 
     var canIdentifyPassage: Bool {
         guard !isInProgress, !segmentId.isEmpty, let sourceStartMs, let sourceEndMs else { return false }
@@ -285,6 +296,8 @@ struct ConversationDisplay: Equatable {
     /// transcript beside it is already stamped in clock time.
     var startedAt: Date?
     var endedAt: Date?
+    /// Matched audio whose exact words cannot safely be attributed in the transcript.
+    var voiceMatches: [ConversationVoiceMatch] = []
 
     var shareText: String {
         var lines = [title, metaLine]
@@ -293,6 +306,28 @@ struct ConversationDisplay: Equatable {
             if case .turn(let turn) = item { lines.append("\(turn.name): \(turn.text)") }
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+struct ConversationVoiceMatch: Equatable, Identifiable {
+    var id: String
+    var person: Person
+    var segmentId: String
+    var sourceStartMs: Int64
+    var sourceEndMs: Int64
+    var playbackStartMs: Int64
+    var playbackEndMs: Int64
+
+    var name: String { person.isCurrentUser ? "You" : person.name }
+    var timeLabel: String {
+        func stamp(_ ms: Int64) -> String { "\(ms / 60_000):" + String(format: "%02lld", (ms / 1_000) % 60) }
+        return "\(stamp(playbackStartMs))–\(stamp(playbackEndMs))"
+    }
+    var correction: TranscriptTurn {
+        TranscriptTurn(id: id, speakerLabel: "", name: name, role: person.isCurrentUser ? .you : .other,
+            text: "Listen to this audio clip to check who is speaking.", segmentId: segmentId,
+            mediaOffsetMs: playbackStartMs, mediaEndMs: playbackEndMs, personId: person.id,
+            isVoiceMatch: true, sourceStartMs: sourceStartMs, sourceEndMs: sourceEndMs, isAudioOnly: true)
     }
 }
 
@@ -532,6 +567,7 @@ protocol PeopleDataSource: AnyObject {
     func people() async throws -> [Person]
     func createPerson(name: String) async throws -> Person
     func assignPassage(_ turn: TranscriptTurn, personId: String?, makeCurrentUser: Bool) async throws
+    func assignCurrentUserPassage(_ turn: TranscriptTurn, displayName: String) async throws -> Person
     func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person?
     func setCurrentUser(personId: String?) async throws
     /// Assign a diarization label to a person by name (find-or-create), per plan 6.3.

@@ -251,6 +251,7 @@ struct SettingsScreen: View {
                 value: transcriptionPreview,
                 route: .settings(.transcription)
             )
+            SettingsNavRow(title: Copy.Voices.title, route: .settings(.voices))
             MuseSettingsRow()
             AssistantsSettingsRow()
             SettingsNavRow(
@@ -325,6 +326,7 @@ struct SettingsScreen: View {
         case .settings(.diagnostics): SettingsDiagnosticsScreen()
         case .settings(.reminders): SettingsRemindersScreen()
         case .settings(.server): SettingsServerScreen()
+        case .settings(.voices): VoiceSettingsScreen()
         default: EmptyView()  // non-settings routes never land on the settings stack
         }
     }

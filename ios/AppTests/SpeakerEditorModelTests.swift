@@ -25,6 +25,13 @@ struct SpeakerEditorModelTests {
             if failSave { throw Failure.disk }
             saves.append((personId, makeCurrentUser))
         }
+        func assignCurrentUserPassage(_ turn: TranscriptTurn, displayName: String) async throws -> Person {
+            let person: Person
+            if let current = registry.first(where: \.isCurrentUser) { person = current }
+            else { person = try await createPerson(name: displayName) }
+            try await assignPassage(turn, personId: person.id, makeCurrentUser: true)
+            return person
+        }
         func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? { nil }
         func setCurrentUser(personId: String?) async throws {}
         func assign(conversationId: String, label: String, personName: String) async throws {}
@@ -58,7 +65,7 @@ struct SpeakerEditorModelTests {
         await editor.load(conversationId: "c", turn: turn)
         #expect(await editor.choose(source.registry[1], for: turn))
         #expect(source.saves.last?.0 == "b")
-        #expect(await editor.chooseMe(for: turn))
+        #expect(await editor.chooseMe(for: turn, name: "Roger"))
         #expect(source.saves.last?.0 == "new-1")
         #expect(source.saves.last?.1 == true)
     }
@@ -67,7 +74,7 @@ struct SpeakerEditorModelTests {
         source.registry = [Person(id: "me", name: "Roger", isCurrentUser: true)]
         let editor = SpeakerEditorModel(source: source)
         await editor.load(conversationId: "c", turn: turn)
-        #expect(await editor.chooseMe(for: turn))
+        #expect(await editor.chooseMe(for: turn, name: "Roger"))
         #expect(source.saves.last?.0 == "me")
         #expect(source.created == 0)
     }
@@ -93,7 +100,7 @@ struct SpeakerEditorModelTests {
         let first = Task { await model.choose(nil, for: turn) }
         while source.resume == nil { await Task.yield() }
         #expect(model.isSaving)
-        #expect(await model.chooseMe(for: turn) == false)
+        #expect(await model.chooseMe(for: turn, name: "Roger") == false)
         source.resume?.resume()
         #expect(await first.value)
         #expect(source.saves.count == 1)

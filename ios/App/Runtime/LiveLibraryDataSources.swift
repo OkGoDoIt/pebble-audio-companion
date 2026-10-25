@@ -98,6 +98,7 @@ final class LiveWorld {
         var provider: String?
         var transcribedAtMs: Int64?
         var zone: TimeZone?
+        var voiceMatches: [ConversationVoiceMatch] = []
     }
 
     /// Turns the loaded metas and transcripts into the screen's rows — OFF the main actor.
@@ -160,6 +161,21 @@ final class LiveWorld {
                     piece: member
                 )
                 let before = result.mediaMs
+                let clock = SegmentMediaClock(meta)
+                let span = PieceSpan(member, clock: clock, frameDurationMs: Int64(meta.frameDurationMs))
+                let namedPeople = Set(built.items.compactMap { item -> String? in
+                    if case .turn(let turn) = item { return turn.personId }; return nil
+                })
+                for match in SpeakerAttribution.audioMatches(in: member, transcript: stored,
+                    identity: identities, legacyAssignments: assignments) where !namedPeople.contains(match.person.id) {
+                    let start = max(match.attribution.startMediaMs, span.mediaMs.lowerBound)
+                    let end = min(match.attribution.endMediaMs, span.mediaMs.upperBound, clock.mediaSpanMs)
+                    guard end > start else { continue }
+                    result.voiceMatches.append(ConversationVoiceMatch(id: "\(match.attribution.id):\(start):\(end)",
+                        person: match.person, segmentId: segmentId, sourceStartMs: start, sourceEndMs: end,
+                        playbackStartMs: before + span.offset(ofSegmentMediaMs: start),
+                        playbackEndMs: before + span.offset(ofSegmentMediaMs: end)))
+                }
                 result.transcript.append(contentsOf: built.items)
                 result.missingTicks.append(
                     contentsOf: built.missingMediaOffsets.map { Double(before + $0) })
@@ -447,7 +463,8 @@ extension LiveWorld: ConversationDataSource {
             startedAt: start,
             // A live conversation has no end yet; the scrubber says "now" rather than naming the
             // last moment audio happened to arrive.
-            endedAt: source.isLive ? nil : end
+            endedAt: source.isLive ? nil : end,
+            voiceMatches: walked.voiceMatches
         )
     }
 
@@ -806,6 +823,12 @@ extension LiveWorld: AskDataSource {
         let loaded = Self.cut(
             await Self.loadTranscripts(scoped.map(\.segmentId), store: composition.transcripts),
             to: scopedPieces)
+        let voiceIdentity = (try? await SpeakerCorrectionStore(db: composition.database)
+            .snapshot(segmentIds: scoped.map(\.segmentId))) ?? .init()
+        var voiceLegacy: [SpeakerAssignment] = []
+        if case .conversation(let id, _) = scope {
+            voiceLegacy = (try? await composition.people.assignments(forConversation: id)) ?? []
+        }
         var excerpts: [TranscriptExcerpt] = []
         var gapSummaries: [String: String?] = [:]
         for meta in scoped {
@@ -825,7 +848,8 @@ extension LiveWorld: AskDataSource {
             excerpts.append(
                 TranscriptExcerpt(
                     segmentId: meta.segmentId,
-                    text: transcript.text,
+                    text: SpeakerAttribution.promptText(transcript: transcript, identity: voiceIdentity,
+                        legacyAssignments: voiceLegacy),
                     startTimeMs: startMs,
                     endTimeMs: endMs,
                     // The full recorded date, not just a clock time: these transcripts span
@@ -861,7 +885,7 @@ extension LiveWorld: AskDataSource {
                 loaded[excerpt.segmentId].map { (excerpt.segmentId, $0) }
             },
             metas: Dictionary(scoped.map { ($0.segmentId, $0) }, uniquingKeysWith: { first, _ in first }),
-            pieces: scopedPieces)
+            pieces: scopedPieces, identity: voiceIdentity, legacyAssignments: voiceLegacy)
         // Which conversation each recording belongs to, in one read: coverage is counted — and
         // told to the model and stored in Recent — in CONVERSATIONS. It used to count recordings
         // and call them conversations ("29 conversations read" for one conversation).
@@ -1307,9 +1331,10 @@ extension LiveWorld: AskDataSource {
         let transcripts = Self.cut(
             await Self.loadTranscripts(segmentIds, store: composition.transcripts), to: owned)
         let metas = await Self.loadMetas(segmentIds, files: composition.files)
+        let identity = (try? await SpeakerCorrectionStore(db: composition.database).snapshot(segmentIds: segmentIds)) ?? .init()
         return citableStretches(
             of: segmentIds.compactMap { id in transcripts[id].map { (id, $0) } }, metas: metas,
-            pieces: owned)
+            pieces: owned, identity: identity)
     }
 
     /// The same, for a caller that has already read these transcripts and metas. Ask reads every
@@ -1323,14 +1348,15 @@ extension LiveWorld: AskDataSource {
     func citableStretches(
         of transcripts: [(segmentId: String, transcript: SegmentTranscript)],
         metas: [String: SegmentMeta],
-        pieces: [String: ConversationMember] = [:]
+        pieces: [String: ConversationMember] = [:],
+        identity: SpeakerIdentitySnapshot = .init(), legacyAssignments: [SpeakerAssignment] = []
     ) -> [CitableExcerpt] {
         CitableExcerpts.numbered(
             CitableExcerpts.coalesced(
                 transcripts.flatMap {
                     drafts(
                         of: $0.segmentId, transcript: $0.transcript, meta: metas[$0.segmentId],
-                        piece: pieces[$0.segmentId])
+                        piece: pieces[$0.segmentId], identity: identity, legacyAssignments: legacyAssignments)
                 }))
     }
 
@@ -1367,7 +1393,8 @@ extension LiveWorld: AskDataSource {
 
     private func drafts(
         of segmentId: String, transcript: SegmentTranscript, meta: SegmentMeta?,
-        piece: ConversationMember? = nil
+        piece: ConversationMember? = nil, identity: SpeakerIdentitySnapshot = .init(),
+        legacyAssignments: [SpeakerAssignment] = []
     ) -> [CitableExcerptDraft] {
         guard !transcript.text.isEmpty, let meta else { return [] }
         // Ask's citable excerpts were the last model input still reading raw transcript text,
@@ -1416,9 +1443,10 @@ extension LiveWorld: AskDataSource {
             segmentId: segmentId,
             segmentStartMs: startMs,
             segmentEndMs: endMs,
-            spans: transcript.segments.map {
+            spans: SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: segmentId,
+                identity: identity, legacyAssignments: legacyAssignments).map {
                 TranscriptSpan(
-                    text: $0.text,
+                    text: SpeakerAttribution.promptLine($0),
                     startMs: clock.wallOffset(ofMedia: $0.startMs),
                     endMs: clock.wallOffset(ofMedia: max($0.endMs, $0.startMs)))
             },
@@ -1953,15 +1981,30 @@ extension LiveWorld: PeopleDataSource {
         await reindex(Array(Set(affected)))
     }
 
+    func assignCurrentUserPassage(_ turn: TranscriptTurn, displayName: String) async throws -> Person {
+        guard turn.canIdentifyPassage, let start = turn.sourceStartMs, let end = turn.sourceEndMs else {
+            throw SpeakerEditorError.timingUnavailable
+        }
+        let store = SpeakerCorrectionStore(db: composition.database)
+        var affected = try await store.affectedConversationIds(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end)
+        if let old = try await composition.people.currentUserPersonId() {
+            affected += try await composition.people.conversationIds(assignedTo: old)
+        }
+        let person = try await store.assignCurrentUser(segmentId: turn.segmentId, startMediaMs: start,
+                                                       endMediaMs: end, displayName: displayName)
+        affected += try await composition.people.conversationIds(assignedTo: person.id)
+        await reindex(Array(Set(affected)))
+        return person
+    }
+
     func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? {
         if let start = turn.sourceStartMs, let end = turn.sourceEndMs {
             let snapshot = try await SpeakerCorrectionStore(db: composition.database)
                 .snapshot(segmentIds: [turn.segmentId])
-            switch snapshot.resolve(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end) {
-            case .named(let person): return person
-            case .unnamed, .partial: return nil
-            case nil: break
-            }
+            let assignments = try await composition.people.assignments(forConversation: conversationId)
+            return snapshot.resolvedIdentity(segmentId: turn.segmentId, startMediaMs: start, endMediaMs: end,
+                speaker: SpeakerKey(stored: turn.speakerLabel)?.label ?? turn.speakerLabel,
+                legacyAssignments: assignments)?.person
         }
         return try await assignedPerson(conversationId: conversationId, label: turn.speakerLabel)
     }

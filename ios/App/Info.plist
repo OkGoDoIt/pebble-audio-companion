@@ -60,6 +60,8 @@
 	<string>Imports event titles to help transcription when you tap Import, and lets Muse read and add events when you allow it in Settings › Muse.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Keeps your reminders in Apple Reminders when you choose it, and lets Muse work with your reminders when you allow it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Records a short voice sample only when you choose to set up voice recognition. The sample is processed on this phone.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Transcribes your recordings on this phone when you choose on-device transcription.</string>
 	<key>UIApplicationSceneManifest</key>

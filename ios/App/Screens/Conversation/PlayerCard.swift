@@ -201,6 +201,7 @@ final class PlayerModel {
     /// the Lock Screen item was torn down and rebuilt a quarter of a second after every play.
     private var awaitingEngineStart = false
     private var ticker: Task<Void, Never>?
+    private var previewEndMs: Int64?
     /// Media position -> wall clock, as (mediaMs, wall) anchors in ascending media order.
     ///
     /// The scrubber counts MEDIA time (stored audio, gaps excluded), so it cannot be added to the
@@ -355,6 +356,11 @@ final class PlayerModel {
         awaitingEngineStart = false
         playing = update.playing
         positionMs = update.positionMs
+        if let end = previewEndMs, update.playing, update.positionMs >= end {
+            positionMs = end
+            pause()
+            return
+        }
         // Running off the end rewinds to zero and stops: that is the session ending, not a
         // pause, so the docked player lets go too — and so does the Lock Screen. A pause is
         // told apart from it by where the audio was: the end comes after it has moved.
@@ -402,7 +408,15 @@ final class PlayerModel {
         if !playing { play() }
     }
 
+    /// A speaker correction previews exactly its selected passage.
+    func play(fromMs start: Int64, untilMs end: Int64) {
+        guard end > start else { return }
+        play(fromMs: start)
+        previewEndMs = min(end, durationMs)
+    }
+
     func pause() {
+        previewEndMs = nil
         let wasPlaying = playing
         playing = false
         awaitingEngineStart = false
@@ -436,6 +450,7 @@ final class PlayerModel {
     /// Leaving the screen has to end the audio — a conversation that keeps playing from a
     /// screen the user popped is the kind of thing this app can never do.
     func stop() {
+        previewEndMs = nil
         let wasEngaged = hasStarted
         playing = false
         hasStarted = false
@@ -475,6 +490,7 @@ final class PlayerModel {
     }
 
     func seek(positionMs: Int64) {
+        previewEndMs = nil
         let clamped = min(max(positionMs, 0), durationMs)
         self.positionMs = clamped
         engine?.seek(toMs: clamped)
@@ -562,8 +578,8 @@ final class PlayerModel {
                 guard !Task.isCancelled, self.playing else { return }
                 self.positionMs += Int64(250 * self.speed)
                 self.playhead.update(mediaMs: self.positionMs, playing: true)
-                if self.positionMs >= self.durationMs {
-                    self.positionMs = self.durationMs
+                if self.positionMs >= (self.previewEndMs ?? self.durationMs) {
+                    self.positionMs = self.previewEndMs ?? self.durationMs
                     self.pause()
                 }
             }

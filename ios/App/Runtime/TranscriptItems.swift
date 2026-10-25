@@ -1,9 +1,11 @@
 import AppDB
 import CompanionRuntime
 import Foundation
+import Intelligence
 import SearchKit
 import SegmentStore
 import StatusUI
+import Transcription
 
 // One builder for the transcript both detail screens render.
 //
@@ -93,8 +95,26 @@ enum TranscriptItems {
         // interrupted rows between them — come from the kit, so the archive sync sends the
         // server exactly what this screen shows (`SearchKit/PieceTimeline.swift` carries the
         // clock and cutting rules this used to spell out here).
+        var renderSegments = segments
+        var resolvedByKey: [String: SpeakerAttributedTurn] = [:]
+        if timebase == .media, !identities.automaticAttributions.isEmpty || !identities.corrections.isEmpty {
+            let attributed = SpeakerAttribution.attributedTurns(
+                segments: segments.map { Transcription.TranscriptSegment(text: $0.text, startMs: $0.startMs,
+                                                                          endMs: $0.endMs, speaker: $0.speaker) },
+                words: words.map { Transcription.TranscriptWord(text: $0.text, startMs: $0.startMs, endMs: $0.endMs) },
+                segmentId: segmentId, identity: identities, legacyAssignments: assignments)
+            renderSegments = attributed.map { turn in
+                // A key exists even for unknown speech so the formatter retains identity
+                // boundaries instead of coalescing all unlabeled local-ASR words again.
+                let key = turn.person.map { "person:\($0.id):\(turn.isVoiceMatch)" }
+                    ?? "unknown:\(turn.originalSpeaker ?? "")"
+                resolvedByKey[key] = turn
+                return SearchKit.TranscriptSegment(text: turn.text, startMs: turn.startMs, endMs: turn.endMs,
+                                                   speaker: turn.originalSpeaker, attributionKey: key)
+            }
+        }
         let built = pieceTimeline(
-            meta: meta, member: own.member, clock: clock, segments: segments, words: words,
+            meta: meta, member: own.member, clock: clock, segments: renderSegments, words: words,
             timebase: timebase)
         let passesMediaThrough = built.passesMediaThrough
         let timeline = built.items
@@ -138,13 +158,35 @@ enum TranscriptItems {
                 // The provider labelled THIS segment's speakers, so a name is looked up, and
                 // filed, under the segment as well as the label (`SpeakerKey`).
                 let key = speech.speaker.map { SpeakerKey(segmentId: segmentId, label: $0) }
-                let sourceStart = passesMediaThrough
-                    ? speech.startMs : clock.media(fromWall: speech.startMs)
-                let sourceEnd = passesMediaThrough
-                    ? speech.endMs : clock.media(fromWall: speech.endMs)
-                let person = SpeakerAttribution.person(
+                // Highlighting tolerates provider punctuation/token differences. Identity does
+                // not: only exact text correspondence may narrow a range to word boundaries.
+                let exactWords = aligner.hasExactTextMatch && !wordSpans.isEmpty
+                let identityWords = exactWords ? wordSpans : []
+                let fullScope = speech.hasEstimatedTiming && !exactWords ? speech.identificationScope : nil
+                let exactWordStart = identityWords.map(\.mediaStartMs).min().map {
+                    $0 - mediaBeforeMemberMs + own.mediaMs.lowerBound
+                }
+                let exactWordEnd = identityWords.map(\.mediaEndMs).max().map {
+                    $0 - mediaBeforeMemberMs + own.mediaMs.lowerBound
+                }
+                let scopeStart = fullScope?.startMs ?? speech.startMs
+                let scopeEnd = fullScope?.endMs ?? speech.endMs
+                let sourceStart = exactWordStart ?? (passesMediaThrough
+                    ? scopeStart : clock.media(fromWall: scopeStart))
+                let sourceEnd = exactWordEnd ?? (passesMediaThrough
+                    ? scopeEnd : clock.media(fromWall: scopeEnd))
+                // Never clamp and quietly label different audio than the text being confirmed.
+                let withinPiece = sourceStart >= own.mediaMs.lowerBound && sourceEnd <= own.mediaMs.upperBound
+                    && sourceEnd <= clock.mediaSpanMs && sourceEnd > sourceStart
+                let reliableRange = withinPiece && (!speech.hasEstimatedTiming || exactWords || fullScope != nil)
+                let attributed = speech.attributionKey.flatMap { resolvedByKey[$0] }
+                let directIdentity = identities.resolvedIdentity(
                     segmentId: segmentId, startMediaMs: sourceStart, endMediaMs: sourceEnd,
-                    speaker: speech.speaker, identity: identities, legacyAssignments: assignments)
+                    speaker: speech.speaker, legacyAssignments: assignments)
+                let person = attributed != nil ? attributed?.person : (reliableRange ? directIdentity?.person : nil)
+                let isVoiceMatch = attributed?.isVoiceMatch ?? directIdentity?.isVoiceMatch ?? false
+                let identificationStartOffset = reliableRange ? fullScope.flatMap { mediaOffset($0.startMs) } : nil
+                let identificationEndOffset = reliableRange ? fullScope.flatMap { mediaOffset($0.endMs) } : nil
                 result.lastTurnId = itemId
                 result.items.append(
                     .turn(
@@ -161,8 +203,12 @@ enum TranscriptItems {
                             mediaEndMs: endOffset,
                             words: wordSpans,
                             personId: person?.id,
-                            sourceStartMs: sourceStart,
-                            sourceEndMs: sourceEnd
+                            isVoiceMatch: person != nil && isVoiceMatch,
+                            sourceStartMs: reliableRange ? sourceStart : nil,
+                            sourceEndMs: reliableRange ? sourceEnd : nil,
+                            identificationText: reliableRange ? fullScope?.text : nil,
+                            identificationMediaOffsetMs: identificationStartOffset,
+                            identificationMediaEndMs: identificationEndOffset
                         )))
             case .silenceBreak:
                 break  // an unlabeled visual break; the card's row spacing carries it
@@ -281,6 +327,7 @@ struct TranscriptWordAligner {
     /// Letters/digits preceding each word in the stream.
     private let wordStartChar: [Int]
     private let usable: Bool
+    let hasExactTextMatch: Bool
     /// How far into that stream the turns walked so far have taken us.
     private var consumed = 0
 
@@ -301,6 +348,11 @@ struct TranscriptWordAligner {
         wordStartChar = cumulative
 
         let rendered = speechTexts.reduce(0) { $0 + Self.significantCount($1) }
+        func letters(_ text: String) -> String {
+            String(text.filter { $0.isLetter || $0.isNumber }).lowercased()
+        }
+        hasExactTextMatch = !ordered.isEmpty && rendered > 0
+            && letters(ordered.map(\.text).joined()) == letters(speechTexts.joined())
         // The two streams should agree letter for letter; 5% covers a provider that drops the
         // odd filler token from one side. Beyond that they are describing different audio (a
         // migrated row whose words were never stored, a provider whose words and segments come

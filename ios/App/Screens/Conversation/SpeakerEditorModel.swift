@@ -3,11 +3,16 @@ import Foundation
 import Observation
 
 enum SpeakerEditorError: LocalizedError {
-    case timingUnavailable
-    var errorDescription: String? { Copy.Speaker.timingUnavailable }
+    case timingUnavailable, voiceUnavailable
+    var errorDescription: String? {
+        switch self {
+        case .timingUnavailable: Copy.Speaker.timingUnavailable
+        case .voiceUnavailable: Copy.Voices.unavailable
+        }
+    }
 }
 
-/// Manual decisions only. Naming a passage never starts recording or enrolls a voice.
+/// A manual name is saved first. Acoustic enrollment requires the separate, explicit choice.
 @MainActor @Observable
 final class SpeakerEditorModel {
     private(set) var people: [Person] = []
@@ -15,6 +20,8 @@ final class SpeakerEditorModel {
     private(set) var isSaving = false
     private(set) var loaded = false
     private(set) var errorMessage: String?
+    private(set) var voiceAvailable = false
+    private(set) var nameWasSaved = false
     private let injectedSource: (any PeopleDataSource)?
     private var source: any PeopleDataSource { injectedSource ?? AskLibraryDataSources.current.people }
     // Retain a newly created identity if saving its passage fails; Retry must not create a twin.
@@ -30,19 +37,24 @@ final class SpeakerEditorModel {
             self.people = people
             self.assigned = assigned
             loaded = true
+            if let voice = VoiceSources.current, let state = try? await voice.snapshot() {
+                voiceAvailable = state.enabled && state.modelsReady
+            }
             errorMessage = nil
         } catch {
             errorMessage = Copy.Speaker.loadFailed
         }
     }
 
-    func choose(_ person: Person?, for turn: TranscriptTurn, makeCurrentUser: Bool = false) async -> Bool {
+    func choose(_ person: Person?, for turn: TranscriptTurn, rememberVoice: Bool = false) async -> Bool {
         await save(turn: turn) {
-            try await self.source.assignPassage(turn, personId: person?.id, makeCurrentUser: makeCurrentUser)
+            try await self.source.assignPassage(turn, personId: person?.id, makeCurrentUser: false)
+            self.nameWasSaved = true
+            if rememberVoice, let person { try await self.remember(person.id, turn: turn) }
         }
     }
 
-    func createAndChoose(name: String, for turn: TranscriptTurn) async -> Bool {
+    func createAndChoose(name: String, for turn: TranscriptTurn, rememberVoice: Bool = false) async -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         return await save(turn: turn) {
@@ -53,24 +65,23 @@ final class SpeakerEditorModel {
                 self.pendingPerson = person
             }
             try await self.source.assignPassage(turn, personId: person.id, makeCurrentUser: false)
+            self.nameWasSaved = true
+            if rememberVoice { try await self.remember(person.id, turn: turn) }
             self.pendingPerson = nil
         }
     }
 
-    func chooseMe(for turn: TranscriptTurn) async -> Bool {
+    func chooseMe(for turn: TranscriptTurn, name: String, rememberVoice: Bool = false) async -> Bool {
         await save(turn: turn) {
-            // Re-read: another open screen may have changed the explicit association.
-            let all = try await self.source.people()
-            let person: Person
-            if let me = all.first(where: \.isCurrentUser) { person = me }
-            else if let pending = self.pendingPerson, pending.name == Copy.Speaker.you { person = pending }
-            else {
-                person = try await self.source.createPerson(name: Copy.Speaker.you)
-                self.pendingPerson = person
-            }
-            try await self.source.assignPassage(turn, personId: person.id, makeCurrentUser: true)
-            self.pendingPerson = nil
+            let person = try await self.source.assignCurrentUserPassage(turn, displayName: name)
+            self.nameWasSaved = true
+            if rememberVoice { try await self.remember(person.id, turn: turn) }
         }
+    }
+
+    private func remember(_ id: String, turn: TranscriptTurn) async throws {
+        guard let voice = VoiceSources.current else { throw SpeakerEditorError.voiceUnavailable }
+        _ = try await voice.enrollPassage(personId: id, turn: turn)
     }
 
     func rename(_ person: Person, to name: String) async -> Bool {
@@ -94,13 +105,17 @@ final class SpeakerEditorModel {
             return false
         }
         isSaving = true
+        nameWasSaved = false
         errorMessage = nil
         defer { isSaving = false }
         do {
             try await operation()
             return true
         } catch {
-            errorMessage = Copy.Speaker.saveFailed
+            if nameWasSaved {
+                let reason = (error as? LocalizedError)?.errorDescription
+                errorMessage = reason.map { "The name was saved. " + $0 } ?? Copy.Voices.manualSavedSampleFailed
+            } else { errorMessage = Copy.Speaker.saveFailed }
             return false
         }
     }

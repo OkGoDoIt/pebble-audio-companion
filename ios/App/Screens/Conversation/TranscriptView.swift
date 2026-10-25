@@ -261,6 +261,10 @@ struct TranscriptView: View {
             Text(turn.name)
                 .font(AppFont.speaker)
                 .foregroundStyle(speakerColor(turn.role))
+            if turn.isVoiceMatch {
+                Image(systemName: "waveform").font(.system(size: 11))
+                    .foregroundStyle(Tokens.meta).accessibilityLabel("Recognized by voice")
+            }
         }
     }
 
@@ -623,151 +627,211 @@ struct TranscriptStamp: View {
     }
 }
 
-// MARK: - Manual speaker correction
+// MARK: - Speaker correction
 
 struct SpeakerRenameSheet: View {
     let conversationId: String
     let turn: TranscriptTurn
+    var onPlay: (() -> Void)?
+    var onStop: (() -> Void)?
     let onDone: () -> Void
 
+    private enum Selection: Equatable { case person(String), me, unnamed, newPerson }
     @Environment(\.dismiss) private var dismiss
     @State private var model: SpeakerEditorModel
+    @State private var selection: Selection?
     @State private var freeText = ""
+    @State private var rememberVoice = false
     @State private var renaming: Person?
     @State private var renameDraft = ""
     @State private var deleting: Person?
+    @State private var showVoiceSettings = false
 
     init(conversationId: String, turn: TranscriptTurn, model: SpeakerEditorModel = .init(),
-         onDone: @escaping () -> Void) {
+         onPlay: (() -> Void)? = nil, onStop: (() -> Void)? = nil, onDone: @escaping () -> Void) {
         self.conversationId = conversationId
         self.turn = turn
+        self.onPlay = onPlay
+        self.onStop = onStop
         self.onDone = onDone
         self._model = State(initialValue: model)
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Text(turn.text).font(AppFont.callout).lineLimit(4)
-                } header: {
-                    Text(Copy.Speaker.passage)
-                } footer: {
-                    Text(turn.canIdentifyPassage ? Copy.Speaker.passageFooter : Copy.Speaker.timingUnavailable)
-                }
-                if let error = model.errorMessage {
-                    Section {
-                        Text(error).foregroundStyle(Tokens.label)
-                        if !model.loaded {
-                            Button(Copy.Speaker.retry) { Task { await reload() } }
+            SettingsScroll {
+                SettingsSectionHeader(title: turn.isAudioOnly ? "This audio clip" : (turn.identificationText == nil ? Copy.Speaker.passage : "Full timed passage"))
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(turn.identificationText ?? turn.text).font(AppFont.callout).foregroundStyle(Tokens.label)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let onPlay {
+                            Button(action: onPlay) {
+                                Label("Listen to this passage", systemImage: "play.fill")
+                            }.buttonStyle(.smallBordered)
                         }
                     }
                 }
-                Section {
-                    Button(Copy.Speaker.thisIsMe) {
-                        Task { if await model.chooseMe(for: turn) { finish() } }
+                SettingsFooter(text: turn.canIdentifyPassage
+                    ? (turn.identificationText == nil
+                        ? "The name changes only this passage. You can choose to remember the voice separately."
+                        : "These paragraphs share one timed passage. The name applies to the full passage shown here.")
+                    : Copy.Speaker.timingUnavailable)
+                if let error = model.errorMessage { VoiceMessageCard(text: error) }
+                if !model.loaded {
+                    Button(Copy.Speaker.retry) { Task { await reload() } }.buttonStyle(.borderedTint)
+                }
+                SettingsSectionHeader(title: Copy.Speaker.peopleHeader)
+                ListCard {
+                    if !model.people.contains(where: \.isCurrentUser) {
+                        choiceRow(.me, name: Copy.Speaker.thisIsMe, isMe: true)
                     }
-                    Button(Copy.Speaker.unnamed) {
-                        Task { if await model.choose(nil, for: turn) { finish() } }
+                    ForEach(model.people.sorted { $0.isCurrentUser && !$1.isCurrentUser }, id: \.id) { person in
+                        HStack(spacing: 10) {
+                            choiceRow(.person(person.id), name: person.isCurrentUser ? "\(person.name) · You" : person.name,
+                                      isMe: person.isCurrentUser)
+                            Menu {
+                                if !person.isCurrentUser {
+                                    Button(Copy.Speaker.thisIsMe) {
+                                        Task { if await model.makeMe(person) { onDone(); await reload() } }
+                                    }
+                                }
+                                Button(Copy.Speaker.rename) { renameDraft = person.name; renaming = person }
+                                Button(Copy.Speaker.deletePerson, role: .destructive) { deleting = person }
+                            } label: {
+                                Image(systemName: "ellipsis").font(.system(size: 18))
+                                    .foregroundStyle(Tokens.meta).frame(width: 32, height: 44)
+                            }.accessibilityLabel("Manage \(person.name)")
+                        }
                     }
-                }.disabled(!canChoose)
-                if !model.people.isEmpty {
-                    Section {
-                        ForEach(model.people, id: \.id) { person in personRow(person) }
-                    } header: {
-                        Text(Copy.Speaker.peopleHeader)
-                    } footer: {
-                        Text(Copy.Speaker.peopleFooter)
+                    choiceRow(.newPerson, name: Copy.Speaker.newPerson, icon: "person.badge.plus")
+                    choiceRow(.unnamed, name: Copy.Speaker.unnamed, icon: "person.crop.circle.dashed")
+                }.disabled(model.isSaving || !model.loaded || !turn.canIdentifyPassage)
+                if selection == .newPerson || selection == .me {
+                    ListCard {
+                        TextField(selection == .me ? Copy.Voices.yourName : Copy.Speaker.namePlaceholder, text: $freeText)
+                            .font(AppFont.callout).textContentType(.name).submitLabel(.done)
+                            .onSubmit { submit() }
+                    }.disabled(model.isSaving)
+                    if selection == .newPerson, model.people.contains(where: {
+                        $0.name.caseInsensitiveCompare(freeText.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+                    }) {
+                        SettingsFooter(text: "A person with this name already exists. Select them above, or use a more distinct name for someone new.")
                     }
                 }
-                Section {
-                    HStack {
-                        TextField(Copy.Speaker.namePlaceholder, text: $freeText)
-                            .font(AppFont.callout)
-                            .submitLabel(.done)
-                            .onSubmit { assignFreeText() }
-                        Button(Copy.Common.save) { assignFreeText() }
-                            .disabled(freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if selection != nil && selection != .unnamed {
+                    if model.voiceAvailable && turn.canRememberVoice {
+                        Card {
+                            Toggle(isOn: $rememberVoice) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(Copy.Voices.rememberPassage).font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                                    Text(Copy.Voices.rememberDetail).font(AppFont.footnote).foregroundStyle(Tokens.meta)
+                                }
+                            }.tint(Tokens.tint).disabled(model.isSaving)
+                        }
+                    } else {
+                        if model.voiceAvailable && !turn.canRememberVoice {
+                            SettingsFooter(text: "To remember a voice, choose 2–30 seconds with one speaker, or record a sample in People & voices.")
+                        }
+                        Button { onStop?(); showVoiceSettings = true } label: {
+                            Label("Set up voice recognition", systemImage: "waveform")
+                                .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44)
+                        }.foregroundStyle(Tokens.tint)
                     }
-                } header: {
-                    Text(Copy.Speaker.newPerson)
-                }.disabled(!canChoose)
-                if model.isSaving { ProgressView() }
+                }
             }
             .navigationTitle(Copy.Speaker.title)
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                Button(action: submit) {
+                    HStack {
+                        if model.isSaving { ProgressView().tint(Tokens.onTint) }
+                        Text(model.isSaving ? "Saving…" : Copy.Common.save)
+                    }
+                }.buttonStyle(.primaryFilled).disabled(!canSave)
+                    .padding(16).background(Tokens.ground)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(Copy.Common.cancel) { dismiss() }.disabled(model.isSaving)
+                    Button(model.nameWasSaved ? Copy.Common.done : Copy.Common.cancel) { dismiss() }
+                        .disabled(model.isSaving)
                 }
             }
+            .navigationDestination(isPresented: $showVoiceSettings) { VoiceSettingsScreen() }
         }
+        .tint(Tokens.tint)
         .interactiveDismissDisabled(model.isSaving)
         .presentationDetents([.large])
-        .task { await reload() }
-        .alert(Copy.Speaker.renamePerson, isPresented: renamingBinding) {
-            TextField(Copy.Speaker.namePlaceholder, text: $renameDraft)
-            Button(Copy.Common.cancel, role: .cancel) { renaming = nil }
-            Button(Copy.Common.save) { commitRename() }
-        } message: {
-            Text(Copy.Speaker.renamePersonMessage)
+        .task {
+            await reload()
+            if selection == nil, let assigned = model.assigned { selection = .person(assigned.id) }
         }
-        .confirmationDialog(
-            Copy.Speaker.deletePersonTitle(deleting?.name ?? ""),
-            isPresented: deletingBinding, titleVisibility: .visible
-        ) {
-            Button(Copy.Speaker.deletePerson, role: .destructive) { commitDelete() }
-        } message: {
-            Text(Copy.Speaker.deletePersonMessage)
-        }
+        .onChange(of: showVoiceSettings) { _, showing in if !showing { Task { await reload() } } }
+        .alert(Copy.Speaker.renamePerson, isPresented: Binding(
+            get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { person in
+                TextField(Copy.Speaker.namePlaceholder, text: $renameDraft)
+                Button(Copy.Common.cancel, role: .cancel) {}
+                Button(Copy.Common.save) {
+                    Task { if await model.rename(person, to: renameDraft) { onDone(); await reload() } }
+                }
+            } message: { _ in Text(Copy.Speaker.renamePersonMessage) }
+        .confirmationDialog(Copy.Speaker.deletePersonTitle(deleting?.name ?? ""),
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible, presenting: deleting) { person in
+                Button(Copy.Speaker.deletePerson, role: .destructive) {
+                    Task {
+                        if await model.delete(person) {
+                            if selection == .person(person.id) { selection = nil }
+                            onDone(); await reload()
+                        }
+                    }
+                }
+            } message: { _ in Text(Copy.Speaker.deletePersonMessage) }
     }
 
-    private var canChoose: Bool { model.loaded && !model.isSaving && turn.canIdentifyPassage }
+    private var canSave: Bool {
+        guard model.loaded, !model.isSaving, turn.canIdentifyPassage, let selection else { return false }
+        if selection == .newPerson || selection == .me {
+            return !freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return true
+    }
 
-    private func personRow(_ person: Person) -> some View {
-        Button {
-            Task { if await model.choose(person, for: turn) { finish() } }
-        } label: {
-            HStack {
-                Text(person.isCurrentUser && person.name != Copy.Speaker.you ? "\(person.name) · \(Copy.Speaker.you)" : person.name)
-                    .font(AppFont.callout).foregroundStyle(Tokens.label)
-                Spacer()
-                if person.id == model.assigned?.id {
-                    Image(systemName: "checkmark").foregroundStyle(Tokens.tint)
-                }
+    private func choiceRow(_ choice: Selection, name: String, isMe: Bool = false,
+                           icon: String? = nil) -> some View {
+        Button { selection = choice } label: {
+            HStack(spacing: 12) {
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 22)).foregroundStyle(Tokens.meta)
+                        .frame(width: 44, height: 44).accessibilityHidden(true)
+                } else { VoiceAvatar(name: name, isCurrentUser: isMe) }
+                Text(name).font(AppFont.callout).foregroundStyle(Tokens.label)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Image(systemName: selection == choice ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 21)).foregroundStyle(selection == choice ? Tokens.tint : Tokens.chevron)
+                    .accessibilityHidden(true)
             }.contentShape(Rectangle())
-        }
-        .disabled(!canChoose)
-        .contextMenu {
-            Button(Copy.Speaker.thisIsMe) {
-                Task {
-                    if await model.makeMe(person) { onDone(); await reload() }
-                }
-            }
-            Button(Copy.Speaker.rename) { renameDraft = person.name; renaming = person }
-            Button(Copy.Speaker.deletePerson, role: .destructive) { deleting = person }
-        }
-    }
-
-    private var renamingBinding: Binding<Bool> {
-        Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
-    }
-    private var deletingBinding: Binding<Bool> {
-        Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+        }.buttonStyle(.plain).accessibilityAddTraits(selection == choice ? .isSelected : [])
     }
     private func reload() async { await model.load(conversationId: conversationId, turn: turn) }
-    private func finish() { onDone(); dismiss() }
-    private func assignFreeText() {
-        Task { if await model.createAndChoose(name: freeText, for: turn) { finish() } }
-    }
-    private func commitRename() {
-        guard let person = renaming else { return }
-        renaming = nil
-        Task { if await model.rename(person, to: renameDraft) { onDone(); await reload() } }
-    }
-    private func commitDelete() {
-        guard let person = deleting else { return }
-        deleting = nil
-        Task { if await model.delete(person) { onDone(); await reload() } }
+    private func submit() {
+        guard canSave, let selection else { return }
+        Task {
+            let success: Bool
+            switch selection {
+            case .person(let id):
+                guard let person = model.people.first(where: { $0.id == id }) else { return }
+                success = await model.choose(person, for: turn, rememberVoice: rememberVoice)
+            case .me:
+                success = await model.chooseMe(for: turn, name: freeText, rememberVoice: rememberVoice)
+            case .unnamed:
+                success = await model.choose(nil, for: turn)
+            case .newPerson:
+                success = await model.createAndChoose(name: freeText, for: turn, rememberVoice: rememberVoice)
+            }
+            if model.nameWasSaved { onDone() }
+            if success { dismiss() }
+        }
     }
 }

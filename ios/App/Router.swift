@@ -91,7 +91,7 @@ enum Route: Equatable, Hashable, Identifiable {
     case settings(SettingsPage?)
 
     enum SettingsPage: String, Equatable {
-        case watch, transcription, storage, privacy, aboutyou, diagnostics, reminders
+        case watch, transcription, storage, privacy, aboutyou, diagnostics, reminders, voices
         /// The Pebble Audio server (the archive sync).
         case server
     }
