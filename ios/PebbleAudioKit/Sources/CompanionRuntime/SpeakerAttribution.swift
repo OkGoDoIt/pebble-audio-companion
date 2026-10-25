@@ -97,16 +97,8 @@ public enum SpeakerAttribution {
             person.isCurrentUser = person.id == identity.currentUserPersonId
             return person
         }
-        if turns.isEmpty {
-            people += identity.automaticAttributions.compactMap { row in
-                let a = row.attribution
-                guard a.segmentId == member.segmentId, a.disposition == .recognized,
-                    a.startMediaMs < upper, a.endMediaMs > lower,
-                    identity.resolve(segmentId: member.segmentId, startMediaMs: max(a.startMediaMs, lower),
-                                     endMediaMs: min(a.endMediaMs, upper)) == nil else { return nil }
-                return row.person
-            }
-        }
+        people += audioMatches(in: member, transcript: transcript, identity: identity,
+                               legacyAssignments: legacyAssignments).map(\.person)
         if turns.isEmpty && corrections.isEmpty {
             people += legacyAssignments.compactMap { assignment in
                 if let key = SpeakerKey(stored: assignment.label), key.segmentId != member.segmentId {
@@ -119,4 +111,36 @@ public enum SpeakerAttribution {
         var seen = Set<String>()
         return people.filter { seen.insert($0.id).inserted }
     }
+
+    /// Matches on real audio remain available to playback/participant UI when untimed ASR
+    /// cannot attach them to words. Bounds are clipped to the conversation piece; this does
+    /// not invent a transcription or infer that the person spoke the entire sentence.
+    public static func audioMatches(
+        in member: ConversationMember, transcript: SegmentTranscript?,
+        identity: SpeakerIdentitySnapshot, legacyAssignments: [SpeakerAssignment]
+    ) -> [VoiceResolvedAttribution] {
+        let turns = transcript?.piece(member).segments ?? []
+        let lower = member.startMediaMs ?? 0
+        let upper = member.endMediaMs ?? Int64.max
+        return identity.automaticAttributions.compactMap { row in
+            let a = row.attribution
+            let start = max(a.startMediaMs, lower), end = min(a.endMediaMs, upper)
+            guard a.segmentId == member.segmentId, a.disposition == .recognized, start < end,
+                identity.resolve(segmentId: member.segmentId, startMediaMs: start, endMediaMs: end) == nil,
+                case .named(let resolved) = identity.resolveAutomatic(segmentId: member.segmentId,
+                    startMediaMs: start, endMediaMs: end), resolved.person.id == row.person.id else { return nil }
+            let conflictingHumanName = turns.contains { turn in
+                guard turn.startMs < end, turn.endMs > start, let speaker = turn.speaker,
+                    let assignment = SpeakerAssignment.match(SpeakerKey(segmentId: member.segmentId,
+                        label: speaker), in: legacyAssignments) else { return false }
+                return assignment.personId != row.person.id
+            }
+            guard !conflictingHumanName else { return nil }
+            var attribution = a
+            attribution.startMediaMs = start; attribution.endMediaMs = end
+            return VoiceResolvedAttribution(attribution: attribution, person: resolved.person)
+        }.sorted { ($0.attribution.startMediaMs, $0.attribution.endMediaMs, $0.person.id)
+            < ($1.attribution.startMediaMs, $1.attribution.endMediaMs, $1.person.id) }
+    }
+
 }

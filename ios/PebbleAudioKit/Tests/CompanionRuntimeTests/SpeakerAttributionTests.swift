@@ -122,6 +122,35 @@ struct SpeakerAttributionTests {
             identity: identity, legacyAssignments: []).map(\.id) == [otherAlex.id])
     }
 
+    @Test func recognizedAudioIsSearchableWithoutNamingAnUntimedSentence() {
+        var transcript = SegmentTranscript(segmentId: "s", text: "A long sentence.", modeUsed: .localOnly,
+            providerId: "test", createdAtMs: 0,
+            segments: [TranscriptSegment(text: "A long sentence.", startMs: 0, endMs: 10_000)])
+        var identity = SpeakerIdentitySnapshot(automaticAttributions: [auto(current, start: 2_000, end: 4_000)])
+        let member = ConversationMember(segmentId: "s")
+        #expect(SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: "s",
+            identity: identity, legacyAssignments: []).first?.person == nil)
+        #expect(SpeakerAttribution.people(in: member, transcript: transcript,
+            identity: identity, legacyAssignments: []).map(\.id) == [current.id])
+        #expect(SpeakerAttribution.people(in: ConversationMember(segmentId: "s", startMediaMs: 4_000),
+            transcript: transcript, identity: identity, legacyAssignments: []).isEmpty)
+
+        let clipped = SpeakerAttribution.audioMatches(
+            in: ConversationMember(segmentId: "s", startMediaMs: 2_500, endMediaMs: 3_500),
+            transcript: transcript, identity: identity, legacyAssignments: [])
+        #expect(clipped.count == 1)
+        #expect(clipped.first?.attribution.startMediaMs == 2_500)
+        #expect(clipped.first?.attribution.endMediaMs == 3_500)
+
+        transcript.segments = [TranscriptSegment(text: "A long sentence.", startMs: 0, endMs: 10_000, speaker: "1")]
+        #expect(SpeakerAttribution.people(in: member, transcript: transcript,
+            identity: identity, legacyAssignments: assignments).map(\.id) == [old.id])
+        identity.corrections = [SpeakerCorrection(id: "unnamed", segmentId: "s", startMediaMs: 2_000,
+            endMediaMs: 4_000, person: nil, createdAtMs: 0)]
+        #expect(SpeakerAttribution.people(in: member, transcript: transcript,
+            identity: identity, legacyAssignments: []).isEmpty)
+    }
+
     @Test func archiveTextAndStructuredTurnsUseTheSameCorrection() throws {
         var pieces = try ArchiveTranscriptExportTests.pieces()
         let first = try #require(pieces[0].transcript?.piece(pieces[0].member).segments.first)
