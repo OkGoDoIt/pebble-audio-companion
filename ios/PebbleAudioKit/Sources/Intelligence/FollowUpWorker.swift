@@ -350,7 +350,8 @@ public final class FollowUpWorker: @unchecked Sendable {
     @discardableResult
     public func extract(
         _ conversations: [EnrichmentConversation],
-        pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?
+        pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?,
+        speakerIdentityOf: ((String) async -> (SpeakerIdentitySnapshot, [SpeakerAssignment]))? = nil
     ) async throws -> Int {
         guard let activeRouter = router else { return 0 }
         guard await activeRouter.isAvailable() else { return 0 }
@@ -416,7 +417,7 @@ public final class FollowUpWorker: @unchecked Sendable {
                     continue
                 }
             }
-            guard let parts = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
+            guard var parts = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
             else { continue }
             let combined = parts.map(\.text).joined(separator: "\n\n").count
             if let key {
@@ -455,6 +456,15 @@ public final class FollowUpWorker: @unchecked Sendable {
             let exhausted = (existing?.attempts ?? 0) >= Self.maxAttempts
             // A cooled-off retry starts the budget over; anything else keeps counting.
             let priorAttempts = fresh || exhausted ? 0 : (existing?.attempts ?? 0)
+            // Only the bounded, due requests read identities. Settled libraries do no extra DB work.
+            if let speakerIdentityOf {
+                let (identity, assignments) = await speakerIdentityOf(conversation.conversationId)
+                parts = parts.map { part in
+                    FollowUpSourcePart(segmentId: part.segmentId, startedAtMs: part.startedAtMs,
+                        text: part.text, turns: part.turns, words: part.words,
+                        identity: identity, legacyAssignments: assignments)
+                }
+            }
             let outcome = try await run(
                 activeRouter, conversation, parts: parts, combined: combined,
                 priorAttempts: priorAttempts,

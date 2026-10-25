@@ -147,6 +147,19 @@ private final class LoadCounter: @unchecked Sendable {
 
     // MARK: Cases
 
+    @Test func speakerIdentityLoadsOnlyForDueRequests() async throws {
+        let provider = ScriptedAiProvider(response: Self.twoItems)
+        let worker = worker(provider)
+        let conversation = conversation("identity", members: [meta("s")])
+        let loads = LoadCounter()
+        for _ in 0..<2 {
+            _ = try await worker.extract([conversation], pieceTranscriptOf: { transcript($0.segmentId) },
+                speakerIdentityOf: { _ in loads.increment(); return (.init(), []) })
+        }
+        #expect(provider.runCount == 1)
+        #expect(loads.value == 1)
+    }
+
     // A settled conversation whose members and transcript files have not changed is skipped
     // without opening a transcript. Every pass used to decode all of them to recompute a
     // length it already had (see `EnrichmentWorker` for the cost).
