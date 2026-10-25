@@ -16,6 +16,43 @@ import Testing
             sessionID: "enrollment", embedding: try vector(values))
     }
 
+    @Test func channelVariantsNeverCountAsIndependentEvidence() throws {
+        let augmented = ConfirmedSpeakerExample(id: "one-real-crop", personID: me,
+            confirmationID: "human", sessionID: "session", embedding: try vector([1, 0]),
+            embeddingVariants: [try vector([1, 0])])
+        let twoRequired = SpeakerMatchPolicy(minimumSimilarity: 0.8, minimumMargin: 0,
+            minimumExamples: 2, calibrationID: "variant-test")
+        #expect(try SpeakerMatcher.match(vector([1, 0]), examples: [augmented], policy: twoRequired)
+            .abstention == .insufficientEvidence)
+        let second = try example("different-real-crop", me, [0, 1])
+        let result = try SpeakerMatcher.match(vector([1, 0]), examples: [augmented, second], policy: twoRequired)
+        #expect(result.abstention == .belowThreshold)
+        #expect(result.score == 0.5) // Not the top two duplicate encodings of the first crop.
+    }
+
+    @Test func channelVariantCanMatchButMixedRecipesAndUnboundedVariantsFail() throws {
+        let augmented = ConfirmedSpeakerExample(id: "one", personID: me, confirmationID: "human",
+            sessionID: "session", embedding: try vector([0, 1]), embeddingVariants: [try vector([1, 0])])
+        #expect(try SpeakerMatcher.match(vector([1, 0]), examples: [augmented], policy: policy).personID == me)
+        let malformed = ConfirmedSpeakerExample(id: "one", personID: me, confirmationID: "human",
+            sessionID: "session", embedding: try vector([0, 1]),
+            embeddingVariants: [try vector([1, 0]), try vector([1, 0])])
+        #expect(throws: SpeakerRecognitionError.self) {
+            try SpeakerMatcher.match(vector([1, 0]), examples: [malformed], policy: policy)
+        }
+        let otherRecipe = SpeakerEmbeddingRecipe(modelID: "other", modelRevision: "1", weightsSHA256: "test",
+            runtimeID: "test", preprocessingID: "test", dimensions: 2)
+        let mixed = ConfirmedSpeakerExample(id: "one", personID: me, confirmationID: "human",
+            sessionID: "session", embedding: try vector([0, 1]),
+            embeddingVariants: [try SpeakerEmbedding(recipe: otherRecipe, values: [1, 0])])
+        #expect(throws: SpeakerRecognitionError.incompatibleRecipe) {
+            try SpeakerMatcher.match(vector([1, 0]), examples: [mixed], policy: policy)
+        }
+        let legacy = try example("legacy", me, [1, 0])
+        let bytes = try JSONEncoder().encode(legacy)
+        #expect(try JSONDecoder().decode(ConfirmedSpeakerExample.self, from: bytes).embeddingVariants == nil)
+    }
+
     @Test func unknownAndAmbiguousSpeechAbstainAndExclusionCannotForceAMatch() throws {
         let profiles = try [example("me", me, [1, 0]), example("other", other, [0, 1])]
         let known = try SpeakerMatcher.match(vector([1, 0]), examples: profiles, policy: policy)

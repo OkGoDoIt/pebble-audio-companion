@@ -63,6 +63,17 @@ private actor EmbeddingFixture: SpeakerEmbeddingEngine {
         #expect(await engine.calls == 12)
     }
 
+    @Test func shortFinalWindowCannotInventAnAdditionalGlobalSpeaker() async throws {
+        let segmentation = SegmentationFixture([1, 2])
+        let analyzer = analyzer(segmentation, EmbeddingFixture())
+        await analyzer.setEnabled(true)
+        let result = try await analyzer.analyze(input(pcm(1000, seconds: 11)))
+        #expect(result.turns.count == 5)
+        #expect(Set(result.turns.compactMap(\.clusterID)).count == 1)
+        #expect(result.turns.last?.clusterID == nil)
+        #expect(result.turns.last?.embedding == nil)
+    }
+
     @Test func oneUncertainBoundaryFrameDoesNotRejectAnOtherwiseCleanPassage() async throws {
         let segmentation = SegmentationFixture([1], weakBoundary: true)
         let analyzer = analyzer(segmentation, EmbeddingFixture())

@@ -46,7 +46,14 @@ public struct SpeakerAnalysis: Codable, Sendable {
 public protocol SpeakerSpeechAnalyzing: Sendable {
     func setEnabled(_ enabled: Bool) async
     func analyze(_ audio: SpeakerAnalysisAudio) async throws -> SpeakerAnalysis
+    /// Additional channel view of an explicitly confirmed, already isolated clean crop.
+    /// Callers must never use this to bypass acoustic purity checks on unreviewed audio.
+    func confirmedEmbedding(for sample: SpeakerAudioSample) async throws -> SpeakerEmbedding?
     func release() async
+}
+
+extension SpeakerSpeechAnalyzing {
+    public func confirmedEmbedding(for sample: SpeakerAudioSample) async throws -> SpeakerEmbedding? { nil }
 }
 
 /// Optional local segmentation + embedding clustering, independent of the transcription provider.
@@ -58,7 +65,7 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
     private let embedding: CactusSpeakerEmbeddingProvider
     private let model: CoreMLSegmentationModel
     public static let recipeID = "coreml-community1-" + CoreMLSegmentationModel.revision
-        + "-single-window-10s-powerset-0.55-overlap-0.35-cluster-0.55-margin-0.10-subwindows-mean-confidence-v3"
+        + "-single-window-10s-powerset-0.55-overlap-0.35-cluster-0.55-margin-0.10-subwindows-mean-confidence-short-unknown-v4"
 
     public init(embeddingModelDirectory: URL, segmentationModelDirectory: URL) {
         embedding = CactusSpeakerEmbeddingProvider(model: CactusSpeakerModel(directory: embeddingModelDirectory))
@@ -77,6 +84,19 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
         }
         await embedding.setEnabled(enabled)
         if !enabled { await segmentation.release() }
+    }
+
+    public func confirmedEmbedding(for sample: SpeakerAudioSample) async throws -> SpeakerEmbedding? {
+        let generation = try authorization.withLock {
+            guard $0.enabled else { throw SpeakerRecognitionError.disabled }
+            return $0.generation
+        }
+        let result = try await embedding.embedding(for: sample)
+        try Task.checkCancellation()
+        try authorization.withLock {
+            guard $0.enabled, $0.generation == generation else { throw SpeakerRecognitionError.disabled }
+        }
+        return result.embedding
     }
 
     public func release() async {
@@ -172,7 +192,11 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
                     let candidates = Set(intervals.indices.filter { intervals[$0].kind == interval.kind }
                         .compactMap { intervalClusters[$0] })
                     if candidates.count == 1 { clusterID = candidates.first }
-                    else {
+                    else if !embeddings.isEmpty {
+                        // A distinct short slot alongside a verified slot is evidence of
+                        // another local voice. A whole window with no embedding cannot be
+                        // aligned to earlier windows, so leave it unknown instead of inventing
+                        // a new global speaker and rejecting otherwise valid enrollment.
                         if shortSlotClusters[interval.kind] == nil {
                             let id = "\(audio.sourceID):\(audio.sourceStartSample):speaker-\(clusters.count + 1)"
                             clusters.append(Cluster(id: id, examples: [])); shortSlotClusters[interval.kind] = id

@@ -76,7 +76,10 @@ public enum SpeakerEvaluator {
         if let selfID = corpus.selfPersonID, !enrolledPeople.contains(selfID) {
             throw SpeakerRecognitionError.invalidCorpus("Self identity must be in the enrolled roster")
         }
-        guard corpus.enrollment.allSatisfy({ $0.embedding.recipe == first.embedding.recipe }),
+        guard corpus.enrollment.allSatisfy({ example in
+            example.embedding.recipe == first.embedding.recipe
+                && (example.embeddingVariants ?? []).allSatisfy { $0.recipe == first.embedding.recipe }
+        }),
               corpus.probes.allSatisfy({ $0.embedding.recipe == first.embedding.recipe }) else {
             throw SpeakerRecognitionError.incompatibleRecipe
         }

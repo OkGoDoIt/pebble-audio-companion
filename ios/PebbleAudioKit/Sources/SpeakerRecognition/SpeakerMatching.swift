@@ -8,14 +8,17 @@ public struct ConfirmedSpeakerExample: Codable, Sendable {
     public let confirmationID: String
     public let sessionID: String
     public let embedding: SpeakerEmbedding
+    /// Alternate channel rendering of the SAME confirmed crop. Never independent evidence.
+    public let embeddingVariants: [SpeakerEmbedding]?
 
     public init(id: String, personID: UUID, confirmationID: String, sessionID: String,
-                embedding: SpeakerEmbedding) {
+                embedding: SpeakerEmbedding, embeddingVariants: [SpeakerEmbedding] = []) {
         self.id = id
         self.personID = personID
         self.confirmationID = confirmationID
         self.sessionID = sessionID
         self.embedding = embedding
+        self.embeddingVariants = embeddingVariants.isEmpty ? nil : embeddingVariants
     }
 }
 
@@ -83,7 +86,18 @@ public enum SpeakerMatcher {
             guard group.count <= 32 else {
                 throw SpeakerRecognitionError.invalidCorpus("Keep at most 32 confirmed examples per person and recipe")
             }
-            let scores = try group.map { try query.cosineSimilarity(to: $0.embedding) }.sorted(by: >)
+            let scores = try group.map { example in
+                let variants = example.embeddingVariants ?? []
+                guard variants.count <= 1 else {
+                    throw SpeakerRecognitionError.invalidCorpus("At most one channel variant per real example")
+                }
+                guard variants.allSatisfy({ $0.recipe == example.embedding.recipe }) else {
+                    throw SpeakerRecognitionError.incompatibleRecipe
+                }
+                // Choose the best channel view of each real crop, then compare DISTINCT
+                // crops below. One sample with two encodings still counts as one example.
+                return try ([example.embedding] + variants).map { try query.cosineSimilarity(to: $0) }.max()!
+            }.sorted(by: >)
             let best = scores.prefix(2)
             candidates.append((personID, best.reduce(0, +) / Double(best.count), group.count))
         }
