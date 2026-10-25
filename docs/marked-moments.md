@@ -92,9 +92,16 @@ On October 25 at approximately 11:15 +07, G17 received the contextual update aft
 3.5 GB backup. The installed Release build is `e6c1f97d-dirty`, built `2026-10-25T04:14:18Z`,
 including feature commit `3fe45ed0`; codesign verification passed. A post-install database read
 confirmed all four moments and all 15 notes exactly match the backup. The phone locked during
-the build, so iOS refused the final automatic launch. Opening Pebble Audio once is still needed
-before recording-resumption, physical UI and +10-minute CPU checks can be completed. The
-next-morning check is scheduled for 08:00 +07 October 26 and must verify the actual running build.
+the build, initially blocking automatic launch. After the wearer opened it, the new main app
+started at 11:24:42 +07 and resumed watch streaming at 11:24:47. The wearer confirmed the
+History day/week pins and counts appear, then returned to the Home Screen. The ten-minute
+CPU report passed: the last five background samples were 1.63/3.15/0.84/0.64/0.65 CPU-s/min.
+All samples were charging, so this does not validate unplugged battery drain. Separate system
+crash checks found no new report; MetricKit has no report covering this build yet. A brief BLE
+timeout recovered automatically, with streaming active at the end of the check. All four marks
+and 15 notes still matched the pre-install backup after the gate. Physical Today-row/live-transcript
+interaction has not separately been confirmed.
+The next-morning check is scheduled for 08:00 +07 October 26 and must verify the actual running build.
 
 Firmware `v4.41.0-668-gb2221949f` is prepared in Desktop/iCloud, **not flashed**. The installed phone
 app supports it; marks saved by the existing firmware remain readable, with its old delivery limits.
