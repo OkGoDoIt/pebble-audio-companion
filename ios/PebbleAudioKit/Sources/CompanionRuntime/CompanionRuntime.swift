@@ -664,6 +664,9 @@ public actor CompanionRuntime {
         do { try await SpeakerCorrectionStore(db: environment.database).deleteAll() } catch {
             log.failure("delete all speaker corrections", error)
         }
+        do { try await VoiceIdentityStore(db: environment.database).deleteAll() } catch {
+            log.failure("delete all voice examples and automatic names", error)
+        }
         await environment.archiveSync?.didWipeLocally()
         await environment.receiver.resumeAfterBulkDelete()
         await environment.diagnostics.refresh()
