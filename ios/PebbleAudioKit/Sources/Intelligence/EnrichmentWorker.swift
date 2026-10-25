@@ -22,6 +22,8 @@ public struct EnrichmentConversation: Sendable {
     /// from the members alone: a conversation stays live through the 5-minute join window
     /// after its last segment closes.
     public var isOpen: Bool
+    public var identity: SpeakerIdentitySnapshot
+    public var legacyAssignments: [SpeakerAssignment]
     /// Ordered member segment metas (conversation_segments ordinal order).
     public private(set) var members: [SegmentMeta]
     /// The range of each member's stored audio this conversation owns — parallel to `members`,
@@ -34,10 +36,12 @@ public struct EnrichmentConversation: Sendable {
     ///   about ranges construct.
     public init(
         conversationId: String, isOpen: Bool, members: [SegmentMeta],
-        pieces: [ConversationMember]? = nil
+        pieces: [ConversationMember]? = nil,
+        identity: SpeakerIdentitySnapshot = .init(), legacyAssignments: [SpeakerAssignment] = []
     ) {
         self.conversationId = conversationId
         self.isOpen = isOpen
+        self.identity = identity; self.legacyAssignments = legacyAssignments
         self.members = members
         self.pieces = members.enumerated().map { index, meta in
             if let pieces, index < pieces.count, pieces[index].segmentId == meta.segmentId {

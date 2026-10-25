@@ -541,7 +541,8 @@ public final class FollowUpWorker: @unchecked Sendable {
                 startedAtMs: EnrichmentConversation.startWallMs(
                     of: piece, in: member, firstTurnMediaMs: transcript.segments.first?.startMs),
                 text: text,
-                turns: transcript.segments)
+                turns: transcript.segments, words: transcript.words,
+                identity: conversation.identity, legacyAssignments: conversation.legacyAssignments)
         }
         return parts.isEmpty ? nil : parts
     }

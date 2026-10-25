@@ -308,13 +308,16 @@ public actor EnrichmentService {
         let metasById = Dictionary(
             uniqueKeysWithValues: await store.listSegments().map { ($0.segmentId, $0) }
         )
-        return conversations.map { conversation in
+        var inputs: [EnrichmentConversation] = []
+        for conversation in conversations {
             // A piece whose segment is gone from the store (a delete racing the pass) is
             // dropped with it, so the two lists stay parallel.
             let parts = conversation.members.compactMap { piece in
                 metasById[piece.segmentId].map { (meta: $0, piece: piece) }
             }
-            return EnrichmentConversation(
+            let identity = (try? await SpeakerCorrectionStore(db: database).snapshot(conversationId: conversation.id)) ?? .init()
+            let assignments = (try? await PeopleStore(db: database).assignments(forConversation: conversation.id)) ?? []
+            inputs.append(EnrichmentConversation(
                 conversationId: conversation.id,
                 // A conversation whose start or end can still move is treated like the live
                 // one: it may get a working title, but the work that is done once per
@@ -323,9 +326,10 @@ public actor EnrichmentService {
                 // cut that moved would re-title and re-extract both neighbours each time.
                 isOpen: conversation.isLive || conversation.isProvisional,
                 members: parts.map(\.meta),
-                pieces: parts.map(\.piece)
-            )
+                pieces: parts.map(\.piece), identity: identity, legacyAssignments: assignments
+            ))
         }
+        return inputs
     }
 
     /// The grouping stage: rebuild `conversations` / `conversation_segments` from the segment

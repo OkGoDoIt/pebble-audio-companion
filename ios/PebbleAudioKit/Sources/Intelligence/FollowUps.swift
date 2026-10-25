@@ -206,14 +206,20 @@ public struct FollowUpSourcePart: Equatable, Sendable {
     public let startedAtMs: Int64
     public let text: String
     public let turns: [TranscriptSegment]
+    public let words: [TranscriptWord]
+    public let identity: SpeakerIdentitySnapshot
+    public let legacyAssignments: [SpeakerAssignment]
 
     public init(
-        segmentId: String, startedAtMs: Int64, text: String, turns: [TranscriptSegment] = []
+        segmentId: String, startedAtMs: Int64, text: String, turns: [TranscriptSegment] = [],
+        words: [TranscriptWord] = [], identity: SpeakerIdentitySnapshot = .init(),
+        legacyAssignments: [SpeakerAssignment] = []
     ) {
         self.segmentId = segmentId
         self.startedAtMs = startedAtMs
         self.text = text
         self.turns = turns
+        self.words = words; self.identity = identity; self.legacyAssignments = legacyAssignments
     }
 }
 
@@ -364,24 +370,30 @@ public enum FollowUpTranscriptRenderer {
     /// flat transcript when the provider gave us no diarization.
     static func speakerLines(_ part: FollowUpSourcePart) -> String {
         guard !part.turns.isEmpty else { return part.text }
+        let turns = SpeakerTranscriptAttribution.attributedTurns(segments: part.turns, words: part.words,
+            segmentId: part.segmentId, identity: part.identity, legacyAssignments: part.legacyAssignments)
         var lines: [String] = []
-        var current: String?
+        var currentKey: String?
+        var currentLabel = ""
         var buffer: [String] = []
         func flush() {
-            guard !buffer.isEmpty else { return }
             let body = buffer.joined(separator: " ")
                 .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespaces)
-            if !body.isEmpty { lines.append("S\(current ?? "?"): \(body)") }
+            if !body.isEmpty { lines.append("\(currentLabel): \(body)") }
             buffer = []
         }
-        for turn in part.turns {
-            let speaker = turn.speaker ?? "?"
-            if speaker != current {
-                flush()
-                current = speaker
+        for turn in turns {
+            let key = turn.person.map { "person:\($0.id):\(turn.isVoiceMatch)" }
+                ?? "speaker:\(turn.originalSpeaker ?? "?")"
+            if key != currentKey {
+                flush(); currentKey = key
+                if let person = turn.person {
+                    currentLabel = person.name + (person.isCurrentUser ? " (current user)" : "")
+                        + (turn.isVoiceMatch ? " (voice match; may be wrong)" : "")
+                } else { currentLabel = "S\(turn.originalSpeaker ?? "?")" }
             }
-            buffer.append(turn.text.trimmingCharacters(in: .whitespaces))
+            buffer.append(turn.text)
         }
         flush()
         return lines.isEmpty ? part.text : lines.joined(separator: "\n")
