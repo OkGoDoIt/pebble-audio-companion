@@ -333,7 +333,8 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         #expect(row?.text == "My own wording")
         #expect(row?.done == true)
         #expect(row?.completedAtMs != nil)
-        // Everything the person has NOT expressed an opinion about is still refreshed.
-        #expect(row?.priority == .high)
+        // Editing locks the review details together, including the original normal priority.
+        // Re-extraction may refresh provenance, but cannot silently reprioritize an edited item.
+        #expect(row?.priority == .normal)
     }
 }
