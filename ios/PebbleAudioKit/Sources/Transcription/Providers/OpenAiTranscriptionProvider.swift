@@ -161,9 +161,40 @@ public final class OpenAiTranscriptionProvider: TranscriptionProvider, CloudUplo
             text: text,
             providerId: id,
             modelUsed: effectiveModel(),
-            segments: transcripts.flatMap(\.segments),
+            segments: Self.mergedSegments(transcripts),
             words: transcripts.flatMap(\.words)
         )
+    }
+
+    /// Each upload diarizes independently: its "A" may be a different person from the next
+    /// upload's "A". Give each (request, raw label) a distinct, deterministic number when
+    /// combining requests. Numbers also keep the existing transcript UI's "Speaker N" copy.
+    /// One request retains the provider's labels for compatibility with stored assignments.
+    private static func mergedSegments(_ chunks: [ChunkResult]) -> [TranscriptSegment] {
+        guard chunks.count > 1 else { return chunks.flatMap(\.segments) }
+        var nextSpeaker = 1
+        return chunks.flatMap { chunk in
+            var labels: [String: String] = [:]
+            return chunk.segments.map { segment in
+                guard let speaker = segment.speaker?.nonBlank else { return segment }
+                let scoped: String
+                if let existing = labels[speaker] {
+                    scoped = existing
+                } else {
+                    scoped = String(nextSpeaker)
+                    nextSpeaker += 1
+                    labels[speaker] = scoped
+                }
+                return TranscriptSegment(
+                    text: segment.text,
+                    startMs: segment.startMs,
+                    endMs: segment.endMs,
+                    speaker: scoped,
+                    confidence: segment.confidence,
+                    minConfidence: segment.minConfidence
+                )
+            }
+        }
     }
 
     /// The diarize model takes precedence when diarization is on; only it returns speakers.

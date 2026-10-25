@@ -198,6 +198,88 @@ func jsonResponse(_ content: String) -> HttpTransportResponse {
         #expect(result.segments.last?.endMs == 2_000)
     }
 
+    @Test func independentUploadsNeverShareSpeakerLabels() async throws {
+        let transport = FakeHttpTransport { _ in
+            jsonResponse(
+                """
+                {
+                  "text": "yes again hello unclear",
+                  "segments": [
+                    {"start":0.0,"end":0.005,"text":"yes","speaker":"A"},
+                    {"start":0.005,"end":0.01,"text":"again","speaker":"A"},
+                    {"start":0.01,"end":0.015,"text":"hello","speaker":"B"},
+                    {"start":0.015,"end":0.02,"text":"unclear"}
+                  ]
+                }
+                """
+            )
+        }
+        let provider = OpenAiTranscriptionProvider(
+            transport: transport,
+            apiKey: { "test-key" },
+            cloudConsent: { true },
+            diarizationEnabled: { true },
+            maxUploadBytes: 100
+        )
+
+        // Each request can hold 56 PCM bytes = 28 ms at this test sample rate. The same
+        // raw A/B labels in all three responses must not imply the same people across them.
+        let result = try await provider.transcribe(
+            pcmChunks: pcmStream([Data(repeating: 7, count: 168)]), sampleRateHz: 1_000
+        )
+
+        #expect(transport.requests.count == 3)
+        #expect(result.segments.map(\.speaker) == [
+            "1", "1", "2", nil, "3", "3", "4", nil, "5", "5", "6", nil,
+        ])
+        #expect(result.segments.map(\.startMs) == [
+            0, 5, 10, 15, 28, 33, 38, 43, 56, 61, 66, 71,
+        ])
+        #expect(result.segments.map(\.text) == Array(
+            repeating: ["yes", "again", "hello", "unclear"], count: 3).flatMap { $0 })
+
+        // Stream delivery boundaries do not define requests or identities. Replaying the same
+        // PCM in different-sized input buffers must produce exactly the same persisted result.
+        let fragmented = try await provider.transcribe(
+            pcmChunks: pcmStream([
+                Data(repeating: 7, count: 30), Data(repeating: 7, count: 70),
+                Data(repeating: 7, count: 68),
+            ]), sampleRateHz: 1_000
+        )
+        #expect(fragmented == result)
+    }
+
+    @Test func chunkMergingPreservesUnlabeledWordTimings() async throws {
+        let transport = FakeHttpTransport { _ in
+            jsonResponse(
+                """
+                {
+                  "text": "hello",
+                  "segments": [{"start":0.0,"end":0.01,"text":"hello"}],
+                  "words": [{"start":0.0,"end":0.01,"word":"hello"}]
+                }
+                """
+            )
+        }
+        let provider = OpenAiTranscriptionProvider(
+            transport: transport,
+            apiKey: { "test-key" },
+            cloudConsent: { true },
+            model: { "whisper-1" },
+            maxUploadBytes: 100
+        )
+        let result = try await provider.transcribe(
+            pcmChunks: pcmStream([Data(repeating: 7, count: 112)]), sampleRateHz: 1_000
+        )
+
+        #expect(transport.requests.count == 2)
+        #expect(result.segments.map(\.speaker) == [nil, nil])
+        #expect(result.words == [
+            TranscriptWord(text: "hello", startMs: 0, endMs: 10),
+            TranscriptWord(text: "hello", startMs: 28, endMs: 38),
+        ])
+    }
+
     @Test func wavEncoderWritesExpectedHeader() throws {
         let wav = PcmWav.encodeMono16(pcm: Data([1, 2, 3, 4]), sampleRateHz: 16_000)
 
