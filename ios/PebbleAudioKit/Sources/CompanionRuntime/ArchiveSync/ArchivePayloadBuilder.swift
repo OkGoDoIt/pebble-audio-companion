@@ -153,6 +153,13 @@ public struct ArchivePayloadBuilder: Sendable {
 
         var pieceKey: String { ConversationSourceKey.key(of: members) }
         var window: Range<Int64> { startMs..<max(endMs, startMs + 1) }
+        var legacyAssignments: [SpeakerAssignment] {
+            speakers.compactMap { speaker in
+                guard let personId = speaker.personId, let name = speaker.name else { return nil }
+                return SpeakerAssignment(conversationId: id, label: speaker.label,
+                                         personId: personId, personName: name)
+            }
+        }
     }
 
     func conversationRecord(_ id: String) async throws -> ConversationRecord? {
@@ -259,6 +266,19 @@ public struct ArchivePayloadBuilder: Sendable {
         // The words are read (without their timings) because the rows are the screen's: a quiet
         // row is the time between two turns, not only what the watch skipped.
         let pieces = try await pieces(of: record, withTranscripts: true, masks: false)
+        let identity = try await SpeakerCorrectionStore(db: sources.database)
+            .snapshot(segmentIds: record.members.map(\.segmentId))
+        let participants = pieces.flatMap { piece in
+            SpeakerAttribution.people(in: piece.member, transcript: piece.transcript,
+                                      identity: identity, legacyAssignments: record.legacyAssignments)
+        }.map { person in
+            // The transcript's turns carry raw provider labels; this list identifies people,
+            // including local-ASR speech which has no provider label at all.
+            ArchiveConversationPayload.Speaker(
+                label: record.speakers.first(where: { $0.personId == person.id })?.label
+                    ?? "person:\(person.id)",
+                personId: person.id, name: person.name)
+        }
         let gaps = ArchiveExport.gaps(pieces, window: record.window)
         let missingMs = ArchiveExport.missingMs(pieces, window: record.window)
         let quietMs = gaps.filter { $0.kind == .quiet && $0.reason == nil }
@@ -287,7 +307,7 @@ public struct ArchivePayloadBuilder: Sendable {
                     endMediaMs: piece.member.endMediaMs, startedAt: extent.lowerBound,
                     endedAt: extent.upperBound)
             },
-            people: Self.people(record.speakers), gaps: gaps)
+            people: Self.people(participants), gaps: gaps)
         let data = try Self.encode(payload)
         let hash = Self.hash(data)
         if hash == row.sentHash { return .unchanged(hash: hash, pieceKey: key) }
@@ -332,25 +352,31 @@ public struct ArchivePayloadBuilder: Sendable {
         let names = Dictionary(
             record.speakers.compactMap { speaker in speaker.name.map { (speaker.label, $0) } },
             uniquingKeysWith: { first, _ in first })
-        let sourceHash = try await transcriptSourceHash(record, names: names)
+        let identity = try await SpeakerCorrectionStore(db: sources.database)
+            .snapshot(segmentIds: record.members.map(\.segmentId))
+        let sourceHash = try await transcriptSourceHash(record, names: names, identity: identity)
         if sourceHash == row.sentHash { return .unchanged(hash: sourceHash, pieceKey: key) }
         let pieces = try await pieces(of: record, withTranscripts: true)
         let payload = ArchiveExport.transcript(
             conversationId: record.id, pieces: pieces,
             gaps: ArchiveExport.gaps(pieces, window: record.window), speakerNames: names,
-            sourceHash: sourceHash)
+            sourceHash: sourceHash, identity: identity)
         return .payload(try Self.encode(payload), hash: sourceHash, pieceKey: key)
     }
 
     /// Everything the transcript is made from, without reading a transcript: the export's
     /// version, the conversation's window and pieces, each piece's transcript file identity
     /// (one `stat`), sidecar extent and gap records, and mask, and the speaker names.
-    func transcriptSourceHash(_ record: ConversationRecord, names: [String: String]) async throws
+    func transcriptSourceHash(
+        _ record: ConversationRecord, names: [String: String],
+        identity: SpeakerIdentitySnapshot = .init()
+    ) async throws
         -> String
     {
         var parts = [
             ArchiveExport.transcriptExportVersion, "\(record.startMs)-\(record.endMs)",
             record.pieceKey,
+            "identity:\(identity.revision)",
         ]
         for member in record.members {
             parts.append(sources.transcriptVersion(member.segmentId))

@@ -1,10 +1,22 @@
 # Voice identification research and implementation plan
 
-Research checked **2026-10-25**. This is a proposed product and engineering design grounded in the current native iOS app and live primary-source documentation. No recognition model has yet been evaluated on our watch recordings; the model choice remains a measured decision. Application behavior is unchanged by this document.
+Research checked **2026-10-25**. This is a proposed product and engineering design grounded in the current native iOS app and live primary-source documentation. No recognition model has yet been evaluated on our watch recordings; the model choice remains a measured decision. The implementation status below separates working foundations from the proposed recognition experience.
 
 Build an **optional voice identity layer owned by Pebble Audio**, independent of transcription and AI. People should be able to recognize their own voice, remember other people, correct a passage, and improve earlier conversations without changing transcription providers. Manual naming must remain useful with recognition off. A wrong confident name is worse than an unnamed speaker.
 
 Start with pretrained speaker embeddings and confirmed examples, not a separate fine-tuning job for every person. Benchmark the existing Cactus embedding implementation, FluidAudio, and a hosted pyannote reference before choosing the production engine. Build the identity, correction, deletion, and undo model before allowing automatic historical updates.
+
+## Implementation status — October 25, 2026
+
+Licensing evaluation is deferred at the user's direction. It is not a blocker for this implementation work; the source survey below is retained as research history.
+
+The first implementation milestone adds stable people and explicit current-user association, audio-range manual corrections (including an explicit unnamed lock), a passage-scoped editor with visible save errors, duplicate-name-safe renaming, and shared attribution for transcript display, search, Muse, app intents and normal archive exports. Deleting or redacting audio removes its corrections. Explicit retranscription anchors old timed label assignments before a provider can replace its numbering. Independent OpenAI upload requests now have separate speaker-number namespaces.
+
+A new isolated `SpeakerRecognition` module provides validated, recipe-versioned embeddings, confirmed examples, an unknown-rejecting matcher, and a held-out-session evaluation harness. Its Cactus adapter is disabled by default and requires an explicitly supplied model. It does not download weights, enroll people, or name app transcripts. Real native inference succeeded in an iOS simulator using public speech and pinned WeSpeaker FP16 weights; this verifies compatibility only. Reproduction and measured timings: [`ios/Tools/SpeakerEvaluation/README.md`](../ios/Tools/SpeakerEvaluation/README.md).
+
+**Still to build:** enrollment and voice-profile storage, consent/processing controls, model delivery, acoustic speech/overlap quality gates, calibrated thresholds on held-out watch recordings, phone resource measurements, diarization for ASR providers without speaker turns, historical suggestion/review/undo, sync of voice profiles and cross-device conflict handling, and the Android implementation. Manual corrections in this milestone do not train a model or automatically identify other recordings. A renamed person updates already-linked passages, which is different from finding new voice matches.
+
+**Known limits:** existing server archives whose leading audio has expired are intentionally not replaced by their shorter local tail. Consequently, corrections to such retained server copies need a future archive patch/merge protocol. Untimed legacy names cannot be safely anchored when explicitly retranscribing; those names are cleared for that segment and logged for review, rather than assigned to a potentially different voice. Conversation cuts must continue to respect source audio ranges; a new ASR turn spanning conflicting corrections remains unnamed. Voice identification is not authorization for Muse actions.
 
 ## 1. Separate the three problems
 
@@ -247,6 +259,8 @@ One resolver produces person and provenance for every consumer. An identity revi
 | Suggested follow-up | Re-evaluate attribution/ownership, preserving the person's review decision |
 | Accepted reminder/calendar item | Do not silently rewrite or delete an action the user already approved |
 | Existing export or external assistant conversation | Cannot be recalled automatically; update our source, disclose that copies may remain |
+
+**Current archive retention limitation:** when leading pieces have expired from the phone, the existing archive exporter preserves the server's fuller conversation by skipping replacement with the remaining tail. A new speaker correction on that tail updates the phone, search, and direct Muse reads, but does not yet update that retained server copy. Supporting that safely needs a range-level archive patch/merge contract; replacing the whole server transcript with the phone's shortened copy would destroy retained history. Complete conversations still use the corrected export and identity revision. Do not claim every historical server copy has been refreshed.
 
 “Who said it” is separate from “who should do it.” Even a strong self match does not turn a quote, joke, audiobook or someone else's request into the user's commitment. Recognition may improve follow-up evidence; it never authorizes Muse tools or actions. A voice match also cannot establish live presence or defeat replay/cloning.
 

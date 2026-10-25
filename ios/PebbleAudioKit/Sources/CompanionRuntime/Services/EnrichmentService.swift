@@ -465,23 +465,36 @@ public actor EnrichmentService {
         // The words of the conversation's PIECES. Whole members would make the talk at the
         // other end of a shared segment findable under this conversation too — a search hit
         // that opens a conversation in which the words are never said.
-        let transcript = conversation.members
-            .compactMap { searchPieceTranscriptOf($0)?.text }
+        let pieces = conversation.members.map { ($0, searchPieceTranscriptOf($0)) }
+        let transcript = pieces
+            .compactMap { $0.1?.text }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
         // The tags the Library shows (the person's own edits included), falling back to the
         // annotation's before the tag table has caught up.
         let shownTags = ((try? await TagStore(db: database).tags(forConversation: id)) ?? [])
             .map(\.name)
-        let named = ((try? await PeopleStore(db: database).assignments(forConversation: id)) ?? [])
-            .map(\.personName)
+        let legacyAssignments = try await PeopleStore(db: database).assignments(forConversation: id)
+        let identity = try await SpeakerCorrectionStore(db: database)
+            .snapshot(segmentIds: conversation.members.map(\.segmentId))
+        let named = pieces.flatMap { member, transcript in
+            SpeakerAttribution.people(in: member, transcript: transcript, identity: identity,
+                                      legacyAssignments: legacyAssignments)
+        }.map(\.name)
+        let distinctPeople = Self.distinctNames(named)
+        // Spotlight has a participants field, but the app's FTS index searches text. Include
+        // the same resolved people there so a correction changes person searches too, while
+        // keeping the cleaned transcript (including omission notes) intact.
+        let searchableTranscript = distinctPeople.isEmpty ? transcript
+            : (["People: " + distinctPeople.joined(separator: ", "), transcript]
+                .filter { !$0.isEmpty }.joined(separator: "\n"))
         return SpotlightDonator.ConversationDonation(
             conversationId: id,
             title: annotation?.title,
             summary: annotation?.summary,
             tags: shownTags.isEmpty ? (annotation?.tags ?? []) : shownTags,
-            people: Self.distinctNames(named),
-            fullTranscript: transcript.isEmpty ? nil : transcript,
+            people: distinctPeople,
+            fullTranscript: searchableTranscript.isEmpty ? nil : searchableTranscript,
             startDateMs: conversation.startMs,
             endDateMs: conversation.endMs,
             // The conversation's own start, not the clock: a creation date of "now" made every

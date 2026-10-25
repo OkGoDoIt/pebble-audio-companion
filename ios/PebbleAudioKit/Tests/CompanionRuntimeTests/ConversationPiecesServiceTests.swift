@@ -173,6 +173,35 @@ struct ConversationPiecesServiceTests {
         #expect(try await h.fixture.annotations.load(h.second)?.title == "Title 2")
     }
 
+    @Test("speaker corrections update search only for their piece and remove stale names")
+    func speakerCorrectionsReachSearchWithoutNamingTheNeighbor() async throws {
+        let h = try await harness(withMask: false)
+        try await h.cuts.setOverride(at: h.cut, decision: .split)
+        try await h.enrichment.regroupPass()
+        let people = PeopleStore(db: h.fixture.database)
+        let legacy = try await people.createPerson(name: "Marigold")
+        let corrected = try await people.createPerson(name: "Juniper")
+        try await people.assign(
+            conversationId: h.first, label: SpeakerKey(segmentId: h.segmentId, label: "1").stored,
+            personId: legacy.id)
+        await h.enrichment.donate(conversationIds: [h.first, h.second])
+        #expect(try h.found("Marigold") == [h.first])
+
+        let corrections = SpeakerCorrectionStore(db: h.fixture.database)
+        try await corrections.set(segmentId: h.segmentId, startMediaMs: 5_000, endMediaMs: 9_000,
+                                  personId: corrected.id)
+        await h.enrichment.donate(conversationIds: [h.first, h.second])
+        #expect(try h.found("Marigold").isEmpty)
+        #expect(try h.found("Juniper") == [h.first])
+
+        try await corrections.set(segmentId: h.segmentId, startMediaMs: 5_000, endMediaMs: 9_000,
+                                  personId: nil)
+        await h.enrichment.donate(conversationIds: [h.first, h.second])
+        #expect(try h.found("Juniper").isEmpty)
+        #expect(try h.found("Marigold").isEmpty)
+        #expect(try h.found("penalties") == [h.second])
+    }
+
     @Test("a name the person gave a no-conversation stretch is kept by the stand-in")
     func aTypedTitleSurvivesTheStandIn() async throws {
         let h = try await harness()

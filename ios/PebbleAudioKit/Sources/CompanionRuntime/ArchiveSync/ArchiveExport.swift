@@ -21,7 +21,9 @@ public enum ArchiveExport {
     /// and interrupted rows the Conversation screen shows — merged, thresholded and worded by
     /// the screen's own rule — instead of one row per gap record. (Never released on a phone
     /// before the gap change, so the two share one re-send.)
-    public static let transcriptExportVersion = "transcript-export-2"
+    /// 3: range-level human corrections override legacy speaker names, including local ASR
+    /// without provider labels. Explicit unnamed/partial corrections block legacy fallback.
+    public static let transcriptExportVersion = "transcript-export-3"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
@@ -220,7 +222,8 @@ public enum ArchiveExport {
     /// has named them, a colon, and what they said. A turn with no speaker label is its text.
     public static func transcript(
         conversationId: String, pieces: [Piece], gaps: [ArchiveGap],
-        speakerNames: [String: String], sourceHash: String
+        speakerNames: [String: String], sourceHash: String,
+        identity: SpeakerIdentitySnapshot = .init()
     ) -> ArchiveTranscriptPayload {
         var items: [ArchiveTranscriptPayload.Item] = []
         var turnsBySource: [String: Int] = [:]
@@ -254,9 +257,10 @@ public enum ArchiveExport {
                 // label IN THIS SEGMENT (`SpeakerKey`); one given before names were scoped, in
                 // either form it was stored in, still covers the label wherever no segment name
                 // does.
-                let name = label.flatMap {
-                    SpeakerKey(segmentId: piece.member.segmentId, label: $0).name(in: speakerNames)
-                }
+                let name = SpeakerAttribution.name(
+                    segmentId: piece.member.segmentId, startMediaMs: turn.startMs,
+                    endMediaMs: turn.endMs, speaker: label, identity: identity,
+                    legacyNames: speakerNames)
                 items.append(
                     .turn(
                         atMs: wall.startMs, endMs: wall.endMs,
@@ -296,8 +300,7 @@ public enum ArchiveExport {
         var orderedLines: [String] = []
         for item in ordered {
             guard case .turn(_, _, let speaker, let name, let text, _) = item else { continue }
-            if let speaker { orderedLines.append("\(name ?? speakerLabel(speaker)): \(text)") }
-            else { orderedLines.append(text) }
+            orderedLines.append(SpeakerAttribution.line(text: text, speaker: speaker, name: name))
         }
         let text = orderedLines.joined(separator: "\n")
         let main = turnsBySource.max { a, b in

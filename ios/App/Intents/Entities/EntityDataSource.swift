@@ -163,6 +163,7 @@ struct LiveEntityDataSource: EntityDataSource {
         var followUps: FollowUpStore
         var recaps: DailyRecapStore
         var people: PeopleStore
+        var speakerCorrections: SpeakerCorrectionStore
         var runtime: CompanionRuntime
         var donator: SpotlightDonator
         var visibility: SystemSearchVisibility
@@ -178,6 +179,7 @@ struct LiveEntityDataSource: EntityDataSource {
             followUps: composition.followUps,
             recaps: composition.recapStore,
             people: composition.people,
+            speakerCorrections: SpeakerCorrectionStore(db: composition.database),
             runtime: composition.runtime,
             donator: composition.donator,
             visibility: EntityVisibility.current()
@@ -201,13 +203,24 @@ struct LiveEntityDataSource: EntityDataSource {
             row: detail.row,
             transcript: graph.visibility.includesText
                 ? transcript(of: detail, transcripts: graph.transcripts) : nil,
-            people: await people(of: id, in: graph)
+            people: await people(of: id, pieces: detail.pieces, in: graph)
         )
     }
 
-    private static func people(of conversationId: String, in graph: Graph) async -> [String] {
+    private static func people(
+        of conversationId: String, pieces: [ConversationMember]? = nil, in graph: Graph
+    ) async -> [String] {
+        let members: [ConversationMember]
+        if let pieces { members = pieces }
+        else { members = (try? await graph.library.conversation(id: conversationId))?.pieces ?? [] }
+        guard let identity = try? await graph.speakerCorrections.snapshot(segmentIds: members.map(\.segmentId))
+        else { return [] }
         let assignments = (try? await graph.people.assignments(forConversation: conversationId)) ?? []
-        return EntityMapping.people(assignments.map(\.personName))
+        let people = members.flatMap { member in
+            SpeakerAttribution.people(in: member, transcript: graph.transcripts.loadWithoutWords(member.segmentId),
+                                      identity: identity, legacyAssignments: assignments)
+        }
+        return EntityMapping.people(people.map(\.name))
     }
 
     func conversations(scope: EntityScope, tag: String?, limit: Int) async
