@@ -259,4 +259,41 @@ import Testing
         #expect(try await store.claimNextJob() == nil)
         #expect(try await store.jobs(runID: "retry").first?.state == .failed)
     }
+
+    @Test func retentionKeepsConfirmedVoiceButExplicitSourceDeletionRevokesDependentNames() async throws {
+        let (db, store, person) = try await ready()
+        try await enroll(store, person)
+        _ = try await store.prepareSource(segmentId: "other", revision: "other-digest")
+        var a = auto(person)
+        a.segmentId = "other"; a.sourceRevision = "other-digest"
+        let context = try #require(try await store.workContext(segmentId: "other"))
+        #expect(try await store.commitAutomatic(a, token: context.token))
+        let corpus = try await store.configuration().corpusRevision
+        try await store.expireSource(segmentId: "s")
+        #expect(try await store.configuration().corpusRevision == corpus)
+        #expect(try await store.examples().count == 1)
+        #expect(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["other"]).automaticAttributions.count == 1)
+        #expect(try await store.workContext(segmentId: "s") == nil)
+        await #expect(throws: VoiceIdentityError.sourceDeleted) {
+            try await store.prepareSource(segmentId: "s", revision: "digest-v1")
+        }
+        try await store.deleteSource(segmentId: "s")
+        #expect(try await store.examples().isEmpty)
+        #expect(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["other"]).automaticAttributions.isEmpty)
+        #expect(try await !store.commitAutomatic(a, token: context.token))
+    }
+
+    @Test func missingDeviceKeyResetsOnlyAcousticStateAndAllowsFreshEnrollment() async throws {
+        let (db, store, person) = try await ready()
+        try await enroll(store, person)
+        let old = try await token(store)
+        try await SpeakerCorrectionStore(db: db).set(segmentId: "s", startMediaMs: 0, endMediaMs: 2_000, personId: person.id)
+        try await store.resetUnavailableProfiles()
+        #expect(try await store.configuration().mode == .off)
+        #expect(try await store.examples().isEmpty)
+        #expect(try await !store.commitExample(example(person), token: old))
+        #expect(try await store.commitExample(example(person), token: token(store)))
+        #expect(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["s"]).resolve(
+            segmentId: "s", startMediaMs: 0, endMediaMs: 2_000) == .named(person))
+    }
 }

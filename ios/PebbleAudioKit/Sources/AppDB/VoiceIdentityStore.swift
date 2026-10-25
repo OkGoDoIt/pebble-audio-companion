@@ -20,6 +20,7 @@ public struct VoiceIdentityStore: Sendable {
                 """, arguments: [mode.rawValue, mode.rawValue, nowMs, mode.rawValue])
             if mode == .off {
                 try d.execute(sql: "UPDATE voice_jobs SET state = 'cancelled' WHERE state IN ('pending','running')")
+                try d.execute(sql: "UPDATE voice_history_plans SET state = 'cancelled' WHERE state = 'active'")
             }
         }
     }
@@ -34,7 +35,7 @@ public struct VoiceIdentityStore: Sendable {
             if let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_sources WHERE segmentId = ?", arguments: [segmentId]) {
                 let state: String = row["state"]
                 let oldRevision: String = row["revision"]
-                if state == "deleted" { throw VoiceIdentityError.sourceDeleted }
+                if state == "deleted" || state == "expired" { throw VoiceIdentityError.sourceDeleted }
                 if state == "invalidated", oldRevision == revision { throw VoiceIdentityError.sourceInvalidated }
                 if oldRevision != revision {
                     try d.execute(sql: "INSERT OR IGNORE INTO voice_source_revocations(segmentId,revision) VALUES (?,?)", arguments: [segmentId, oldRevision])
@@ -176,9 +177,25 @@ public struct VoiceIdentityStore: Sendable {
         }
     }
 
+    /// Routine recording retention is separate from the explicitly saved voice profile.
+    /// Keep confirmed vectors and their provenance; expire only work and names on this source.
+    public func expireSource(segmentId: String) async throws {
+        try await db.writer.write { d in
+            for table in ["voice_auto_attributions", "voice_jobs", "voice_suppressions"] {
+                try d.execute(sql: "DELETE FROM \(table) WHERE segmentId = ?", arguments: [segmentId])
+            }
+            try d.execute(sql: """
+                INSERT INTO voice_sources(segmentId,revision,generation,state) VALUES (?, '', 1, 'expired')
+                ON CONFLICT(segmentId) DO UPDATE SET generation = generation + 1,
+                    state = CASE WHEN state = 'deleted' THEN 'deleted' ELSE 'expired' END
+                """, arguments: [segmentId])
+        }
+    }
+
     public func removeSourceRange(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws {
         try Self.range(startMediaMs, endMediaMs)
         try await db.writer.write { d in
+            try Self.eraseDependentPredictions(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
             for table in ["voice_examples", "voice_auto_attributions"] {
                 try d.execute(sql: "DELETE FROM \(table) WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?",
                               arguments: [segmentId, endMediaMs, startMediaMs])
@@ -197,6 +214,20 @@ public struct VoiceIdentityStore: Sendable {
                 DELETE FROM voice_examples; DELETE FROM voice_auto_attributions;
                 DELETE FROM voice_jobs; DELETE FROM voice_suppressions; DELETE FROM voice_runs;
                 UPDATE voice_sources SET generation = generation + 1, state = 'deleted';
+                """)
+        }
+    }
+
+    /// A restored database without its device-only decryption key has no usable voice corpus.
+    /// Clear that derived state and turn recognition off; available recordings remain eligible
+    /// for a new, explicit enrollment. A temporarily locked key must never call this operation.
+    public func resetUnavailableProfiles() async throws {
+        try await db.writer.write { d in
+            try d.execute(sql: """
+                UPDATE voice_recognition_config SET mode = 'off', generation = generation + 1,
+                    corpusRevision = corpusRevision + 1 WHERE id = 1;
+                DELETE FROM voice_examples; DELETE FROM voice_auto_attributions;
+                DELETE FROM voice_jobs; DELETE FROM voice_suppressions; DELETE FROM voice_runs;
                 """)
         }
     }
@@ -255,9 +286,16 @@ public struct VoiceIdentityStore: Sendable {
             }
     }
     static func eraseSourceArtifacts(_ d: Database, segmentId: String) throws {
+        try eraseDependentPredictions(d, segmentId: segmentId, start: 0, end: Int64.max)
         for table in ["voice_examples", "voice_auto_attributions", "voice_jobs", "voice_suppressions"] {
             try d.execute(sql: "DELETE FROM \(table) WHERE segmentId = ?", arguments: [segmentId])
         }
+    }
+    private static func eraseDependentPredictions(_ d: Database, segmentId: String, start: Int64, end: Int64) throws {
+        try d.execute(sql: """
+            DELETE FROM voice_auto_attributions WHERE personId IN (
+                SELECT personId FROM voice_examples WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?)
+            """, arguments: [segmentId, end, start])
     }
     static func range(_ start: Int64, _ end: Int64) throws {
         guard start >= 0, end > start else { throw VoiceIdentityError.invalidRecord }
