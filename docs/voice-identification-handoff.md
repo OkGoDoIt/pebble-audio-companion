@@ -24,8 +24,8 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 - 15:45 +07 install of `e15ab431` (one-voice fix); its ten-minute check runs at 15:56 (report in session
   scratch `cost-3.txt` — rerun `./scripts/phone-cost-report.sh --minutes 11` if lost).
-- ~16:03 install of `cc929a84` in progress: watch-clock calibration, detector gain, no Remember toggle.
-  **After it: ten-minute check + systemCrashLogs diff (4 historical Pebble reports, none new so far).**
+- 16:00 install of `cc929a84` (watch-clock calibration, detector gain, no Remember toggle) is running;
+  ten-minute check PASS (charging), no new crash reports. Next-morning `phone-cost-report.sh` still due.
 - Ask Roger to retry a watch sample (Quiet room) on this build; if it still fails, pull the open
   segment + sidecar (`devicectl device copy from … segments/<id>.meta.json|.spxlog`) and check the lag:
   sidecar mtime − (startTimeMs + lastSampleIndexExclusive/16).
