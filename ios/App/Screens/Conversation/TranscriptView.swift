@@ -707,7 +707,6 @@ struct SpeakerRenameSheet: View {
     @State private var model: SpeakerEditorModel
     @State private var selection: Selection?
     @State private var freeText = ""
-    @State private var rememberVoice = false
     @State private var renaming: Person?
     @State private var renameDraft = ""
     @State private var deleting: Person?
@@ -789,25 +788,11 @@ struct SpeakerRenameSheet: View {
                         SettingsFooter(text: "A person with this name already exists. Select them above, or use a more distinct name for someone new.")
                     }
                 }
-                if selection != nil && selection != .unnamed {
-                    if model.voiceAvailable && canRemember {
-                        Card {
-                            Toggle(isOn: $rememberVoice) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(Copy.Voices.rememberPassage).font(AppFont.rowTitle).foregroundStyle(Tokens.label)
-                                    Text(Copy.Voices.rememberDetail).font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                                }
-                            }.tint(Tokens.tint).disabled(model.isSaving)
-                        }
-                    } else {
-                        if model.voiceAvailable && !canRemember {
-                            SettingsFooter(text: "To remember a voice, choose 2–30 seconds with one speaker, or record a sample in People & voices.")
-                        }
-                        Button { onStop?(); showVoiceSettings = true } label: {
-                            Label("Set up voice recognition", systemImage: "waveform")
-                                .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44)
-                        }.foregroundStyle(Tokens.tint)
-                    }
+                if selection != nil && selection != .unnamed && !model.voiceAvailable && model.loaded {
+                    Button { onStop?(); showVoiceSettings = true } label: {
+                        Label("Set up voice recognition", systemImage: "waveform")
+                            .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44)
+                    }.foregroundStyle(Tokens.tint)
                 }
             }
             .navigationTitle(Copy.Speaker.title)
@@ -860,7 +845,11 @@ struct SpeakerRenameSheet: View {
     }
 
     private var canIdentify: Bool { turns.allSatisfy(\.canIdentifyPassage) }
-    private var canRemember: Bool { turns.contains(where: \.canRememberVoice) }
+    private var learns: Bool {
+        model.voiceAvailable && turns.contains {
+            $0.canIdentifyPassage && ($0.sourceEndMs ?? 0) - ($0.sourceStartMs ?? 0) >= 2_000
+        }
+    }
 
     private var passageHeader: String {
         if turn.isAudioOnly { return "This audio clip" }
@@ -874,11 +863,11 @@ struct SpeakerRenameSheet: View {
 
     private var passageFooter: String {
         guard canIdentify else { return Copy.Speaker.timingUnavailable }
-        if turn.isAudioOnly { return "The name changes only this clip. You can choose to remember the voice separately." }
-        if turns.count > 1 { return "The name changes only these paragraphs. You can choose to remember the voice separately." }
-        return turn.identificationText == nil
-            ? "The name changes only this passage. You can choose to remember the voice separately."
-            : "These paragraphs share one timed passage. The name applies to the full passage shown here."
+        let scope = turn.isAudioOnly ? "The name changes only this clip."
+            : turns.count > 1 ? "The name changes only these paragraphs."
+            : turn.identificationText == nil ? "The name changes only this passage."
+            : "These paragraphs share one timed passage; the name applies to all of it."
+        return learns ? scope + " The app also learns the voice from it." : scope
     }
 
     private var canSave: Bool {
@@ -914,15 +903,19 @@ struct SpeakerRenameSheet: View {
             switch selection {
             case .person(let id):
                 guard let person = model.people.first(where: { $0.id == id }) else { return }
-                success = await model.choose(person, for: turns, rememberVoice: rememberVoice)
+                success = await model.choose(person, for: turns, rememberVoice: learns)
             case .me:
-                success = await model.chooseMe(for: turns, name: freeText, rememberVoice: rememberVoice)
+                success = await model.chooseMe(for: turns, name: freeText, rememberVoice: learns)
             case .unnamed:
                 success = await model.choose(nil, for: turns)
             case .newPerson:
-                success = await model.createAndChoose(name: freeText, for: turns, rememberVoice: rememberVoice)
+                success = await model.createAndChoose(name: freeText, for: turns, rememberVoice: learns)
             }
             if model.nameWasSaved { onDone() }
+            if let notice = model.learnNotice {
+                model.learnNotice = nil
+                UndoCenter.shared.snackbar = SnackbarItem(message: notice)
+            }
             if success { dismiss() }
         }
     }

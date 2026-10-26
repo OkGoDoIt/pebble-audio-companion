@@ -22,6 +22,8 @@ final class SpeakerEditorModel {
     private(set) var errorMessage: String?
     private(set) var voiceAvailable = false
     private(set) var nameWasSaved = false
+    /// One line about learning the voice after a save, for the screen to show once.
+    var learnNotice: String?
     private let injectedSource: (any PeopleDataSource)?
     private var source: any PeopleDataSource { injectedSource ?? AskLibraryDataSources.current.people }
     // Retain a newly created identity if saving its passage fails; Retry must not create a twin.
@@ -84,13 +86,26 @@ final class SpeakerEditorModel {
         }
     }
 
-    /// The longest clear passages make the best samples; a handful is plenty for one change.
+    /// Every manual name teaches the voice when recognition is on. The longest passages make
+    /// the best samples and a handful is plenty for one change. Learning never undoes or blocks
+    /// the name: a passage that can't be learned from is skipped, and one line says so.
     private func remember(_ id: String, turns: [TranscriptTurn]) async throws {
-        guard let voice = VoiceSources.current else { throw SpeakerEditorError.voiceUnavailable }
-        let eligible = turns.filter(\.canRememberVoice).sorted {
-            ($0.sourceEndMs ?? 0) - ($0.sourceStartMs ?? 0) > ($1.sourceEndMs ?? 0) - ($1.sourceStartMs ?? 0)
+        guard let voice = VoiceSources.current else { return }
+        let length: (TranscriptTurn) -> Int64 = { ($0.sourceEndMs ?? 0) - ($0.sourceStartMs ?? 0) }
+        let eligible = turns.filter { $0.canIdentifyPassage && length($0) >= 2_000 }.sorted { length($0) > length($1) }
+        guard !eligible.isEmpty else { return }
+        var learned = 0
+        var otherVoice = 0.0
+        for turn in eligible.prefix(5) {
+            guard let outcome = try? await voice.enrollPassage(personId: id, turn: turn) else { continue }
+            learned += outcome.examplesAdded
+            otherVoice += outcome.otherVoiceSeconds
         }
-        for turn in eligible.prefix(3) { _ = try await voice.enrollPassage(personId: id, turn: turn) }
+        if learned == 0 {
+            learnNotice = "Saved. The audio was too unclear to learn this voice from."
+        } else if otherVoice >= 2 {
+            learnNotice = "Saved. Part of it sounded like someone else, so only the rest was learned."
+        }
     }
 
     func rename(_ person: Person, to name: String) async -> Bool {
