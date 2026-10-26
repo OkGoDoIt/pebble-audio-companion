@@ -67,6 +67,24 @@ import Testing
         #expect(try await store.profiles().first?.exampleCount == 32)
     }
 
+    @Test func retiringToMakeRoomKeepsTheArchivedAndAutomaticNames() async throws {
+        let (db, store, person) = try await ready()
+        let examples = (0..<32).map { example(person, id: "crop\($0)", start: Int64($0) * 2_000) }
+        #expect(try await store.commitExamples(examples, token: token(store)))
+        #expect(try await store.commitAutomatic(auto(person, start: 70_000, end: 72_000), token: token(store)))
+        let revocations = { try await db.reader.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM voice_archive_revocations") ?? 0 } }
+        let before = try await revocations()
+        #expect(try await store.commitExamples([example(person, id: "new", start: 80_000)],
+                                               retiring: ["crop3"], token: token(store)))
+        let ids = Set(try await store.examples().map(\.id))
+        #expect(ids.count == 32 && ids.contains("new") && !ids.contains("crop3"))
+        #expect(try await revocations() == before, "Pruning isn't a doubt about the person's archived names")
+        let automatic = try await db.reader.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM voice_auto_attributions") ?? 0 }
+        #expect(automatic == 1, "Nor does it clear their automatic names")
+        try await store.removeExamples(ids: ["crop4"])
+        #expect(try await revocations() > before, "Removing a sample by hand still withdraws them")
+    }
+
     @Test func removingOneConfirmedRecordingRemovesAllItsCropsAtomically() async throws {
         let (db, store, person) = try await ready()
         let crops = [example(person, id: "one"), example(person, id: "two", start: 2_000)]

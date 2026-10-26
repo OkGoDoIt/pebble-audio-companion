@@ -320,12 +320,17 @@ public actor VoiceRecognitionService {
         let (clean, otherVoiceSamples) = try Self.enrollmentTurns(analysis, audio: audio,
                                                                   sameVoiceSimilarity: policy.minimumSimilarity)
         let prior = context.examples.filter { $0.personId == personId && $0.recipeID == analysis.recipeID }
-        let fresh = clean.filter { turn in
+        let fresh = Self.diverse(clean.filter { turn in
             !prior.contains { ($0.segmentId == audio.sourceID || $0.sourceRevision == audio.sourceRevision)
                 && $0.startMediaMs < Int64(turn.endSample / 16)
                 && $0.endMediaMs > Int64(turn.startSample / 16) }
-        }
-        guard prior.count + fresh.count <= 32 else { throw VoiceEnrollmentError.profileFull }
+        }, limit: Self.cropsPerPassage)
+        // Every name teaches now, so a profile fills; the most redundant crops make room.
+        let retiring = try Self.retirements(prior: prior.map { example in
+            (id: example.id, confirmationID: example.confirmationID,
+             guided: VoiceSampleMicrophone.isGuided(segmentId: example.segmentId),
+             embedding: try StoredEnrollmentEmbedding.decode(protector.open(example.embeddingJSON)).primary)
+        }, incoming: fresh.compactMap(\.embedding), capacity: Self.profileCapacity)
         let encoder = JSONEncoder()
         let confirmation = UUID().uuidString.lowercased()
         // The watch's codec changes the embedding distribution. Keep one alternate acoustic
@@ -372,7 +377,7 @@ public actor VoiceRecognitionService {
         }
         try checkEnrollment(generation)
         if !examples.isEmpty {
-            guard try await store.commitExamples(examples, token: context.token, authorize: { [self] in
+            guard try await store.commitExamples(examples, retiring: retiring, token: context.token, authorize: { [self] in
                 enrollmentGeneration.withLock { $0 == generation }
             }) else { throw VoiceEnrollmentError.changedDuringProcessing }
         }
@@ -411,6 +416,58 @@ public actor VoiceRecognitionService {
 
     /// A human selection is necessary but cannot prove purity. Reject overlap and multiple
     /// acoustic clusters even when a transcriber calls the whole selection one speaker.
+    /// The matcher compares against at most this many crops per person.
+    static let profileCapacity = 32
+    /// One passage is one situation; a few crops cover how it sounded without crowding the rest.
+    static let cropsPerPassage = 4
+
+    /// Up to `limit` crops that sound least alike, starting from the most confident: the watch
+    /// makes one voice sound several ways, and those differences are what the profile needs.
+    static func diverse(_ turns: [SpeakerTurn], limit: Int) -> [SpeakerTurn] {
+        guard turns.count > limit else { return turns }
+        var pool = turns.sorted { $0.speechConfidence > $1.speechConfidence }
+        var chosen = [pool.removeFirst()]
+        while chosen.count < limit, !pool.isEmpty {
+            let next = pool.indices.min { a, b in
+                closest(pool[a], to: chosen) < closest(pool[b], to: chosen)
+            }!
+            chosen.append(pool.remove(at: next))
+        }
+        return chosen.sorted { $0.startSample < $1.startSample }
+    }
+    private static func closest(_ turn: SpeakerTurn, to chosen: [SpeakerTurn]) -> Double {
+        guard let embedding = turn.embedding else { return 1 }
+        return chosen.compactMap { other in other.embedding.flatMap { try? embedding.cosineSimilarity(to: $0) } }.max() ?? -1
+    }
+
+    /// Which of a person's crops to retire so `incoming` fits in `capacity`: each time, the crop
+    /// most like another one that stays. A sample's last crop, and the guided samples, go only
+    /// when nothing else can.
+    static func retirements(prior: [(id: String, confirmationID: String, guided: Bool, embedding: SpeakerEmbedding)],
+                            incoming: [SpeakerEmbedding], capacity: Int) -> [String] {
+        var excess = prior.count + incoming.count - capacity
+        guard excess > 0 else { return [] }
+        var kept = prior
+        var retired: [String] = []
+        while excess > 0, !kept.isEmpty {
+            func redundancy(_ index: Int) -> Double {
+                let others = kept.indices.filter { $0 != index }.map { kept[$0].embedding } + incoming
+                return others.compactMap { try? kept[index].embedding.cosineSimilarity(to: $0) }.max() ?? -1
+            }
+            func spareable(_ index: Int, sparingGuided: Bool) -> Bool {
+                let sole = !kept.indices.contains { $0 != index && kept[$0].confirmationID == kept[index].confirmationID }
+                return !sole && !(sparingGuided && kept[index].guided)
+            }
+            let candidates = [kept.indices.filter { spareable($0, sparingGuided: true) },
+                              kept.indices.filter { spareable($0, sparingGuided: false) },
+                              Array(kept.indices)].first { !$0.isEmpty }!
+            let victim = candidates.max { redundancy($0) < redundancy($1) }!
+            retired.append(kept.remove(at: victim).id)
+            excess -= 1
+        }
+        return retired
+    }
+
     /// The person has confirmed this audio is one voice. The model can still hear one voice as
     /// two (a turned head, a raised voice, a room's echo) or flag a stretch as overlapping, and
     /// neither is a reason to throw the sample away: on 2026-10-26 a 20-second sample of one

@@ -12,6 +12,11 @@ public enum VoiceSampleMicrophone: String, Sendable, CaseIterable {
     /// so deleting or growing a recording never silently removes the sample.
     var sourcePrefix: String { self == .phone ? "enrollment:" : "watch-enrollment:" }
 
+    /// A sample recorded on purpose in setup, rather than a passage named in a conversation.
+    public static func isGuided(segmentId: String) -> Bool {
+        allCases.contains { segmentId.hasPrefix($0.sourcePrefix) }
+    }
+
     public static func of(segmentId: String) -> VoiceSampleMicrophone {
         segmentId.hasPrefix(VoiceSampleMicrophone.phone.sourcePrefix) ? .phone : .watch
     }

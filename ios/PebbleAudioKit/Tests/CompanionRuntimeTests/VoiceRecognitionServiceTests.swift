@@ -212,6 +212,34 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         }
     }
 
+    @Test func aPassageKeepsItsLeastAlikeCropsAndAFullProfileRetiresTheMostRedundant() throws {
+        let raw = try Self.embedding()
+        func vector(_ degrees: Double) throws -> SpeakerEmbedding {
+            try SpeakerEmbedding(recipe: raw.recipe, values: [Float(cos(degrees * .pi / 180)), Float(sin(degrees * .pi / 180))])
+        }
+        func turn(_ start: Int, _ degrees: Double, confidence: Double = 0.9) throws -> SpeakerTurn {
+            SpeakerTurn(startSample: start * 32_000, endSample: (start + 1) * 32_000, clusterID: "a",
+                        embedding: try vector(degrees), overlap: false, speechConfidence: confidence)
+        }
+        // Five crops: three nearly identical (0°, 1°, 2°), two different (40°, 80°).
+        let turns = [try turn(0, 0, confidence: 0.99), try turn(1, 1), try turn(2, 2), try turn(3, 40), try turn(4, 80)]
+        let kept = VoiceRecognitionService.diverse(turns, limit: 3)
+        #expect(kept.map { $0.startSample / 32_000 } == [0, 3, 4], "One of the near-duplicates, and both different ones")
+
+        // A full profile of 4: a near-duplicate pair from one sample, a sole crop, a guided sample.
+        let prior = [
+            (id: "dup-a", confirmationID: "talk", guided: false, embedding: try vector(10)),
+            (id: "dup-b", confirmationID: "talk", guided: false, embedding: try vector(11)),
+            (id: "sole", confirmationID: "other", guided: false, embedding: try vector(12)),
+            (id: "setup", confirmationID: "setup", guided: true, embedding: try vector(13)),
+        ]
+        let retired = VoiceRecognitionService.retirements(prior: prior, incoming: [try vector(90)], capacity: 4)
+        #expect(retired.count == 1)
+        #expect(retired.first == "dup-a" || retired.first == "dup-b",
+                "A sample's last crop and a guided sample are spared while a duplicate remains")
+        #expect(VoiceRecognitionService.retirements(prior: prior, incoming: [], capacity: 4).isEmpty)
+    }
+
     @Test func storedMediaWindowsNeverJoinTheTwoSidesOfAQuietOrLossGap() throws {
         var frames: [FrameRecord] = []
         for index in 0..<300 {

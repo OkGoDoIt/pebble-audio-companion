@@ -64,6 +64,21 @@ public struct VoiceArchiveRevocationStore: Sendable {
     }
 
     /// Only trusted SQL expressions from our trigger definitions are interpolated here.
+    /// A profile keeps a bounded set of samples, so a full one retires its most redundant crop to
+    /// make room. That isn't a doubt about the person's names, so a retired crop's deletion must
+    /// not withdraw their archived automatic names the way removing a sample does.
+    static func installRetirement(_ d: Database) throws {
+        try d.execute(sql: "ALTER TABLE voice_examples ADD COLUMN retiredAtMs INTEGER")
+        guard try d.tableExists("voice_archive_state") else { return }
+        try d.execute(sql: """
+            DROP TRIGGER IF EXISTS voice_archive_example_deleted;
+            CREATE TRIGGER voice_archive_example_deleted AFTER DELETE ON voice_examples
+            WHEN OLD.retiredAtMs IS NULL BEGIN
+                \(revokeSQL(scope: "'person'", targetID: "OLD.personId"))
+            END;
+            """)
+    }
+
     private static func revokeSQL(scope: String, targetID: String) -> String {
         """
         UPDATE voice_archive_state SET generation = generation + 1 WHERE id = 1;

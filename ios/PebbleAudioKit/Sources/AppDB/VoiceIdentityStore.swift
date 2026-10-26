@@ -103,8 +103,10 @@ public struct VoiceIdentityStore: Sendable {
 
     /// A guided enrollment's disjoint crops commit as one decision. Cancellation or a bad crop
     /// cannot leave a partially saved profile, and one enrollment advances one corpus revision.
+    /// `retiring` names this person's crops to make room for these: their deletion is pruning,
+    /// so it neither withdraws the person's archived names nor clears their automatic names.
     @discardableResult public func commitExamples(
-        _ examples: [VoiceConfirmedExample], token: VoiceWorkToken,
+        _ examples: [VoiceConfirmedExample], retiring: [String] = [], token: VoiceWorkToken,
         authorize: @escaping @Sendable () -> Bool = { true }
     ) async throws -> Bool {
         guard !examples.isEmpty, examples.count <= 32, let first = examples.first,
@@ -116,6 +118,15 @@ public struct VoiceIdentityStore: Sendable {
             guard authorize(), try Self.valid(d, segmentId: first.segmentId, token: token, requiresEnabled: false),
                   examples.allSatisfy({ $0.sourceRevision == token.sourceRevision }) else { return false }
             let originalRevision = try Self.configuration(d).corpusRevision
+            if !retiring.isEmpty {
+                let placeholders = Array(repeating: "?", count: retiring.count).joined(separator: ",")
+                var arguments: StatementArguments = [Int64(Date().timeIntervalSince1970 * 1_000)]
+                arguments += StatementArguments(retiring)
+                arguments += [first.personId]
+                try d.execute(sql: "UPDATE voice_examples SET retiredAtMs = ? WHERE id IN (\(placeholders)) AND personId = ?",
+                              arguments: arguments)
+                try d.execute(sql: "DELETE FROM voice_examples WHERE retiredAtMs IS NOT NULL")
+            }
             let identity = try SpeakerCorrectionStore.fetchSnapshot(d, segmentIds: [first.segmentId])
             for example in examples {
                 guard !identity.corrections.contains(where: {

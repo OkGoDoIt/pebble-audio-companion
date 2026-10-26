@@ -333,7 +333,7 @@ func removeArchiveSync(_ db: GRDB.Database) throws {
                   "voice_sample_situations"] {
         try db.execute(sql: "DROP TABLE IF EXISTS \(table)")
     }
-    try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('voice-recognition-v1','voice-archive-provenance-v1','voice-sample-situations-v1')")
+    try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('voice-recognition-v1','voice-archive-provenance-v1','voice-sample-situations-v1','voice-example-retirement-v1')")
     try db.execute(sql: "DROP TABLE IF EXISTS speaker_corrections")
     try db.execute(sql: "DROP TABLE IF EXISTS speaker_identity_state")
     try db.execute(
