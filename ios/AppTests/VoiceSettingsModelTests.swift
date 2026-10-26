@@ -48,8 +48,11 @@ import Testing
         watchWindows.append(fromWallMs...toWallMs)
         return 2
     }
+    var learnedRechecks: [String] = []
+    func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async { learnedRechecks.append(personId) }
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome {
-        VoiceEnrollmentOutcome(personId: personId, examplesAdded: 1, usableSpeechSeconds: 4)
+        enrollmentPeople.append(personId)
+        return VoiceEnrollmentOutcome(personId: personId, examplesAdded: 1, usableSpeechSeconds: 4)
     }
     func cancelEnrollment() async { cancelled = true }
     func recognizeHistory(days: Int?) async throws { scopes.append(days) }

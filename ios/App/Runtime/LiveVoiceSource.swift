@@ -109,14 +109,21 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         // A long passage still teaches the voice: its first 30 seconds are plenty.
         let result = try await service.enroll(personId: personId, segmentId: turn.segmentId,
                                               startMediaMs: start, endMediaMs: min(full, start + 30_000))
-        // Remembering a passage explicitly promises to update older retained recordings.
-        // The durable fixed-scope plan resumes a bounded queue in the foreground.
-        if try await service.status().configuration.mode == .local,
-           try await service.examples().filter({ $0.personId == personId && $0.recipeID == LocalSpeakerDiarizer.recipeID }).count >= 2 {
-            _ = try await service.recognizeHistory(fromMs: 0, toMs: Int64(Date().timeIntervalSince1970 * 1_000))
-        }
         composition.runtime.notifyVoiceConfigurationChanged()
         return result
+    }
+    func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async {
+        // Every name teaches now, so a whole-archive pass per save would be O(library) work
+        // for each label. The past week, reaching back to the labelled conversation, is where
+        // the new evidence matters most; "Find voices in all recordings" still covers the rest.
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        let from = min(now - 7 * 86_400_000, earliestMs.map { $0 - 3_600_000 } ?? now)
+        guard (try? await service.status().configuration.mode) == .local,
+              let examples = try? await service.examples(),
+              examples.filter({ $0.personId == personId && $0.recipeID == LocalSpeakerDiarizer.recipeID }).count >= 2
+        else { return }
+        _ = try? await service.recognizeHistory(fromMs: from, toMs: now)
+        composition.runtime.notifyVoiceConfigurationChanged()
     }
     func cancelEnrollment() async {
         service.cancelEnrollment()

@@ -29,7 +29,13 @@ final class SpeakerEditorModel {
     // Retain a newly created identity if saving its passage fails; Retry must not create a twin.
     private var pendingPerson: Person?
 
-    init(source: (any PeopleDataSource)? = nil) { injectedSource = source }
+    private let injectedVoice: (any VoiceRecognitionDataSource)?
+    private var voiceSource: (any VoiceRecognitionDataSource)? { injectedVoice ?? VoiceSources.current }
+
+    init(source: (any PeopleDataSource)? = nil, voice: (any VoiceRecognitionDataSource)? = nil) {
+        injectedSource = source
+        injectedVoice = voice
+    }
 
     func load(conversationId: String, turns: [TranscriptTurn]) async {
         guard !isSaving else { return }
@@ -41,7 +47,7 @@ final class SpeakerEditorModel {
             self.people = people
             self.assigned = assigned
             loaded = true
-            if let voice = VoiceSources.current, let state = try? await voice.snapshot() {
+            if let voice = voiceSource, let state = try? await voice.snapshot() {
                 voiceAvailable = state.enabled && state.modelsReady
             }
             errorMessage = nil
@@ -90,7 +96,7 @@ final class SpeakerEditorModel {
     /// the best samples and a handful is plenty for one change. Learning never undoes or blocks
     /// the name: a passage that can't be learned from is skipped, and one line says so.
     private func remember(_ id: String, turns: [TranscriptTurn]) async throws {
-        guard let voice = VoiceSources.current else { return }
+        guard let voice = voiceSource else { return }
         let length: (TranscriptTurn) -> Int64 = { ($0.sourceEndMs ?? 0) - ($0.sourceStartMs ?? 0) }
         let eligible = turns.filter { $0.canIdentifyPassage && length($0) >= 2_000 }.sorted { length($0) > length($1) }
         guard !eligible.isEmpty else { return }
@@ -100,6 +106,10 @@ final class SpeakerEditorModel {
             guard let outcome = try? await voice.enrollPassage(personId: id, turn: turn) else { continue }
             learned += outcome.examplesAdded
             otherVoice += outcome.otherVoiceSeconds
+        }
+        if learned > 0 {
+            let earliest = eligible.compactMap(\.startedAt).min().map { Int64($0.timeIntervalSince1970 * 1_000) }
+            await voice.recognizeAfterLearning(personId: id, since: earliest)
         }
         if learned == 0 {
             learnNotice = "Saved. The audio was too unclear to learn this voice from."

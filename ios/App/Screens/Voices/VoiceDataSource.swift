@@ -117,6 +117,8 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
                      kind: VoiceSampleKind?) async throws -> Int
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome
+    /// After a save taught a voice: look for it again in recent recordings, once per save.
+    func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async
     func cancelEnrollment() async
     func recognizeHistory(days: Int?) async throws
     func cancelRun(id: String) async throws

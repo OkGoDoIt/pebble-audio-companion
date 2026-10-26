@@ -133,4 +133,27 @@ struct SpeakerEditorModelTests {
         #expect(await editor.choose(nil, for: [turn, untimed]) == false)
         #expect(source.saves.isEmpty)
     }
+
+    @Test func oneSaveLearnsEachClearParagraphAndRechecksRecentRecordingsOnce() async {
+        let source = Source()
+        let voice = VoiceTestSource()
+        voice.state = VoiceSettingsDisplay(enabled: true, modelsReady: true)
+        let editor = SpeakerEditorModel(source: source, voice: voice)
+        let turns = (0..<7).map { index in
+            TranscriptTurn(id: "p\(index)", speakerLabel: "s#1", name: "Speaker 1", role: .unresolved,
+                           text: "Paragraph \(index).", segmentId: "s",
+                           sourceStartMs: Int64(index) * 40_000, sourceEndMs: Int64(index) * 40_000 + 3_000 + Int64(index) * 1_000)
+        }
+        let short = TranscriptTurn(id: "short", speakerLabel: "s#1", name: "Speaker 1", role: .unresolved,
+                                   text: "Yes.", segmentId: "s", sourceStartMs: 500_000, sourceEndMs: 501_000)
+        await editor.load(conversationId: "c", turns: turns + [short])
+        #expect(editor.voiceAvailable)
+        let dana = Person(id: "dana", name: "Dana")
+        source.registry = [dana]
+        #expect(await editor.choose(dana, for: turns + [short], rememberVoice: true))
+        #expect(source.saves.count == 8, "Every paragraph is named, the one-word one included")
+        #expect(voice.enrollmentPeople.count == 5, "The five longest clear paragraphs teach the voice")
+        #expect(voice.learnedRechecks == ["dana"], "One recheck per save, not one per paragraph")
+        #expect(editor.learnNotice == nil)
+    }
 }
