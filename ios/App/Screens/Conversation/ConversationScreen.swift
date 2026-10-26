@@ -773,22 +773,27 @@ struct ConversationScreen: View {
     private func pickBar(_ picked: Set<String>) -> some View {
         let turns = pickedTurns
         let named = turns.contains { $0.role != .unresolved }
-        return HStack(spacing: 10) {
-            Button(Copy.Common.cancel) { self.picked = nil }
-                .font(AppFont.callout).foregroundStyle(Tokens.tint).frame(minHeight: 44)
-            Text(turns.isEmpty ? "Tap paragraphs to select" : "\(turns.count) selected")
-                .font(AppFont.footnote.monospacedDigit()).foregroundStyle(Tokens.meta)
-                .frame(maxWidth: .infinity)
-                .lineLimit(2).minimumScaleFactor(0.85)
-            if named {
-                ActionPill(title: "Clear name") { clearNames(turns) }
-                    .disabled(clearingNames)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(turns.isEmpty ? "Tap paragraphs to select them"
+                     : turns.count == 1 ? "1 paragraph selected" : "\(turns.count) paragraphs selected")
+                    .font(AppFont.footnote.monospacedDigit()).foregroundStyle(Tokens.meta)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(Copy.Common.cancel) { self.picked = nil }
+                    .font(AppFont.callout).foregroundStyle(Tokens.tint).fixedSize()
             }
-            ActionPill(title: "Change speaker", style: .filled) {
-                player.pause()
-                model.renameTurns = SpeakerPassages(turns: turns)
-            }.disabled(turns.isEmpty || clearingNames)
+            FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
+                ActionPill(title: "Change speaker", systemImage: "person.crop.circle", style: .filled) {
+                    player.pause()
+                    model.renameTurns = SpeakerPassages(turns: turns)
+                }.disabled(turns.isEmpty || clearingNames)
+                if named {
+                    ActionPill(title: "Clear name") { clearNames(turns) }
+                        .disabled(clearingNames)
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 10)
         .padding(.horizontal, Tokens.screenMargin)
         .padding(.bottom, 8)
@@ -852,6 +857,7 @@ struct ConversationScreen: View {
 
     private func toggle(_ turn: TranscriptTurn) {
         guard turn.canIdentifyPassage else { return }
+        Haptics.checkedOff()
         var set = picked ?? []
         if set.remove(turn.id) == nil { set.insert(turn.id) }
         picked = set

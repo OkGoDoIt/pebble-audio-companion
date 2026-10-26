@@ -24,6 +24,15 @@ enum VoiceSampleKind: String, CaseIterable, Identifiable, Sendable {
         case .phone: "Hold your phone and speak into it."
         }
     }
+    /// What to do, shown above the prompt while recording this sample.
+    var instruction: String {
+        switch self {
+        case .quiet: "Find a spot with no TV or music on, then speak naturally for about 20 seconds. Your watch does the listening."
+        case .noisy: "With a TV, music, or people nearby, speak naturally for about 20 seconds. Your watch does the listening."
+        case .outdoors: "Outside, walking, or in a car, speak naturally for about 20 seconds. Your watch does the listening."
+        case .phone: "Hold your phone and speak into it naturally for about 20 seconds."
+        }
+    }
 }
 
 struct VoiceExampleDisplay: Equatable, Identifiable {

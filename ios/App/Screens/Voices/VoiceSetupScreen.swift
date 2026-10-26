@@ -103,11 +103,7 @@ struct VoiceSetupScreen: View {
     }
 
     private var headerDetail: String {
-        if let active {
-            return active.microphone == .watch
-                ? "\(active.detail) Speak naturally for about 20 seconds; your watch does the listening."
-                : "\(active.detail) Speak naturally for about 20 seconds."
-        }
+        if let active { return active.instruction }
         if let person, !person.isCurrentUser {
             return "Have \(person.name) speak near your watch for about 20 seconds. Samples from a few different places help most."
         }

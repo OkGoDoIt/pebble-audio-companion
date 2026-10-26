@@ -274,7 +274,6 @@ struct TranscriptView: View {
     }
 
     private func paragraph(_ turn: TranscriptTurn) -> some View {
-        let picking = selection != nil && turn.canIdentifyPassage
         let picked = selection?.contains(turn.id) == true
         return TranscriptTurnText(
             turn: turn,
@@ -283,7 +282,9 @@ struct TranscriptView: View {
             lineHeight: bodyLineHeight,
             onSeekTo: onSeekTo,
             onPlayFrom: onPlayFrom,
-            onPick: picking ? { onToggleTurn?(turn) } : nil
+            // While picking, a paragraph without speaker timing can't be picked, and a tap on it
+            // must not quietly move the audio either.
+            onPick: selection == nil ? nil : { if turn.canIdentifyPassage { onToggleTurn?(turn) } }
         )
         // Drawn past the text rather than padded around it, so picking never moves a line.
         .background {
@@ -511,7 +512,6 @@ private struct TranscriptTurnText: View {
 
     private func handleTap(at point: CGPoint) {
         if let onPick {
-            Haptics.checkedOff()
             onPick()
             return
         }
