@@ -15,7 +15,17 @@ extension Copy {
         static let noPeople = "No voices remembered yet"
         static let noPeopleDetail = "Set up your voice, or tap a speaker in a conversation to teach the app someone else’s voice."
         static let history = "Earlier recordings"
-        static let historyDetail = "Look for remembered voices in audio still on this phone. Names you chose yourself are kept. Keep the app open while it works."
+        static let historyDetail = "Look for remembered voices in audio still on this phone. Names you chose yourself are kept. Runs while your phone charges."
+        static let findingVoices = "Finding familiar voices…"
+        static let waitingForCharging = "Waiting for charging"
+        static let waitingLowPower = "Paused in Low Power Mode"
+        static let waitingTooHot = "Waiting for the phone to cool down"
+        static func recordingsToCheck(_ count: Int) -> String {
+            count == 1 ? "1 recording to check" : "\(count) recordings to check"
+        }
+        static func checking(_ count: Int) -> String {
+            count == 1 ? "Checking 1 recording" : "Checking \(count) recordings"
+        }
         static let lastWeek = "Find voices in the past week"
         static let allRecordings = "Find voices in all recordings"
         static let cancelRun = "Stop finding voices"

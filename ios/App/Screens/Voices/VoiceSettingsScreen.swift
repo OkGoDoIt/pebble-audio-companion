@@ -19,7 +19,7 @@ struct VoiceSettingsScreen: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(Copy.Voices.recognize).font(AppFont.rowTitle).foregroundStyle(Tokens.label)
-                        Text(model.display.enabled ? Copy.Voices.onDetail : Copy.Voices.offDetail)
+                        Text(model.display.statusLine)
                             .font(AppFont.footnote).foregroundStyle(Tokens.meta)
                     }
                     Spacer(minLength: 0)
@@ -110,10 +110,10 @@ struct VoiceSettingsScreen: View {
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
-                                Text(run.isRunning ? "Finding familiar voices…" : (run.stopped ? "Voice matching stopped" : "Voice matching finished"))
+                                Text(run.isRunning ? model.display.runHeading : (run.stopped ? "Voice matching stopped" : "Voice matching finished"))
                                     .font(AppFont.cardHead).foregroundStyle(Tokens.label)
                                 Spacer()
-                                if run.isRunning { ProgressView() }
+                                if run.isRunning, model.display.waiting == nil { ProgressView() }
                             }
                             if !run.discovering {
                                 ProgressView(value: Double(run.completed), total: Double(max(run.total, 1)))

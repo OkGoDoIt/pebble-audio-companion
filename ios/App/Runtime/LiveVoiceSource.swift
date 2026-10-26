@@ -32,6 +32,12 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
                         $0.personId == profile.person.id && $0.recipeID == LocalSpeakerDiarizer.recipeID
                     }.count)
             }, notice: status.lastMessage)
+        display.pendingRecordings = status.pendingRecordings
+        // This screen is on screen: the foreground rule (a charger, not too hot, no Low Power).
+        if case .hold(let reason) = BackgroundWorkPolicy.decideVoiceRecognition(
+            composition.settings.backgroundCatchUp, composition.foregroundState.devicePower, foreground: true) {
+            display.waiting = reason
+        }
         if let run {
             let runID = run.runID
             let matches = try await composition.database.reader.read { db in

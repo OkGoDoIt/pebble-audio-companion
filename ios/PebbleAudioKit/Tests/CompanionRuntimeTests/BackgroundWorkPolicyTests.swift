@@ -68,4 +68,46 @@ import Testing
             #expect(!reason.rawValue.isEmpty)
         }
     }
+
+    // Voice recognition is charger work wherever the app is: two models over every ten seconds
+    // of audio. "Always" was chosen for transcripts and does not put voices on battery.
+    @Test func voicesWaitForAChargerOnScreenAndOff() {
+        func voice(_ setting: BackgroundCatchUp, plugged: Bool, foreground: Bool,
+                   lowPower: Bool = false, thermal: DevicePowerSnapshot.ThermalState = .nominal) -> BackgroundWorkDecision {
+            BackgroundWorkPolicy.decideVoiceRecognition(
+                setting, DevicePowerSnapshot(isPluggedIn: plugged, isLowPowerMode: lowPower, thermalState: thermal),
+                foreground: foreground)
+        }
+        for foreground in [true, false] {
+            #expect(voice(.whileCharging, plugged: true, foreground: foreground) == .run)
+            #expect(voice(.whileCharging, plugged: false, foreground: foreground) == .hold(reason: .onBattery))
+            #expect(voice(.always, plugged: false, foreground: foreground) == .hold(reason: .onBattery))
+            #expect(voice(.whileCharging, plugged: true, foreground: foreground, lowPower: true)
+                    == .hold(reason: .lowPowerMode))
+            #expect(voice(.always, plugged: true, foreground: foreground, thermal: .serious) == .hold(reason: .tooHot))
+        }
+        // "Only When Open" keeps it out of the background, not off a charging phone on screen.
+        #expect(voice(.never, plugged: true, foreground: false) == .hold(reason: .userTurnedItOff))
+        #expect(voice(.never, plugged: true, foreground: true) == .run)
+    }
+
+    // A tenth of one core at most, and never more often than every 30 s, so the Bluetooth
+    // keepalive is not starved the way charger-time passes once starved it.
+    @Test func backgroundVoiceSlicesAreSpacedByWhatTheyCost() {
+        let pace = VoiceBackgroundPace()
+        #expect(pace.isDue(nowMs: 0))
+        #expect(pace.record(windows: 2, busyMs: 1_000, nowMs: 1_000) == nil)
+        #expect(!pace.isDue(nowMs: 30_999))
+        #expect(pace.isDue(nowMs: 31_000))
+        _ = pace.record(windows: 2, busyMs: 6_000, nowMs: 40_000)
+        #expect(!pace.isDue(nowMs: 99_999))
+        #expect(pace.isDue(nowMs: 100_000))
+        // A pass that found nothing waits the minimum, and is not a slice.
+        _ = pace.record(windows: 0, busyMs: 5, nowMs: 200_000)
+        #expect(pace.isDue(nowMs: 230_000))
+        var line: String?
+        for index in 0..<8 { line = pace.record(windows: 1, busyMs: 100, nowMs: 300_000 + Int64(index)) }
+        #expect(line == "voice recognition: 10 background slices, 12 windows, 7800 ms busy")
+        #expect(pace.record(windows: 1, busyMs: 100, nowMs: 400_000) == nil)
+    }
 }

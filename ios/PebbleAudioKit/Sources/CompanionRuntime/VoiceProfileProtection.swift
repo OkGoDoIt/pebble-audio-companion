@@ -25,6 +25,9 @@ public protocol VoiceProfileProtecting: Sendable {
 
 /// Database backups can contain encrypted envelopes, never usable voice embeddings. The key
 /// is device-bound and non-synchronizing. It is created only on explicit enrollment, not launch.
+/// Readable after the first unlock since boot, like the recordings and transcripts it sits
+/// beside: recognition runs on a charger behind the lock screen. Keys made before 2026-10-26
+/// were readable only while unlocked; the first read moves one over.
 public final class VoiceProfileCipher: VoiceProfileProtecting, Sendable {
     private let service: String?
     private let key = Mutex<SymmetricKey?>(nil)
@@ -89,7 +92,18 @@ public final class VoiceProfileCipher: VoiceProfileProtecting, Sendable {
                 default: throw VoiceProfileProtectionError.keychain(status)
                 }
             }
-            if let bytes = try fetch() { cached = SymmetricKey(data: bytes); return cached }
+            if let bytes = try fetch() {
+                // Moving the class needs the item readable, which the fetch just proved.
+                // Best effort: a key left behind still works whenever the phone is unlocked.
+                var match = query
+                match.removeValue(forKey: kSecReturnData as String)
+                match.removeValue(forKey: kSecMatchLimit as String)
+                SecItemUpdate(match as CFDictionary, [
+                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                ] as CFDictionary)
+                cached = SymmetricKey(data: bytes)
+                return cached
+            }
             guard create else { return nil }
             let fresh = SymmetricKey(size: .bits256)
             let bytes = fresh.withUnsafeBytes { Data($0) }
@@ -97,7 +111,7 @@ public final class VoiceProfileCipher: VoiceProfileProtecting, Sendable {
             attributes.removeValue(forKey: kSecReturnData as String)
             attributes.removeValue(forKey: kSecMatchLimit as String)
             attributes[kSecValueData as String] = bytes
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let status = SecItemAdd(attributes as CFDictionary, nil)
             if status == errSecDuplicateItem, let existing = try fetch() {
                 cached = SymmetricKey(data: existing)

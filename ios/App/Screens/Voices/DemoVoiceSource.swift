@@ -44,8 +44,14 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
                 VoiceExampleDisplay(id: "\(person.id)-\($0)", durationSeconds: 20, createdAt: Date(), source: "Watch sample")
             })
         }
-        return VoiceSettingsDisplay(enabled: true, modelsReady: true, currentUser: people[0],
-                                    people: [profile(people[0], 5), profile(people[1], 8), profile(people[2], 3)])
+        var display = VoiceSettingsDisplay(enabled: true, modelsReady: true, currentUser: people[0],
+                                           people: [profile(people[0], 5), profile(people[1], 8), profile(people[2], 3)])
+        // On battery with work left, as most of a day is.
+        display.pendingRecordings = 4
+        display.waiting = .onBattery
+        display.run = VoiceRunDisplay(id: "demo-week", completed: 12, total: 40, matched: 3,
+                                      isRunning: true, canUndo: false)
+        return display
     }
     func updates() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func prepareModels(progress: @escaping @Sendable (Double) -> Void) async throws { progress(1) }

@@ -120,6 +120,33 @@ struct VoiceSettingsDisplay: Equatable {
     var people: [VoicePersonDisplay] = []
     var run: VoiceRunDisplay?
     var notice: String?
+    /// Recordings with audio still to check for voices.
+    var pendingRecordings = 0
+    /// Why checking is not happening now (on battery, Low Power Mode, too hot); nil while it can.
+    var waiting: BackgroundWorkDecision.HoldReason?
+
+    /// The line under "Recognize voices": what recognition is doing, in one line.
+    var statusLine: String {
+        guard enabled else { return Copy.Voices.offDetail }
+        guard pendingRecordings > 0 else { return Copy.Voices.onDetail }
+        let count = Copy.Voices.recordingsToCheck(pendingRecordings)
+        switch waiting {
+        case nil: return Copy.Voices.checking(pendingRecordings)
+        case .onBattery, .userTurnedItOff: return "\(Copy.Voices.waitingForCharging) · \(count)"
+        case .lowPowerMode: return "\(Copy.Voices.waitingLowPower) · \(count)"
+        case .tooHot: return "\(Copy.Voices.waitingTooHot) · \(count)"
+        }
+    }
+
+    /// The heading of the earlier-recordings card while it has work left.
+    var runHeading: String {
+        switch waiting {
+        case nil: return Copy.Voices.findingVoices
+        case .onBattery, .userTurnedItOff: return Copy.Voices.waitingForCharging
+        case .lowPowerMode: return Copy.Voices.waitingLowPower
+        case .tooHot: return Copy.Voices.waitingTooHot
+        }
+    }
 }
 
 @MainActor

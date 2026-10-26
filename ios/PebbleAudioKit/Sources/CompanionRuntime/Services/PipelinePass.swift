@@ -454,11 +454,14 @@ public struct PipelinePass: Sendable {
         let groupingChanged = try await stage(.regroup, fallback: true, steps.regroup)
         if groupingChanged { archiveChanged = true }
 
-        // Voice identification never inherits background ASR/AI permission, even on a
-        // charger. Each foreground call is at most two short windows; no speech is uploaded.
+        // Voice identification: at most two short windows per call, and only on a charger
+        // (`BackgroundWorkPolicy.decideVoiceRecognition`, applied inside the step, which also
+        // paces itself while backgrounded). No speech is uploaded. A backgrounded slice does not
+        // bring the next pass forward: its own pace decides when the next one runs.
         if try await stage(.recognizeVoices, fallback: false, heavy: true,
-                           when: steps.isForeground() && !steps.isCatchUpActive(), steps.recognizeVoices) {
-            processed = true; archiveChanged = true
+                           when: !steps.isCatchUpActive(), steps.recognizeVoices) {
+            if steps.isForeground() { processed = true }
+            archiveChanged = true
         }
 
         // 7-10 run only when there is something new for them to see. In the FOREGROUND that is

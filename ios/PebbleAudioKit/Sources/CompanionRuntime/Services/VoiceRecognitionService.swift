@@ -27,6 +27,8 @@ public struct VoiceRecognitionStatus: Equatable, Sendable {
     public let models: SpeakerModelInstallState
     public let isProcessing: Bool
     public let lastMessage: String?
+    /// Recordings with audio still to check.
+    public var pendingRecordings = 0
 }
 
 /// Model installation is explicit and separate from audio processing. The seam also permits
@@ -39,8 +41,9 @@ public protocol VoiceModelManaging: Sendable {
 }
 extension SpeakerModelStore: VoiceModelManaging {}
 
-/// Opt-in local identity, independent of every ASR provider. No timers are owned here: the app
-/// requests a bounded slice while foreground, or continues a history run the user requested.
+/// Opt-in local identity, independent of every ASR provider. No timers are owned here: the
+/// pipeline pass asks for a bounded slice, and `BackgroundWorkPolicy.decideVoiceRecognition`
+/// decides whether the models may run (on a charger, on screen or not).
 public actor VoiceRecognitionService {
     public nonisolated let updates = StateSubject<Int>(0)
     public static let initialPolicy = SpeakerMatchPolicy(
@@ -60,7 +63,6 @@ public actor VoiceRecognitionService {
     private var enrolling = false
     private var resumed = false
     private var lastMessage: String?
-    private var foreground = true
     private var discoveryAtMs: Int64 = 0
     private var discoveryCorpus: Int64 = -1
     private var discovered = Set<String>()
@@ -91,8 +93,10 @@ public actor VoiceRecognitionService {
     public func status() async throws -> VoiceRecognitionStatus {
         try await reconcileProfileProtection()
         _ = await models.isInstalled()
-        return VoiceRecognitionStatus(configuration: try await store.configuration(),
+        var status = VoiceRecognitionStatus(configuration: try await store.configuration(),
             models: await models.state(), isProcessing: processing || enrolling, lastMessage: lastMessage)
+        status.pendingRecordings = try await store.pendingRecordingCount()
+        return status
     }
     /// Missing device-bound keys after restore invalidate only derived voice state. A locked
     /// device is temporary and must never erase profiles. The original person/manual names stay.
@@ -139,7 +143,6 @@ public actor VoiceRecognitionService {
     }
 
     public func setForeground(_ value: Bool) async {
-        foreground = value
         if !value {
             cancelEnrollment()
             await analyzer.setEnabled(false)
@@ -153,13 +156,16 @@ public actor VoiceRecognitionService {
         await analyzer.release()
     }
 
-    /// The existing pipeline calls this; no new timer, scan loop, or background work is created.
-    public func foregroundPass(segmentStore: SegmentStore) async -> Bool {
+    /// The pipeline pass calls this; no timer or scan loop of its own. New recordings are found
+    /// and queued on every call; the models run only while `mayAnalyze` holds, which is
+    /// re-read between windows so unplugging stops at the next one.
+    public func pass(segmentStore: SegmentStore,
+                     mayAnalyze: @escaping @Sendable () -> Bool) async -> (didWork: Bool, windows: Int) {
         do { try await reconcileProfileProtection() }
-        catch { lastMessage = error.localizedDescription; return false }
-        guard foreground, let config = try? await store.configuration(), config.mode == .local,
+        catch { lastMessage = error.localizedDescription; return (false, 0) }
+        guard let config = try? await store.configuration(), config.mode == .local,
               await models.isInstalled(), let examples = try? await store.examples(), !examples.isEmpty,
-              let enabledAt = config.enabledAtMs else { return false }
+              let enabledAt = config.enabledAtMs else { return (false, 0) }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         var queued = false
         changedSegments.formUnion((try? await history.reconcileCorpus()) ?? [])
@@ -189,7 +195,9 @@ public actor VoiceRecognitionService {
             // A large catch-up is still bounded at two new segment jobs per pass.
             if attempted < 2 { discoveryAtMs = now }
         }
-        return await processPending() || queued
+        guard mayAnalyze() else { return (queued, 0) }
+        let slice = await analyzePending(mayRun: mayAnalyze)
+        return (slice.didWork || queued, slice.windows)
     }
 
     public func takeChangedSegmentIds() -> [String] {
@@ -557,7 +565,7 @@ public actor VoiceRecognitionService {
             if candidates.isEmpty { try await history.finishDiscovery(runID: plan.runID); advanced = true; continue }
             for meta in candidates {
                 try Task.checkCancellation()
-                guard foreground, capacity > 0, inspected < 2 else { if advanced { changed() }; return advanced }
+                guard capacity > 0, inspected < 2 else { if advanced { changed() }; return advanced }
                 var queued = false
                 do {
                     let source = try await load(meta.segmentId)
@@ -591,21 +599,28 @@ public actor VoiceRecognitionService {
 
     /// Each call performs at most two (or the caller's smaller bound) ten-second windows.
     /// False means no window was processed. Native handles are released at the slice boundary.
-    @discardableResult public func processPending(maxWindows: Int = 2) async -> Bool {
+    @discardableResult public func processPending(maxWindows: Int = 2,
+                                                  mayRun: @escaping @Sendable () -> Bool = { true }) async -> Bool {
+        await analyzePending(maxWindows: maxWindows, mayRun: mayRun).didWork
+    }
+
+    private func analyzePending(maxWindows: Int = 2,
+                                mayRun: @escaping @Sendable () -> Bool) async -> (didWork: Bool, windows: Int) {
         do { try await reconcileProfileProtection() }
-        catch { lastMessage = error.localizedDescription; return false }
-        guard foreground, !processing, !enrolling, maxWindows > 0,
+        catch { lastMessage = error.localizedDescription; return (false, 0) }
+        guard mayRun(), !processing, !enrolling, maxWindows > 0,
               (try? await store.configuration().mode) == .local,
-              await models.isInstalled() else { return false }
+              await models.isInstalled() else { return (false, 0) }
         processing = true; changed()
         var didWork = false
+        var windows = 0
         var cached: VoiceAudioSource?
         do {
             if !resumed { try await store.resumeInterruptedJobs(); resumed = true }
             await analyzer.setEnabled(true)
             for _ in 0..<min(maxWindows, 2) {
                 try Task.checkCancellation()
-                guard foreground else { break }
+                guard mayRun() else { break }
                 guard let job = try await store.claimNextJob() else { break }
                 do {
                     let source: VoiceAudioSource
@@ -629,6 +644,7 @@ public actor VoiceRecognitionService {
                         unmatched = try Self.unmatched(analysis, job: job, named: attributions,
                                                        window: range, protector: protector)
                         next = range.upperBound
+                        windows += 1
                     } else { next = job.endMediaMs }
                     try Task.checkCancellation()
                     let committed = try await store.advanceJob(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
@@ -636,7 +652,7 @@ public actor VoiceRecognitionService {
                     if committed && !attributions.isEmpty { changedSegments.insert(job.segmentId) }
                     didWork = true; changed()
                 } catch {
-                    if !foreground || error is CancellationError || (error as? SpeakerRecognitionError) == .disabled {
+                    if !mayRun() || error is CancellationError || (error as? SpeakerRecognitionError) == .disabled {
                         try? await store.releaseJob(id: job.id)
                         break
                     }
@@ -649,7 +665,7 @@ public actor VoiceRecognitionService {
         }
         await analyzer.release()
         processing = false; changed()
-        return didWork
+        return (didWork, windows)
     }
 
     static func match(_ analysis: SpeakerAnalysis, job: VoiceRecognitionJob,

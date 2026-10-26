@@ -102,4 +102,52 @@ public enum BackgroundWorkPolicy {
         case .never: return .hold(reason: .userTurnedItOff)
         }
     }
+
+    /// Voice recognition is charger work, on screen or not: two models over every ten seconds of
+    /// a day's audio. It waits on battery even with the app open, and even under "Always", which
+    /// was chosen for transcripts. "Only When Open" keeps it out of the background but not off a
+    /// charging phone that is on screen. Low Power Mode and heat hold it like everything else.
+    public static func decideVoiceRecognition(
+        _ setting: BackgroundCatchUp,
+        _ device: DevicePowerSnapshot,
+        foreground: Bool
+    ) -> BackgroundWorkDecision {
+        if !foreground, setting == .never { return .hold(reason: .userTurnedItOff) }
+        if device.isLowPowerMode { return .hold(reason: .lowPowerMode) }
+        if device.thermalState >= .serious { return .hold(reason: .tooHot) }
+        return device.isPluggedIn ? .run : .hold(reason: .onBattery)
+    }
+}
+
+/// Spaces backgrounded voice slices so recognition never holds the CPU for long: a slice that
+/// took `t` waits `max(30 s, 10 t)` before the next, which keeps it near a tenth of one core.
+/// Charger-time CPU has starved the Bluetooth keepalive before (16–25 CPU-s/min, 2026-09-10).
+/// A pass that found nothing to do waits the 30 s too. Every tenth slice yields a log line.
+public final class VoiceBackgroundPace: @unchecked Sendable {
+    public static let minimumGapMs: Int64 = 30_000
+    public static let gapPerBusyMs: Int64 = 10
+    private let lock = NSLock()
+    private var nextAtMs: Int64 = 0
+    private var slices = 0
+    private var busyMs: Int64 = 0
+    private var windows = 0
+
+    public init() {}
+
+    public func isDue(nowMs: Int64) -> Bool { lock.withLock { nowMs >= nextAtMs } }
+
+    /// Records a backgrounded voice pass. Returns a summary every tenth slice that did work.
+    public func record(windows: Int, busyMs: Int64, nowMs: Int64) -> String? {
+        lock.withLock {
+            nextAtMs = nowMs + max(Self.minimumGapMs, busyMs * Self.gapPerBusyMs)
+            guard windows > 0 else { return nil }
+            slices += 1
+            self.busyMs += busyMs
+            self.windows += windows
+            guard slices >= 10 else { return nil }
+            defer { slices = 0; self.busyMs = 0; self.windows = 0 }
+            return "voice recognition: \(slices) background slices, \(self.windows) windows, "
+                + "\(self.busyMs) ms busy"
+        }
+    }
 }

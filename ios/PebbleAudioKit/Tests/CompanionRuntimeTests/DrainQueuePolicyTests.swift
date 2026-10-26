@@ -101,20 +101,23 @@ import Transcription
         #expect(provider.transcribed == 5)
     }
 
-    @Test(arguments: [false, true])
-    func composedRuntimeYieldsASRBacklogToVoiceOnlyWhenEnabled(_ enabled: Bool) async throws {
+    /// Voices get a turn behind an ASR backlog only when they could run: enabled, and on a
+    /// charger. On battery they wait for one, so transcription is not held back for them.
+    @Test(arguments: [(false, true), (true, true), (true, false)])
+    func composedRuntimeYieldsASRBacklogToVoiceOnlyWhenItCanRun(_ enabled: Bool, _ plugged: Bool) async throws {
         let provider = CountingProvider()
         let counts = CallRecorder()
         let fixture = try RuntimeFixture(localTranscriptionProvider: provider,
             withVoiceRecognition: true, observeStage: { stage in
                 if stage == .recognizeVoices { counts.record(String(provider.transcribed)) }
             })
+        fixture.foreground.devicePower = DevicePowerSnapshot(isPluggedIn: plugged)
         for index in 0..<3 { try fixture.queue.enqueue("queued-\(index)") }
         try await VoiceIdentityStore(db: fixture.database).setMode(enabled ? .local : .off)
         await fixture.runtime.start()
         #expect(await waitUntil { !counts.calls.isEmpty })
         await fixture.runtime.stop()
-        #expect(counts.calls.first == (enabled ? "1" : "3"))
+        #expect(counts.calls.first == (enabled && plugged ? "1" : "3"))
     }
 
     @Test func enablingVoicesDuringASRDrainYieldsAtTheNextTaskBoundary() async throws {
@@ -124,6 +127,7 @@ import Transcription
             withVoiceRecognition: true, observeStage: { stage in
                 if stage == .recognizeVoices { counts.record(String(provider.transcribed)) }
             })
+        fixture.foreground.devicePower = DevicePowerSnapshot(isPluggedIn: true)
         provider.afterTask = { [weak fixture] in
             guard let fixture else { return }
             try await VoiceIdentityStore(db: fixture.database).setMode(.local)

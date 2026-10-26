@@ -145,6 +145,15 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// Recordings with audio still to check, whichever run asked for them.
+    public func pendingRecordingCount() async throws -> Int {
+        try await db.reader.read { d in
+            try Int.fetchOne(d, sql: """
+                SELECT COUNT(DISTINCT segmentId) FROM voice_jobs WHERE state IN ('pending', 'running')
+                """) ?? 0
+        }
+    }
+
     public func runs(limit: Int = 20) async throws -> [VoiceRunSummary] {
         try await db.reader.read { d in
             try Row.fetchAll(d, sql: """

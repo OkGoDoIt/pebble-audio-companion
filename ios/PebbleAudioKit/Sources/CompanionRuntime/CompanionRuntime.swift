@@ -120,6 +120,8 @@ public actor CompanionRuntime {
     /// Retention with its own pacing, built from the environment's manager + cascade so no caller
     /// has to re-derive "enforce, then cascade over everything it evicted" a fourth time.
     private let retention: RetentionService
+    /// Spaces voice recognition while backgrounded on a charger.
+    private let voicePace = VoiceBackgroundPace()
 
     public init(
         environment: CompanionRuntimeEnvironment,
@@ -738,6 +740,13 @@ public actor CompanionRuntime {
         let log = self.log
         let retention = self.retention
         let health = self.health
+        let clock = self.clock
+        let voicePace = self.voicePace
+        let voiceMayRun: @Sendable () -> Bool = {
+            BackgroundWorkPolicy.decideVoiceRecognition(
+                env.settings.backgroundCatchUp, foreground.devicePower, foreground: foreground.value
+            ).isRun
+        }
         return PipelineSteps(
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
@@ -759,7 +768,7 @@ public actor CompanionRuntime {
                 // Give foreground acoustic identity a turn even behind a large ASR backlog.
                 // This reads only the setting; it never loads or runs either voice model.
                 let voiceEnabled: Bool
-                if env.voiceRecognition != nil, foreground.value {
+                if env.voiceRecognition != nil, foreground.value, voiceMayRun() {
                     voiceEnabled = (try? await VoiceIdentityStore(db: env.database).configuration().mode) == .local
                 } else { voiceEnabled = false }
                 return try await env.transcription.drainQueue(
@@ -768,7 +777,7 @@ public actor CompanionRuntime {
                         if foreground.value {
                             // A settings wake cannot interrupt a native ASR call. Re-read at
                             // its boundary so enabling voices mid-drain yields the next turn.
-                            guard env.voiceRecognition != nil else { return true }
+                            guard env.voiceRecognition != nil, voiceMayRun() else { return true }
                             return (try? await VoiceIdentityStore(db: env.database).configuration().mode) != .local
                         }
                         return BackgroundWorkPolicy.decide(
@@ -788,9 +797,23 @@ public actor CompanionRuntime {
             enforceRetentionIfDue: { !(await retention.sweepIfDue()).isEmpty },
             coldStorageIfDue: { await env.coldStorage?.sweepIfDue() ?? false },
             classifyAudio: { try await env.audioContent?.classifyPass() ?? false },
+            // On screen, every pass: new recordings are found and queued, and checked while the
+            // phone is plugged in. Backgrounded, only on a charger and at `VoiceBackgroundPace`.
             recognizeVoices: {
-                guard foreground.value, !foreground.catchUpActive, let voice = env.voiceRecognition else { return false }
-                let didWork = await voice.foregroundPass(segmentStore: env.store)
+                guard !foreground.catchUpActive, let voice = env.voiceRecognition else { return false }
+                let background = !foreground.value
+                if background {
+                    guard voiceMayRun(), voicePace.isDue(nowMs: clock.nowMs) else { return false }
+                }
+                let started = clock.nowMs
+                let outcome = await voice.pass(segmentStore: env.store, mayAnalyze: voiceMayRun)
+                if background,
+                    let line = voicePace.record(
+                        windows: outcome.windows, busyMs: clock.nowMs - started, nowMs: clock.nowMs)
+                {
+                    log.write(line)
+                }
+                let didWork = outcome.didWork
                 let segments = await voice.takeChangedSegmentIds()
                 var conversations = Set<String>()
                 let identity = SpeakerCorrectionStore(db: env.database)

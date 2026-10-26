@@ -272,14 +272,18 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         }
     }
 
-    @Test func backgroundChargerPermissionDoesNotPermitSpeakerInference() async throws {
+    /// Backgrounded on a charger the voice step is asked (it applies its own rule and pace),
+    /// and a slice it ran does not bring the next pass forward to the 1 s cadence.
+    @Test func aBackgroundedVoiceSliceKeepsTheIdleCadence() async throws {
         let calls = CallRecorder()
         var steps = PipelineSteps()
         steps.isForeground = { false }
         steps.backgroundWorkDecision = { .run }
+        steps.regroup = { false }
         steps.recognizeVoices = { calls.record("voice"); return true }
-        _ = try await PipelinePass(steps: steps, clock: TestClock()).run()
-        #expect(!calls.calls.contains("voice"))
+        let sleep = try await PipelinePass(steps: steps, clock: TestClock()).run()
+        #expect(calls.calls == ["voice"])
+        #expect(sleep == PipelinePacing.idleMs)
     }
 }
 
@@ -409,6 +413,32 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         let sources: Set<String> = Set(examples.map { String($0.segmentId.prefix(17)) })
         #expect(sources == ["watch-enrollment:"])
         #expect(Set(examples.map(\.sessionID)) == [segmentId])
+    }
+
+    /// On battery a new recording is queued but its audio is not analyzed; on a charger it is.
+    @Test func aRecordingWaitsForAChargerAndIsCheckedOnOne() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, segmentId) = try await Self.openRecording(root)
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let analyzer = VoiceTestAnalyzer()
+        let service = service(db, root: root, analyzer: analyzer)
+        try await service.setEnabled(true)
+        _ = try await service.enroll(personId: person.id, segmentId: segmentId, startMediaMs: 1_000, endMediaMs: 5_000)
+        try await store.closeSegment(reason: .stopped(reasonRaw: Int(StopReason.shutdown.rawValue),
+                                                      finalSequence: 609, finalSampleIndex: 760 * 320))
+        try await service.enqueueSegment(segmentId: segmentId)
+        let afterEnrolling = await analyzer.calls
+
+        let onBattery = await service.pass(segmentStore: store, mayAnalyze: { false })
+        #expect(onBattery.windows == 0)
+        #expect(await analyzer.calls == afterEnrolling)
+        #expect(try await service.status().pendingRecordings == 1)
+
+        let charging = await service.pass(segmentStore: store, mayAnalyze: { true })
+        #expect(charging.windows > 0 && charging.didWork)
+        #expect(await analyzer.calls > afterEnrolling)
     }
 
     @Test func aSampleSituationGoesWithItsLastCrop() async throws {
