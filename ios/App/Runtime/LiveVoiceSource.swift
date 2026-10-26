@@ -129,13 +129,31 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         guard let whole = unknownGroups[id] else { throw SpeakerEditorError.voiceUnavailable }
         let group = recordings.map { whole.limited(to: $0) } ?? whole
         guard !group.crops.isEmpty else { return 0 }
-        _ = try await service.nameUnknownVoice(group, personId: personId)
+        let transcripts = composition.transcripts
+        let paragraphs = await Task.detached(priority: .userInitiated) {
+            Dictionary(Set(group.crops.map(\.segmentId)).compactMap { id in transcripts.load(id).map { (id, $0.segments) } },
+                       uniquingKeysWith: { a, _ in a })
+        }.value
+        _ = try await service.nameUnknownVoice(group, personId: personId) { crop in
+            Self.paragraph(around: crop.startMediaMs..<crop.endMediaMs, in: paragraphs[crop.segmentId] ?? [])
+        }
         unknownGroups[id] = nil
         let earliest = group.crops.compactMap { service.wallMs(segmentId: $0.segmentId, mediaMs: $0.startMediaMs) }.min()
         await recognizeAfterLearning(personId: personId, since: earliest)
         composition.runtime.notifyVoiceConfigurationChanged()
         return group.recordingCount
     }
+    /// The transcript paragraph a clip sits in, when most of the clip is inside it: naming the
+    /// clip should name what the person reads, and a name over part of a paragraph names nothing.
+    nonisolated static func paragraph(around clip: Range<Int64>, in segments: [TranscriptSegment]) -> Range<Int64>? {
+        let best = segments.map { segment -> (Range<Int64>, Int64) in
+            let range = segment.startMs..<max(segment.startMs + 1, segment.endMs)
+            return (range, max(0, min(range.upperBound, clip.upperBound) - max(range.lowerBound, clip.lowerBound)))
+        }.max { $0.1 < $1.1 }
+        guard let best, best.1 * 2 >= clip.upperBound - clip.lowerBound else { return nil }
+        return best.0
+    }
+
     func dismissUnknownVoice(id: String) async throws {
         guard let group = unknownGroups[id] else { return }
         try await service.dismissUnknownVoice(group)

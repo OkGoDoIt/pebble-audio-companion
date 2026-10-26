@@ -71,3 +71,13 @@ struct WhoIsThisTests {
         #expect(UnknownVoiceDisplay.lastHeard(at(24), now: now, calendar: calendar) == "last heard yesterday")
     }
 }
+
+extension WhoIsThisTests {
+    @Test func namingAClipNamesTheParagraphItSitsIn() {
+        let paragraphs = [Library.turn("First.", 0, 8_000, "1"), Library.turn("Second, a longer one.", 8_000, 30_000, "2")]
+        #expect(LiveVoiceSource.paragraph(around: 12_000..<16_000, in: paragraphs) == 8_000..<30_000)
+        #expect(LiveVoiceSource.paragraph(around: 5_000..<9_000, in: paragraphs) == 0..<8_000,
+                "Straddling two paragraphs, the one holding at least half the clip")
+        #expect(LiveVoiceSource.paragraph(around: 40_000..<44_000, in: paragraphs) == nil, "Outside every paragraph")
+    }
+}

@@ -745,13 +745,17 @@ public actor VoiceRecognitionService {
                 .sorted { $0.speechConfidence > $1.speechConfidence }) }
     }
 
-    /// The person said who an unnamed voice is: every crop's range carries their name, the
-    /// clearest few teach the voice, and the group is no longer asked about.
-    public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws -> Int {
+    /// The person said who an unnamed voice is: every crop carries their name, the clearest few
+    /// teach the voice, and the group is no longer asked about. `naming` widens a crop to the
+    /// range that should carry the name (the transcript paragraph it sits in): a name over part
+    /// of a paragraph leaves the paragraph unnamed.
+    public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String,
+                                 naming: @Sendable (VoiceUnmatchedCrop) -> Range<Int64>? = { _ in nil }) async throws -> Int {
         let corrections = SpeakerCorrectionStore(db: store.db)
         for crop in group.crops {
-            try await corrections.set(segmentId: crop.segmentId, startMediaMs: crop.startMediaMs,
-                                      endMediaMs: crop.endMediaMs, personId: personId)
+            let range = naming(crop) ?? crop.startMediaMs..<crop.endMediaMs
+            try await corrections.set(segmentId: crop.segmentId, startMediaMs: min(range.lowerBound, crop.startMediaMs),
+                                      endMediaMs: max(range.upperBound, crop.endMediaMs), personId: personId)
         }
         var learned = 0
         // One crop per recording first: different recordings are the independent evidence.

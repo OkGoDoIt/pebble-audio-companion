@@ -428,3 +428,24 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(try await situations.all().isEmpty)
     }
 }
+
+@Suite struct UnknownVoiceNamingTests {
+    @Test func namingAVoiceNamesTheWiderRangeAndForgetsTheGroup() async throws {
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let service = VoiceRecognitionService(database: db, files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")),
+            models: VoiceTestModels(), analyzer: VoiceTestAnalyzer(), policy: VoiceRecognitionService.initialPolicy,
+            recipeID: "test-recipe", protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
+        func crop(_ segment: String, _ start: Int64) -> VoiceUnmatchedCrop {
+            VoiceUnmatchedCrop(segmentId: segment, startMediaMs: start, endMediaMs: start + 3_000, sourceRevision: "r",
+                               recipeID: "test-recipe", embeddingJSON: Data(), speechConfidence: 0.9)
+        }
+        let group = VoiceRecognitionService.UnknownVoiceGroup(crops: [crop("a", 10_000), crop("b", 2_000)])
+        _ = try await service.nameUnknownVoice(group, personId: person.id) { crop in
+            crop.segmentId == "a" ? 5_000..<20_000 : nil
+        }
+        let names = try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["a", "b"]).corrections
+            .map { "\($0.segmentId):\($0.startMediaMs)-\($0.endMediaMs):\($0.person?.name ?? "-")" }.sorted()
+        #expect(names == ["a:5000-20000:Dana", "b:2000-5000:Dana"], "The paragraph where there is one, else the clip")
+    }
+}
