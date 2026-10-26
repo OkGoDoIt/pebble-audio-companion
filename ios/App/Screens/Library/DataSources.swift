@@ -151,6 +151,8 @@ struct TranscriptTurn: Equatable, Identifiable {
     /// Identity never depends on the displayed name (two people may both be Alex).
     var personId: String? = nil
     var isVoiceMatch: Bool = false
+    /// An unnamed speaker whose voice was heard in other recordings too: the "Who is this?" group.
+    var unknownVoiceID: String? = nil
     /// Original segment media coordinates, independent of conversation cuts and playback offset.
     var sourceStartMs: Int64? = nil
     var sourceEndMs: Int64? = nil

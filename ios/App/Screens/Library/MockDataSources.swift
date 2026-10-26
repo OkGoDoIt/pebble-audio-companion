@@ -88,6 +88,12 @@ final class MockWorld {
         {
             .turn(TranscriptTurn(id: id, speakerLabel: label, name: name, role: role, text: text))
         }
+        /// An unnamed speaker whose voice the demo's "Who is this?" list also holds.
+        func recurring(_ item: TranscriptItem) -> TranscriptItem {
+            guard case .turn(var turn) = item else { return item }
+            turn.unknownVoiceID = "demo-voice-1"
+            return .turn(turn)
+        }
 
         // ── Conversations (Library + Conversation artboards) ────────────────
         conversations = [
@@ -163,9 +169,9 @@ final class MockWorld {
                     turn("as1", "S1", "Speaker 1", .unresolved,
                          "The transcript is finished and saved — this is what a durable "
                             + "transcript looks like before AI has written a title for it."),
-                    turn("as2", "S2", "Speaker 2", .unresolved,
+                    recurring(turn("as2", "S2", "Speaker 2", .unresolved,
                          "Nothing is missing here; the words are final even though nobody has "
-                            + "been named yet."),
+                            + "been named yet.")),
                 ],
                 player: PlayerDisplay(durationMs: 18 * 60_000)
             ),

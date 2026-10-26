@@ -5,6 +5,8 @@ import Observation
 @MainActor @Observable
 final class VoiceSettingsModel {
     private(set) var display = VoiceSettingsDisplay()
+    /// Recurring voices with no name yet, most-heard first.
+    private(set) var unknownVoices: [UnknownVoiceDisplay] = []
     private(set) var loaded = false
     private(set) var working = false
     private(set) var downloadProgress: Double?
@@ -32,6 +34,9 @@ final class VoiceSettingsModel {
             let updated = try await source.snapshot()
             guard generation == refreshGeneration else { return }
             if display != updated { display = updated }
+            let voices = updated.enabled ? await source.unknownVoices() : []
+            guard generation == refreshGeneration else { return }
+            if unknownVoices != voices { unknownVoices = voices }
             if errorMessage == Copy.Voices.loadFailed || errorMessage == Copy.Voices.unavailable { errorMessage = nil }
             loaded = true
         } catch {
@@ -86,6 +91,9 @@ final class VoiceSettingsModel {
     }
     func undo(_ run: VoiceRunDisplay) async {
         _ = await perform { try await $0.undoRun(id: run.id) }
+    }
+    func stopAsking(about voice: UnknownVoiceDisplay) async {
+        _ = await perform { try await $0.dismissUnknownVoice(id: voice.id) }
     }
     func clearAutomaticNames() async { _ = await perform { try await $0.clearAutomaticNames() } }
     func forget(_ person: VoicePersonDisplay) async {

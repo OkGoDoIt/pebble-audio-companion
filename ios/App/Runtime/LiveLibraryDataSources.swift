@@ -88,6 +88,25 @@ final class LiveWorld {
         }.value
     }
 
+    /// Where recurring unnamed voices were heard in these recordings. Empty with recognition off.
+    static func unknownVoiceSpans(in segmentIds: Set<String>, composition: AppComposition) async -> [UnknownVoiceSpan] {
+        let service = composition.voiceRecognition
+        guard (try? await service.status().configuration.mode) == .local,
+              let groups = try? await service.unknownVoiceGroups(limit: 12) else { return [] }
+        return groups.flatMap { group in
+            group.crops.filter { segmentIds.contains($0.segmentId) }.map {
+                UnknownVoiceSpan(segmentId: $0.segmentId, startMs: $0.startMediaMs, endMs: $0.endMediaMs, voiceID: group.id)
+            }
+        }
+    }
+
+    struct UnknownVoiceSpan: Sendable {
+        var segmentId: String
+        var startMs: Int64
+        var endMs: Int64
+        var voiceID: String
+    }
+
     /// What one walk over a conversation's pieces produced.
     struct WalkedMembers: Sendable {
         var transcript: [TranscriptItem] = []
@@ -120,7 +139,8 @@ final class LiveWorld {
         metas: [String: SegmentMeta],
         transcripts: [String: SegmentTranscript],
         assignments: [SpeakerAssignment],
-        identities: SpeakerIdentitySnapshot = .init()
+        identities: SpeakerIdentitySnapshot = .init(),
+        unknownVoices: [UnknownVoiceSpan] = []
     ) async -> WalkedMembers {
         await Task.detached(priority: .userInitiated) {
             var result = WalkedMembers()
@@ -198,7 +218,14 @@ final class LiveWorld {
                         playbackStartMs: before + span.offset(ofSegmentMediaMs: start),
                         playbackEndMs: before + span.offset(ofSegmentMediaMs: end), isAutomatic: false))
                 }
-                result.transcript.append(contentsOf: built.items)
+                let spans = unknownVoices.filter { $0.segmentId == segmentId }
+                result.transcript.append(contentsOf: spans.isEmpty ? built.items : built.items.map { item in
+                    guard case .turn(var turn) = item, turn.personId == nil, turn.canIdentifyPassage,
+                          let start = turn.sourceStartMs, let end = turn.sourceEndMs,
+                          let span = spans.first(where: { $0.startMs < end && $0.endMs > start }) else { return item }
+                    turn.unknownVoiceID = span.voiceID
+                    return .turn(turn)
+                })
                 result.missingTicks.append(
                     contentsOf: built.missingMediaOffsets.map { Double(before + $0) })
                 result.mediaMs += built.mediaMs
@@ -442,9 +469,10 @@ extension LiveWorld: ConversationDataSource {
         let identities = try await SpeakerCorrectionStore(db: composition.database)
             .snapshot(segmentIds: memberIds)
 
+        let unknown = await Self.unknownVoiceSpans(in: Set(memberIds), composition: composition)
         let walked = await Self.walkMembers(
             pieces, metas: metas, transcripts: storedTranscripts, assignments: assignments,
-            identities: identities)
+            identities: identities, unknownVoices: unknown)
         let marked =
             (try? await MomentStore(db: composition.database).moments(
                 fromWallMs: source.startMs, to: max(source.startMs + 1, source.endMs))) ?? []

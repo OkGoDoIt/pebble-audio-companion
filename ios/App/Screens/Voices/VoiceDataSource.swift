@@ -35,6 +35,27 @@ enum VoiceSampleKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// A voice heard in several recordings that recognition couldn't name.
+struct UnknownVoiceDisplay: Equatable, Identifiable {
+    var id: String
+    var recordingCount: Int
+    /// "Mostly mornings · last heard today"
+    var detail: String
+    /// One moment per recording, newest first. The question shows the first few; "More than one
+    /// person" shows them all to pick from.
+    var clips: [UnknownVoiceClip]
+}
+
+struct UnknownVoiceClip: Equatable, Identifiable {
+    var id: String
+    var segmentId: String
+    var startMs: Int64
+    var endMs: Int64
+    var heardAt: Date?
+    /// What was said then, when the transcript has it.
+    var quote: String?
+}
+
 struct VoiceExampleDisplay: Equatable, Identifiable {
     var id: String
     var durationSeconds: Double
@@ -119,6 +140,15 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome
     /// After a save taught a voice: look for it again in recent recordings, once per save.
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async
+    /// Recurring unnamed voices, most-heard first; empty while recognition is off.
+    func unknownVoices() async -> [UnknownVoiceDisplay]
+    /// Names the voice in every recording it was heard in, or only in `recordings` when the
+    /// group turned out to mix people; the rest stay unnamed. Returns how many recordings.
+    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int
+    /// "More than one person": stop asking about this group.
+    func dismissUnknownVoice(id: String) async throws
+    /// A clip's audio (16 kHz mono PCM) for listening before naming.
+    func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data?
     func cancelEnrollment() async
     func recognizeHistory(days: Int?) async throws
     func cancelRun(id: String) async throws

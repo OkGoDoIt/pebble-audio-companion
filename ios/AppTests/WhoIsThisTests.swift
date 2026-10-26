@@ -1,0 +1,73 @@
+import AppDB
+import CompanionRuntime
+import Foundation
+import Testing
+
+/// "Who is this?": recurring unnamed voices, asked about in People & voices and in a conversation.
+@Suite("who is this") @MainActor
+struct WhoIsThisTests {
+    typealias Library = PieceLibrary
+    private final class People: PeopleDataSource {
+        var registry = [Person(id: "dana", name: "Dana")]
+        func people() async throws -> [Person] { registry }
+        func createPerson(name: String) async throws -> Person {
+            let person = Person(id: "new-\(registry.count)", name: name)
+            registry.append(person)
+            return person
+        }
+        func assignPassage(_ turn: TranscriptTurn, personId: String?, makeCurrentUser: Bool) async throws {}
+        func assignCurrentUserPassage(_ turn: TranscriptTurn, displayName: String) async throws -> Person { registry[0] }
+        func assignedPerson(conversationId: String, turn: TranscriptTurn) async throws -> Person? { nil }
+        func setCurrentUser(personId: String?) async throws {}
+        func assign(conversationId: String, label: String, personName: String) async throws {}
+        func assignedPerson(conversationId: String, label: String) async throws -> Person? { nil }
+        func renamePerson(id: String, to newName: String) async throws {}
+        func unassign(conversationId: String, label: String) async throws {}
+        func deletePerson(id: String) async throws {}
+    }
+
+    private func voice() -> UnknownVoiceDisplay {
+        UnknownVoiceDisplay(id: "v", recordingCount: 3, detail: "", clips: ["a", "b", "c"].map {
+            UnknownVoiceClip(id: $0, segmentId: "seg-\($0)", startMs: 0, endMs: 4_000, heardAt: nil, quote: nil)
+        })
+    }
+
+    @Test func namingTheWholeVoiceOrOnlyTheRecordingsThatAreThatPerson() async {
+        let voices = VoiceTestSource(), people = People()
+        let model = WhoIsThisModel(voices: voices, people: people)
+        await model.load()
+        #expect(await model.name(voice(), personId: "dana") == "Dana")
+        #expect(await model.name(voice(), personId: "dana", recordings: ["seg-a", "seg-c"]) == "Dana")
+        #expect(voices.namedUnknown.map(\.2) == [nil, ["seg-a", "seg-c"]],
+                "The unticked recording stays unnamed")
+        #expect(await model.nameAsNewPerson(voice(), name: "  Sam ") == "Sam")
+        #expect(people.registry.last?.name == "Sam" && voices.namedUnknown.last?.1 == people.registry.last?.id)
+    }
+
+    @Test func aRecurringVoiceIsMarkedOnlyOnUnnamedParagraphsItOverlaps() async {
+        let members = [ConversationMember(segmentId: "s", startMediaMs: 0, endMediaMs: 30_000)]
+        let transcripts = ["s": Library.transcript("s", [
+            Library.turn("First voice talking.", 1_000, 5_000, "1"),
+            Library.turn("Second voice talking.", 6_000, 12_000, "2"),
+        ])]
+        let result = await LiveWorld.walkMembers(members, metas: ["s": Library.meta("s", index: 0)],
+            transcripts: transcripts, assignments: [],
+            unknownVoices: [.init(segmentId: "s", startMs: 7_000, endMs: 10_000, voiceID: "voice-1"),
+                            .init(segmentId: "other", startMs: 0, endMs: 30_000, voiceID: "voice-2")])
+        let marks = result.transcript.compactMap { item -> String? in
+            if case .turn(let turn) = item { return turn.unknownVoiceID ?? "-" }; return nil
+        }
+        #expect(marks == ["-", "voice-1"], "Another recording's voice never marks this one")
+    }
+
+    @Test func summaryLineSaysWhenTheVoiceIsUsuallyHeard() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_792_000_000 - 8 * 3_600)   // 09:46 UTC
+        func at(_ hoursAgo: Double) -> Date { now.addingTimeInterval(-hoursAgo * 3_600) }
+        #expect(UnknownVoiceDisplay.timeOfDay([at(1), at(25), at(49)], calendar: calendar) == "mostly mornings")
+        #expect(UnknownVoiceDisplay.timeOfDay([at(1), at(12)], calendar: calendar) == nil, "Two sightings say little")
+        #expect(UnknownVoiceDisplay.lastHeard(at(1), now: now, calendar: calendar) == "last heard today")
+        #expect(UnknownVoiceDisplay.lastHeard(at(24), now: now, calendar: calendar) == "last heard yesterday")
+    }
+}

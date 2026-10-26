@@ -49,6 +49,16 @@ import Testing
         return 2
     }
     var learnedRechecks: [String] = []
+    var unknown: [UnknownVoiceDisplay] = []
+    var namedUnknown: [(String, String, Set<String>?)] = []
+    var dismissedUnknown: [String] = []
+    func unknownVoices() async -> [UnknownVoiceDisplay] { unknown }
+    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
+        namedUnknown.append((id, personId, recordings))
+        return recordings?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
+    }
+    func dismissUnknownVoice(id: String) async throws { dismissedUnknown.append(id) }
+    func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { Data(count: 64_000) }
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async { learnedRechecks.append(personId) }
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome {
         enrollmentPeople.append(personId)

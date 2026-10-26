@@ -38,6 +38,8 @@ struct TranscriptView: View {
     var onSelectRun: (([TranscriptTurn]) -> Void)?
     /// Picks or unpicks one paragraph, starting the pick if none is under way.
     var onToggleTurn: ((TranscriptTurn) -> Void)?
+    /// Asks who an unnamed voice is that was heard in other recordings too.
+    var onUnknownVoiceTap: ((String) -> Void)?
 
     /// Measured height of one line of transcript body text. Measured rather than assumed
     /// because Dynamic Type moves it, and a tap on a paragraph is resolved to a word by
@@ -268,6 +270,15 @@ struct TranscriptView: View {
             // final-looking time would be a lie.
             if let startedAt = lead.startedAt, !lead.isInProgress {
                 TranscriptStamp(date: startedAt, timeZone: timeZone)
+            }
+            // Quiet on purpose: a way to name a recurring voice, not a call to action.
+            if let voice = lead.unknownVoiceID, let onUnknownVoiceTap, selection == nil {
+                Button { onUnknownVoiceTap(voice) } label: {
+                    Text("· heard before").font(AppFont.micro).foregroundStyle(Tokens.meta)
+                        .frame(minHeight: 30).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Heard in other recordings. Who is this?")
             }
             Spacer(minLength: 0)
         }
@@ -889,8 +900,9 @@ struct SpeakerRenameSheet: View {
                 Text(name).font(AppFont.callout).foregroundStyle(Tokens.label)
                     .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                Image(systemName: selection == choice ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 21)).foregroundStyle(selection == choice ? Tokens.tint : Tokens.chevron)
+                // One speaker per passage: the iOS single-choice checkmark, not multi-select circles.
+                Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Tokens.tint).opacity(selection == choice ? 1 : 0)
                     .accessibilityHidden(true)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityAddTraits(selection == choice ? .isSelected : [])

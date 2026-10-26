@@ -18,7 +18,15 @@ struct PrimaryFilledButtonStyle: ButtonStyle {
                     .fill(configuration.isPressed ? Tokens.tintPressed : Tokens.tint)
             )
             .contentShape(RoundedRectangle(cornerRadius: Tokens.primaryButtonRadius))
+            .modifier(FilledDisabledLook())
     }
+}
+
+/// A filled button that can't be pressed yet must not look like one that can: it drew at full
+/// strength while disabled, so "Name in 6 recordings" looked ready before anyone was chosen.
+private struct FilledDisabledLook: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    func body(content: Content) -> some View { content.opacity(isEnabled ? 1 : 0.4) }
 }
 
 /// In-card filled: h40 r11, 15/600 white on tint. "Resolves the state" (Resume,
@@ -38,6 +46,7 @@ struct InCardFilledButtonStyle: ButtonStyle {
                     .fill(configuration.isPressed ? Tokens.tintPressed : Tokens.tint)
             )
             .contentShape(RoundedRectangle(cornerRadius: 11))
+            .modifier(FilledDisabledLook())
     }
 }
 

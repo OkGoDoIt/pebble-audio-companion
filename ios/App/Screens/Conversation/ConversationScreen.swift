@@ -31,6 +31,7 @@ struct ConversationScreen: View {
     /// Paragraphs picked for a speaker change, by turn id; nil when not picking.
     @State private var picked: Set<String>?
     @State private var clearingNames = false
+    @State private var askingVoice: UnknownVoiceDisplay?
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
@@ -90,6 +91,9 @@ struct ConversationScreen: View {
         .onDisappear { player.stop() }
         // iOS 27 on-screen awareness: the open conversation, as the scene's activity (no-op below 27).
         .conversationEntityAwareness(id: conversationId)
+        .sheet(item: $askingVoice, onDismiss: { Task { await load() } }) { voice in
+            WhoIsThisSheet(voice: voice) { line in UndoCenter.shared.snackbar = SnackbarItem(message: line) }
+        }
         .sheet(item: $model.renameTurns, onDismiss: { player.pause() }) { passages in
             SpeakerRenameSheet(conversationId: conversationId, turns: passages.turns,
                                onPlay: playback(of: passages.turns), onStop: { player.pause() }) {
@@ -270,7 +274,13 @@ struct ConversationScreen: View {
                 playhead: display.player == nil ? nil : player.playhead,
                 selection: picked,
                 onSelectRun: { run in pick(run) },
-                onToggleTurn: { turn in toggle(turn) }
+                onToggleTurn: { turn in toggle(turn) },
+                onUnknownVoiceTap: { id in
+                    Task {
+                        player.pause()
+                        askingVoice = await VoiceSources.current?.unknownVoices().first { $0.id == id }
+                    }
+                }
             )
             .padding(.horizontal, Tokens.screenMargin)
         }

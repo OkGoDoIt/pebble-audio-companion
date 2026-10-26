@@ -55,6 +55,7 @@ public actor VoiceRecognitionService {
     private let recipeID: String
     private let protector: any VoiceProfileProtecting
     private var validatedCorpus: Int64?
+    private var groupCache: (key: String, groups: [UnknownVoiceGroup])?
     private var processing = false
     private var enrolling = false
     private var resumed = false
@@ -696,11 +697,41 @@ public actor VoiceRecognitionService {
     public struct UnknownVoiceGroup: Equatable, Sendable {
         public let crops: [VoiceUnmatchedCrop]
         public var recordingCount: Int { Set(crops.map(\.segmentId)).count }
+        public init(crops: [VoiceUnmatchedCrop]) { self.crops = crops }
+        /// Only the crops from these recordings: the person said the rest are someone else.
+        public func limited(to recordings: Set<String>) -> UnknownVoiceGroup {
+            UnknownVoiceGroup(crops: crops.filter { recordings.contains($0.segmentId) })
+        }
+        /// Its oldest crop: the same while the group's membership is.
+        public var id: String { crops.min { ($0.createdAtMs, $0.id) < ($1.createdAtMs, $1.id) }?.id ?? "" }
     }
 
-    /// Recurring unnamed voices, largest first. Reads at most the 400 most recent unnamed crops.
+    /// Recurring unnamed voices, largest first. Reads at most the 400 most recent unnamed crops;
+    /// grouping runs again only when those change, so screens can ask freely.
     public func unknownVoiceGroups(limit: Int = 6) async throws -> [UnknownVoiceGroup] {
         let crops = try await VoiceUnmatchedStore(db: store.db).recent(limit: 400).filter { $0.recipeID == recipeID }
+        let key = crops.map(\.id).joined(separator: ",")
+        if let groupCache, groupCache.key == key { return Array(groupCache.groups.prefix(limit)) }
+        let groups = try await groupUnknown(crops)
+        groupCache = (key, groups)
+        return Array(groups.prefix(limit))
+    }
+
+    /// A stored crop's audio, for listening to before naming it.
+    public func clipPCM(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws -> Data {
+        let source = try await load(segmentId)
+        return try await Task.detached(priority: .userInitiated) {
+            try source.pcm(startMediaMs: startMediaMs, endMediaMs: min(endMediaMs, startMediaMs + 30_000))
+        }.value
+    }
+
+    /// When a moment of a recording happened, on the wall clock.
+    public nonisolated func wallMs(segmentId: String, mediaMs: Int64) -> Int64? {
+        guard let meta = files.readMeta(segmentId) else { return nil }
+        return meta.startWallMs + SegmentMediaClock(meta).wall(fromMedia: mediaMs)
+    }
+
+    private func groupUnknown(_ crops: [VoiceUnmatchedCrop]) async throws -> [UnknownVoiceGroup] {
         let protector = protector
         let items: [SpeakerGrouping.Item] = crops.compactMap { crop in
             guard let data = try? protector.open(crop.embeddingJSON),
@@ -709,7 +740,6 @@ public actor VoiceRecognitionService {
         }
         let byID = Dictionary(uniqueKeysWithValues: crops.map { ($0.id, $0) })
         return await Task.detached(priority: .utility) { SpeakerGrouping.group(items) }.value
-            .prefix(limit)
             .map { ids in UnknownVoiceGroup(crops: ids.compactMap { byID[$0] }
                 .sorted { $0.speechConfidence > $1.speechConfidence }) }
     }

@@ -6,6 +6,7 @@ struct VoiceSettingsScreen: View {
     @State private var setup = false
     @State private var undoRun: VoiceRunDisplay?
     @State private var clearing = false
+    @State private var asking: UnknownVoiceDisplay?
 
     init(model: VoiceSettingsModel = .init()) { _model = State(initialValue: model) }
 
@@ -58,6 +59,35 @@ struct VoiceSettingsScreen: View {
                             .disabled(model.working)
                     }
                 }
+            }
+
+            if !model.unknownVoices.isEmpty {
+                SettingsSectionHeader(title: "Voices to name")
+                ListCard {
+                    ForEach(model.unknownVoices) { voice in
+                        Button { asking = voice } label: {
+                            HStack(spacing: 12) {
+                                VoiceAvatar(name: "?", isUnknown: true)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Heard in \(voice.recordingCount) recordings")
+                                        .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                                    if !voice.detail.isEmpty {
+                                        Text(voice.detail).font(AppFont.footnote).foregroundStyle(Tokens.meta)
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Tokens.chevron).accessibilityHidden(true)
+                            }.frame(minHeight: 56).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Don’t Ask About This Voice", systemImage: "nosign") {
+                                Task { await model.stopAsking(about: voice) }
+                            }
+                        }
+                    }
+                }
+                SettingsFooter(text: "Naming a voice names it in every recording it was heard in.")
             }
 
             let others = model.display.people.filter { !$0.person.isCurrentUser }
@@ -128,6 +158,9 @@ struct VoiceSettingsScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .task { await model.observe() }
+        .sheet(item: $asking, onDismiss: { Task { await model.refresh() } }) { voice in
+            WhoIsThisSheet(voice: voice) { line in UndoCenter.shared.snackbar = SnackbarItem(message: line) }
+        }
         .sheet(isPresented: $setup, onDismiss: { Task { await model.refresh() } }) {
             VoiceSetupScreen(person: model.display.currentUser)
         }
@@ -215,13 +248,15 @@ struct VoiceProfileScreen: View {
 struct VoiceAvatar: View {
     let name: String
     var isCurrentUser = false
+    /// A voice with no name yet: grey, so it doesn't read as a person.
+    var isUnknown = false
     var body: some View {
         Group {
             if isCurrentUser { Image(systemName: "person.wave.2.fill").font(.system(size: 19)) }
             else { Text(String(name.prefix(1)).uppercased()).font(AppFont.headline) }
         }
-        .foregroundStyle(Tokens.tint).frame(width: 44, height: 44)
-        .background(Circle().fill(Tokens.tintFill12)).accessibilityHidden(true)
+        .foregroundStyle(isUnknown ? Tokens.meta : Tokens.tint).frame(width: 44, height: 44)
+        .background(Circle().fill(isUnknown ? Tokens.grayChipFill : Tokens.tintFill12)).accessibilityHidden(true)
     }
 }
 

@@ -1387,6 +1387,9 @@ final class AppComposition {
                 pairing: LiveWatchPairingSource(composition: self)
             )
         } else {
+            #if DEBUG
+            VoiceSources.current = DemoVoiceSource()
+            #endif
             // The mock snapshot says "Recording · connected" while `AppSettings` is a fresh
             // install saying off — so the review build drew a green "Recording" card with the
             // switch beside it turned OFF. Nothing was broken in the app, but a screen that
