@@ -22,13 +22,19 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
-- 15:45 +07 install of `e15ab431` (one-voice fix); its ten-minute check runs at 15:56 (report in session
-  scratch `cost-3.txt` — rerun `./scripts/phone-cost-report.sh --minutes 11` if lost).
-- 16:00 install of `cc929a84` (watch-clock calibration, detector gain, no Remember toggle) is running;
-  ten-minute check PASS (charging), no new crash reports. Next-morning `phone-cost-report.sh` still due.
-- Ask Roger to retry a watch sample (Quiet room) on this build; if it still fails, pull the open
-  segment + sidecar (`devicectl device copy from … segments/<id>.meta.json|.spxlog`) and check the lag:
-  sidecar mtime − (startTimeMs + lastSampleIndexExclusive/16).
+- 18:04 +07 install of `b7770fc7` = `666b450a` + cherry-picks of `620867b5`, `17a0049a`, `575f3037`, built
+  in the scratch worktree **without** `940cc75a` (the recording-times commit, which Roger has not approved
+  then). Its launch logged no "preferences sent" and no re-mark (archive fix confirmed). The
+  recording-times session installs main HEAD (with `940cc75a`, at Roger's request) right after; its
+  ten-minute cost report covers both. Every install gets `./scripts/phone-cost-report.sh --minutes 11`
+  plus a systemCrashLogs diff; the next-morning report is still due.
+- The 17:25 install (`666b450a`) passed but with 4–17 CPU-s/min backgrounded. That was the archive
+  sync re-uploading the whole library after every launch (pre-existing since 10-22, fixed in `575f3037`,
+  see below), not the voice work. The state saved at 17:34 already names transcript-export-6, so this
+  install should neither send the preferences nor re-export. Proof: no "preferences sent" or
+  "conversations re-marked" line after the launch.
+- Ask Roger to retry a watch sample (Quiet room); if it still fails, pull the open segment + sidecar
+  (`devicectl device copy from … segments/<id>.meta.json|.spxlog`) and check the lag.
 - Server (archive) runs `b04ab212`, healthy; no server change since.
 
 ## Done since the plan below was written
@@ -71,6 +77,9 @@ Living notes for whichever agent continues this. Newest state first. The design 
 - `620867b5` grouping reads gated by a one-row fingerprint (an open conversation reloads per DB tick).
 - `17a0049a` naming a group names each clip's transcript paragraph (≥ half the clip inside it), because a
   correction over part of a paragraph resolves `.partial` and leaves it unnamed.
+- `575f3037` (not voice) archive sync reads its saved `state.json` in `init`: a pass at launch ran before
+  `start()` loaded it, re-sent the preferences, re-marked every conversation for the transcript export,
+  and saved that over the real state — every launch since 10-22. Test `aPassBeforeStartWorksFromTheSavedState`.
 - (superseded) three directions for the question UI — A queue in People & voices, B one question on
   Today, C a hint inside the conversation with per-recording Yes/No — in
   `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
@@ -78,14 +87,16 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## Shared checkout warning (2026-10-26)
 
-Session "Fix recording times drifting with the watch clock" (local_463214db…) works **in this same
-`main` checkout** with uncommitted changes to `SegmentMeta.swift`, `SegmentStore.swift`, `Moments.swift`,
-`AudioReceiverSession.swift`, `PausedSampleClockTests.swift`, its own migration hunk in `AppDatabase.swift`
-(`moments-paused-clock-v1`), and `WatchVoiceSample.clockLagMs` (uses its new `headReceivedAtMs`). Stage by
-explicit path; stage partial files through the index (`git hash-object -w` + `git update-index
---cacheinfo`). Verify and deploy from a clean scratch worktree at HEAD:
-`git worktree add --detach <dir> HEAD`, then `IOS_DIR=<dir>/ios ./scripts/deploy-ios-rebuild.sh --device
-G17 --replace --skip-tests`. Its WIP fails ~10 kit tests until it lands; not ours.
+Session "Fix recording times drifting with the watch clock" (local_463214db…) shares this `main`
+checkout. Its work is now committed as `940cc75a` (recordings placed by arrival; `SegmentMeta.
+headReceivedAtMs`, `sampleClockAnchorMs` = birth + least arrival lag − 2 s, migrations
+`moments-paused-clock-v1` and `follow-ups-wall-replace-v1` after ours) and firmware `f64b7d5ad` (built,
+not flashed). **`940cc75a` was not approved for the phone until 18:05, when Roger asked that session to
+deploy it.** Once its install lands, plain HEAD deploys are fine. Before that, deploy from a scratch worktree at `666b450a` with our
+later commits cherry-picked (`git checkout --detach 666b450a && git cherry-pick …`), then
+`IOS_DIR=<dir>/ios ./scripts/deploy-ios-rebuild.sh --device G17 --replace --skip-tests`. Once it ships,
+`WatchVoiceSample.clockLagMs` reads ~2 s instead of minutes (watch windows sit on the corrected clock).
+Stage by explicit path; never `git add -A`.
 
 ## Root cause: watch sample said "not enough speech" (2026-10-26 15:42)
 
@@ -104,14 +115,8 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 
 ## In flight
 
-**One-voice enrollment fix** (not yet committed when this was written): in
-`VoiceRecognitionService.enrollmentTurns` stop throwing `.multipleSpeakers`. Instead: drop turns
-flagged `overlap`; the cluster with the most usable speech is the sample; turns from other
-clusters are kept only if their embedding's best cosine to any dominant-cluster turn is ≥
-`policy.minimumSimilarity` (0.55); overlapping turns keep the earlier one; only "no usable
-speech" throws (`.notEnoughSpeech`). Replace the test
-`enrollmentRejectsOverlapAndDifferentAcousticVoicesEvenWithOneHumanLabel` with one proving a
-second cluster that sounds like the first is kept and a dissimilar one is dropped. Then deploy.
+Nothing half-done. Next from the plan: quality weighting of exemplars, propagation feedback ("Found
+Dana in N places" after naming), per-person calibration (later).
 
 ## Plan: learning one person from many messy clips
 
