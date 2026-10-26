@@ -28,8 +28,9 @@ struct ConversationScreen: View {
     /// a fetch is a thing this screen asked for, and its outcome is shown where it was asked.
     @State private var fetchingAudio = false
     @State private var fetchError: String?
-    @State private var selectingVoiceClip = false
-    @State private var pendingVoiceClip: TranscriptTurn?
+    /// Paragraphs picked for a speaker change, by turn id; nil when not picking.
+    @State private var picked: Set<String>?
+    @State private var clearingNames = false
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
@@ -89,28 +90,12 @@ struct ConversationScreen: View {
         .onDisappear { player.stop() }
         // iOS 27 on-screen awareness: the open conversation, as the scene's activity (no-op below 27).
         .conversationEntityAwareness(id: conversationId)
-        .sheet(item: $model.renameTurn, onDismiss: { player.pause() }) { turn in
-            SpeakerRenameSheet(conversationId: conversationId, turn: turn,
-                               onPlay: model.display?.audioAvailability == .onPhone && model.display?.player != nil
-                                ? (turn.identificationMediaOffsetMs ?? turn.mediaOffsetMs).map { offset in {
-                                   if let end = turn.identificationMediaEndMs ?? turn.mediaEndMs { player.play(fromMs: offset, untilMs: end) }
-                                   else { player.play(fromMs: offset) }
-                               } } : nil, onStop: { player.pause() }) {
+        .sheet(item: $model.renameTurns, onDismiss: { player.pause() }) { passages in
+            SpeakerRenameSheet(conversationId: conversationId, turns: passages.turns,
+                               onPlay: playback(of: passages.turns), onStop: { player.pause() }) {
+                picked = nil
                 Task { await load() }
             }
-        }
-        .sheet(isPresented: $selectingVoiceClip, onDismiss: {
-            player.pause()
-            if let clip = pendingVoiceClip { pendingVoiceClip = nil; model.renameTurn = clip }
-        }) {
-            VoiceClipSelectionSheet(pieces: model.display?.voiceSelectionPieces ?? [],
-                initialPlaybackMs: player.positionMs, onPlay: { turn in
-                    if let start = turn.mediaOffsetMs, let end = turn.mediaEndMs {
-                        player.play(fromMs: start, untilMs: end)
-                    }
-                }, onStop: { player.pause() }, onChoose: { turn in
-                    player.pause(); pendingVoiceClip = turn; selectingVoiceClip = false
-                })
         }
         .sheet(isPresented: $model.showTagEditor, onDismiss: { Task { await load() } }) {
             TagEditorSheet(conversationId: conversationId)
@@ -258,12 +243,6 @@ struct ConversationScreen: View {
     private func blocks(_ display: ConversationDisplay) -> some View {
         lifecycleCard(display.lifecycle)
             .padding(.horizontal, Tokens.screenMargin)
-        if display.player != nil, display.audioAvailability == .onPhone, !display.voiceSelectionPieces.isEmpty {
-            Button { player.pause(); selectingVoiceClip = true } label: {
-                Label("Name a voice in this recording", systemImage: "person.wave.2")
-                    .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            }.foregroundStyle(Tokens.tint).padding(.horizontal, Tokens.screenMargin)
-        }
         if !display.voiceMatches.isEmpty {
             ConversationVoiceMatchesCard(matches: display.voiceMatches,
                 canPlay: display.player != nil && display.audioAvailability == .onPhone,
@@ -278,7 +257,7 @@ struct ConversationScreen: View {
                 provenance: display.provenance,
                 timeZone: display.timeZone,
                 focus: focus,
-                onSpeakerTap: { turn in model.renameTurn = turn },
+                onSpeakerTap: { turn in model.renameTurns = SpeakerPassages(turns: [turn]) },
                 // Playing is always the user's move: arriving from a citation cues the
                 // scrubber to the moment, and this is the tap that starts it. A double tap
                 // on the words is the same move.
@@ -288,7 +267,10 @@ struct ConversationScreen: View {
                 // along and jumping about is not the same act as starting the audio.
                 onSeekTo: display.player == nil
                     ? nil : { mediaMs in player.seek(positionMs: mediaMs) },
-                playhead: display.player == nil ? nil : player.playhead
+                playhead: display.player == nil ? nil : player.playhead,
+                selection: picked,
+                onSelectRun: { run in pick(run) },
+                onToggleTurn: { turn in toggle(turn) }
             )
             .padding(.horizontal, Tokens.screenMargin)
         }
@@ -783,7 +765,40 @@ struct ConversationScreen: View {
 
     // MARK: - Bottom bar [Ask][Notes][Follow-ups]
 
-    private var bottomBar: some View {
+    @ViewBuilder private var bottomBar: some View {
+        if let picked { pickBar(picked) } else { actionBar }
+    }
+
+    /// While paragraphs are picked, the bar is about them: how many, and what to do.
+    private func pickBar(_ picked: Set<String>) -> some View {
+        let turns = pickedTurns
+        let named = turns.contains { $0.role != .unresolved }
+        return HStack(spacing: 10) {
+            Button(Copy.Common.cancel) { self.picked = nil }
+                .font(AppFont.callout).foregroundStyle(Tokens.tint).frame(minHeight: 44)
+            Text(turns.isEmpty ? "Tap paragraphs to select" : "\(turns.count) selected")
+                .font(AppFont.footnote.monospacedDigit()).foregroundStyle(Tokens.meta)
+                .frame(maxWidth: .infinity)
+                .lineLimit(2).minimumScaleFactor(0.85)
+            if named {
+                ActionPill(title: "Clear name") { clearNames(turns) }
+                    .disabled(clearingNames)
+            }
+            ActionPill(title: "Change speaker", style: .filled) {
+                player.pause()
+                model.renameTurns = SpeakerPassages(turns: turns)
+            }.disabled(turns.isEmpty || clearingNames)
+        }
+        .padding(.top, 10)
+        .padding(.horizontal, Tokens.screenMargin)
+        .padding(.bottom, 8)
+        .background(Tokens.barBg)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Tokens.barHairline).frame(height: 0.5)
+        }
+    }
+
+    private var actionBar: some View {
         // Wraps onto extra rows at large Dynamic Type sizes instead of crushing the pills.
         FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
             ActionPill(
@@ -814,6 +829,65 @@ struct ConversationScreen: View {
         }
     }
 
+    // MARK: - Picking paragraphs for a speaker change
+
+    /// The picked paragraphs, in transcript order.
+    private var pickedTurns: [TranscriptTurn] {
+        guard let picked, let transcript = model.display?.transcript else { return [] }
+        return transcript.compactMap { item in
+            if case .turn(let turn) = item, picked.contains(turn.id) { return turn }
+            return nil
+        }
+    }
+
+    /// A speaker's run: picks all of it, or unpicks it when it is already all picked.
+    private func pick(_ run: [TranscriptTurn]) {
+        guard !run.isEmpty else { return }
+        var set = picked ?? []
+        let ids = Set(run.map(\.id))
+        if ids.isSubset(of: set) { set.subtract(ids) } else { set.formUnion(ids) }
+        Haptics.checkedOff()
+        picked = set
+    }
+
+    private func toggle(_ turn: TranscriptTurn) {
+        guard turn.canIdentifyPassage else { return }
+        var set = picked ?? []
+        if set.remove(turn.id) == nil { set.insert(turn.id) }
+        picked = set
+    }
+
+    /// Leaves the picked paragraphs unnamed. Kept as a decision, so voice recognition won't
+    /// name them again.
+    private func clearNames(_ turns: [TranscriptTurn]) {
+        clearingNames = true
+        Task {
+            defer { clearingNames = false }
+            do {
+                for turn in turns {
+                    try await AskLibraryDataSources.current.people.assignPassage(turn, personId: nil, makeCurrentUser: false)
+                }
+                picked = nil
+                UndoCenter.shared.snackbar = SnackbarItem(
+                    message: turns.count == 1 ? "Name cleared" : "Names cleared from \(turns.count) paragraphs")
+            } catch {
+                UndoCenter.shared.snackbar = SnackbarItem(message: Copy.Speaker.saveFailed)
+            }
+            await load()
+        }
+    }
+
+    /// Plays the picked stretch, from the first paragraph's start to the last one's end.
+    private func playback(of turns: [TranscriptTurn]) -> (() -> Void)? {
+        guard model.display?.audioAvailability == .onPhone, model.display?.player != nil,
+              let first = turns.first, let start = first.identificationMediaOffsetMs ?? first.mediaOffsetMs
+        else { return nil }
+        let end = turns.last.flatMap { $0.identificationMediaEndMs ?? $0.mediaEndMs }
+        return {
+            if let end, end > start { player.play(fromMs: start, untilMs: end) } else { player.play(fromMs: start) }
+        }
+    }
+
     /// Plan 6.9: existing notes open directly; otherwise the template sheet.
     /// Always the template sheet. It used to open the FIRST EXISTING note instead whenever one
     /// existed, which quietly made [Notes] a one-shot button: a conversation that already had
@@ -837,7 +911,7 @@ final class ConversationViewModel {
     /// False until the first load finishes, so the screen can tell "still loading" from
     /// "there is no such conversation".
     var loaded = false
-    var renameTurn: TranscriptTurn?
+    var renameTurns: SpeakerPassages?
     var showTagEditor = false
     var showTemplates = false
     var showFollowUps = false
@@ -1116,4 +1190,10 @@ private struct StagedFollowUpRow: View {
     }
     .environment(AppRouter())
     .tint(Tokens.tint)
+}
+
+/// The passages a "Who's speaking?" sheet is naming.
+struct SpeakerPassages: Identifiable {
+    let turns: [TranscriptTurn]
+    var id: String { turns.map(\.id).joined(separator: "|") }
 }

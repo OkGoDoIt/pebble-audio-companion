@@ -228,18 +228,4 @@ struct SpeakerNamesPerSegmentTests {
         #expect(unnamed.correction.sourceStartMs == 12_000 && unnamed.correction.sourceEndMs == 16_000)
     }
 
-    @Test func unnamedAudioCanBeSelectedWithoutTranscriptWithinItsOwnedPiece() async throws {
-        let result = await LiveWorld.walkMembers([
-            ConversationMember(segmentId: "s", startMediaMs: 10_000, endMediaMs: 30_000)],
-            metas: ["s": Library.meta("s", index: 0)], transcripts: [:], assignments: [])
-        let piece = try #require(result.voiceSelectionPieces.first)
-        #expect(piece.sourceStartMs == 10_000 && piece.sourceEndMs == 30_000)
-        #expect(piece.playbackStartMs == 0 && piece.playbackEndMs == 20_000)
-        let clip = try #require(piece.clip(atPlaybackMs: 15_000, durationMs: 30_000))
-        #expect(clip.sourceStartMs == 25_000 && clip.sourceEndMs == 30_000)
-        #expect(clip.mediaOffsetMs == 15_000 && clip.mediaEndMs == 20_000)
-        #expect(clip.canRememberVoice && clip.isAudioOnly)
-        #expect(piece.clip(atPlaybackMs: 0, durationMs: 0) == nil)
-    }
-
 }

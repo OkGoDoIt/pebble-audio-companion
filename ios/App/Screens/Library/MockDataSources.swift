@@ -494,23 +494,12 @@ final class MockWorld {
             followUps: followUps.filter { $0.sourceConversationId == conversation.id },
             startedAt: conversation.start,
             endedAt: conversation.isLive ? nil : conversation.end,
-            voiceMatches: Self.sampleVoiceMatches(conversation),
-            voiceSelectionPieces: Self.sampleVoicePieces(conversation)
+            voiceMatches: Self.sampleVoiceMatches(conversation)
         )
     }
 
-    /// Voice identification samples for `-demo-data` review: one conversation carries two
-    /// recording sections plus a recognized, a chosen and an explicitly unnamed clip.
-    private static func sampleVoicePieces(_ conversation: MockConversation) -> [ConversationAudioPiece] {
-        guard conversation.id == "coffee-dana" else { return [] }
-        return [
-            ConversationAudioPiece(id: "cd-a", segmentId: "cd-seg-a", sourceStartMs: 0,
-                                   sourceEndMs: 14 * 60_000, playbackStartMs: 0),
-            ConversationAudioPiece(id: "cd-b", segmentId: "cd-seg-b", sourceStartMs: 0,
-                                   sourceEndMs: 10 * 60_000, playbackStartMs: 14 * 60_000),
-        ]
-    }
-
+    /// Voice identification samples for `-demo-data` review: one conversation carries a
+    /// recognized, a chosen and an explicitly unnamed clip that the transcript can't place.
     private static func sampleVoiceMatches(_ conversation: MockConversation) -> [ConversationVoiceMatch] {
         guard conversation.id == "coffee-dana" else { return [] }
         func clip(_ id: String, _ person: Person?, automatic: Bool, atSeconds start: Int64, seconds: Int64)

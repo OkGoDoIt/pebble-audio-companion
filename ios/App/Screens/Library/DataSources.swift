@@ -298,7 +298,6 @@ struct ConversationDisplay: Equatable {
     var endedAt: Date?
     /// Matched audio whose exact words cannot safely be attributed in the transcript.
     var voiceMatches: [ConversationVoiceMatch] = []
-    var voiceSelectionPieces: [ConversationAudioPiece] = []
 
     var shareText: String {
         var lines = [title, metaLine]
@@ -307,27 +306,6 @@ struct ConversationDisplay: Equatable {
             if case .turn(let turn) = item { lines.append("\(turn.name): \(turn.text)") }
         }
         return lines.joined(separator: "\n")
-    }
-}
-
-/// A closed stored-audio piece. Selection never crosses into another conversation or segment.
-struct ConversationAudioPiece: Equatable, Identifiable {
-    var id: String
-    var segmentId: String
-    var sourceStartMs: Int64
-    var sourceEndMs: Int64
-    var playbackStartMs: Int64
-    var playbackEndMs: Int64 { playbackStartMs + max(0, sourceEndMs - sourceStartMs) }
-
-    func clip(atPlaybackMs position: Int64, durationMs: Int64 = 10_000) -> TranscriptTurn? {
-        guard sourceStartMs >= 0, sourceEndMs > sourceStartMs, playbackStartMs >= 0, durationMs > 0 else { return nil }
-        let position = min(max(position, playbackStartMs), playbackEndMs - 1)
-        let start = sourceStartMs + position - playbackStartMs
-        let end = start + min(durationMs, 30_000, sourceEndMs - start)
-        return TranscriptTurn(id: "selected:\(id):\(start):\(end)", speakerLabel: "", name: "Who’s speaking?", role: .unresolved,
-            text: "Listen to this audio clip, then choose who is speaking.", segmentId: segmentId,
-            mediaOffsetMs: position, mediaEndMs: position + end - start,
-            sourceStartMs: start, sourceEndMs: end, isAudioOnly: true)
     }
 }
 

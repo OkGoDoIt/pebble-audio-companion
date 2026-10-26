@@ -29,11 +29,13 @@ final class SpeakerEditorModel {
 
     init(source: (any PeopleDataSource)? = nil) { injectedSource = source }
 
-    func load(conversationId: String, turn: TranscriptTurn) async {
+    func load(conversationId: String, turns: [TranscriptTurn]) async {
         guard !isSaving else { return }
         do {
             let people = try await source.people()
-            let assigned = try await source.assignedPerson(conversationId: conversationId, turn: turn)
+            // Several paragraphs may each have someone different; only one shows a current pick.
+            let assigned = turns.count == 1
+                ? try await source.assignedPerson(conversationId: conversationId, turn: turns[0]) : nil
             self.people = people
             self.assigned = assigned
             loaded = true
@@ -46,42 +48,49 @@ final class SpeakerEditorModel {
         }
     }
 
-    func choose(_ person: Person?, for turn: TranscriptTurn, rememberVoice: Bool = false) async -> Bool {
-        await save(turn: turn) {
-            try await self.source.assignPassage(turn, personId: person?.id, makeCurrentUser: false)
+    func choose(_ person: Person?, for turns: [TranscriptTurn], rememberVoice: Bool = false) async -> Bool {
+        await save(turns: turns) {
+            for turn in turns { try await self.source.assignPassage(turn, personId: person?.id, makeCurrentUser: false) }
             self.nameWasSaved = true
-            if rememberVoice, let person { try await self.remember(person.id, turn: turn) }
+            if rememberVoice, let person { try await self.remember(person.id, turns: turns) }
         }
     }
 
-    func createAndChoose(name: String, for turn: TranscriptTurn, rememberVoice: Bool = false) async -> Bool {
+    func createAndChoose(name: String, for turns: [TranscriptTurn], rememberVoice: Bool = false) async -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
-        return await save(turn: turn) {
+        return await save(turns: turns) {
             let person: Person
             if let pending = self.pendingPerson, pending.name == name { person = pending }
             else {
                 person = try await self.source.createPerson(name: name)
                 self.pendingPerson = person
             }
-            try await self.source.assignPassage(turn, personId: person.id, makeCurrentUser: false)
+            for turn in turns { try await self.source.assignPassage(turn, personId: person.id, makeCurrentUser: false) }
             self.nameWasSaved = true
-            if rememberVoice { try await self.remember(person.id, turn: turn) }
+            if rememberVoice { try await self.remember(person.id, turns: turns) }
             self.pendingPerson = nil
         }
     }
 
-    func chooseMe(for turn: TranscriptTurn, name: String, rememberVoice: Bool = false) async -> Bool {
-        await save(turn: turn) {
-            let person = try await self.source.assignCurrentUserPassage(turn, displayName: name)
+    func chooseMe(for turns: [TranscriptTurn], name: String, rememberVoice: Bool = false) async -> Bool {
+        await save(turns: turns) {
+            let person = try await self.source.assignCurrentUserPassage(turns[0], displayName: name)
+            for turn in turns.dropFirst() {
+                try await self.source.assignPassage(turn, personId: person.id, makeCurrentUser: false)
+            }
             self.nameWasSaved = true
-            if rememberVoice { try await self.remember(person.id, turn: turn) }
+            if rememberVoice { try await self.remember(person.id, turns: turns) }
         }
     }
 
-    private func remember(_ id: String, turn: TranscriptTurn) async throws {
+    /// The longest clear passages make the best samples; a handful is plenty for one change.
+    private func remember(_ id: String, turns: [TranscriptTurn]) async throws {
         guard let voice = VoiceSources.current else { throw SpeakerEditorError.voiceUnavailable }
-        _ = try await voice.enrollPassage(personId: id, turn: turn)
+        let eligible = turns.filter(\.canRememberVoice).sorted {
+            ($0.sourceEndMs ?? 0) - ($0.sourceStartMs ?? 0) > ($1.sourceEndMs ?? 0) - ($1.sourceStartMs ?? 0)
+        }
+        for turn in eligible.prefix(3) { _ = try await voice.enrollPassage(personId: id, turn: turn) }
     }
 
     func rename(_ person: Person, to name: String) async -> Bool {
@@ -98,9 +107,9 @@ final class SpeakerEditorModel {
         await save { try await self.source.setCurrentUser(personId: person.id) }
     }
 
-    private func save(turn: TranscriptTurn? = nil, operation: () async throws -> Void) async -> Bool {
+    private func save(turns: [TranscriptTurn] = [], operation: () async throws -> Void) async -> Bool {
         guard !isSaving, loaded else { return false }
-        if let turn, !turn.canIdentifyPassage {
+        if !turns.allSatisfy(\.canIdentifyPassage) {
             errorMessage = Copy.Speaker.timingUnavailable
             return false
         }

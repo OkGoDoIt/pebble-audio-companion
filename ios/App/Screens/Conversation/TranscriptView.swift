@@ -30,6 +30,14 @@ struct TranscriptView: View {
     /// Where the audio is right now. Nil wherever there is no player (the live screen), and the
     /// transcript then renders exactly as it always did.
     var playhead: TranscriptPlayhead?
+    /// The paragraphs picked for a speaker change, by turn id; nil when not picking. While
+    /// picking, a tap on a paragraph picks or unpicks it instead of moving the audio.
+    var selection: Set<String>?
+    /// Picks (or, when all are already picked, unpicks) a speaker's run of paragraphs; tapping
+    /// a name starts picking with that run. Nil where speakers can't be changed.
+    var onSelectRun: (([TranscriptTurn]) -> Void)?
+    /// Picks or unpicks one paragraph, starting the pick if none is under way.
+    var onToggleTurn: ((TranscriptTurn) -> Void)?
 
     /// Measured height of one line of transcript body text. Measured rather than assumed
     /// because Dynamic Type moves it, and a tap on a paragraph is resolved to a word by
@@ -56,7 +64,7 @@ struct TranscriptView: View {
         let layout = memo.layout(transcript: transcript, provenance: provenance, focus: focus)
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(layout.rows) { row in
-                rowView(row)
+                rowView(row, in: layout)
             }
         }
         // A hidden one-liner behind the stack: a background does not participate in layout, so
@@ -65,8 +73,8 @@ struct TranscriptView: View {
         .background(alignment: .topLeading) { lineHeightProbe }
     }
 
-    private func rowView(_ row: TranscriptLayout.Row) -> some View {
-        rowContent(row)
+    private func rowView(_ row: TranscriptLayout.Row, in layout: TranscriptLayout) -> some View {
+        rowContent(row, in: layout)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, row.topInset)
             .padding(.bottom, row.bottomInset)
@@ -75,12 +83,12 @@ struct TranscriptView: View {
     }
 
     @ViewBuilder
-    private func rowContent(_ row: TranscriptLayout.Row) -> some View {
+    private func rowContent(_ row: TranscriptLayout.Row, in layout: TranscriptLayout) -> some View {
         switch row.content {
         case .turn(let turn, let opensRun):
             if opensRun {
                 VStack(alignment: .leading, spacing: 3) {
-                    speakerHeader(turn)
+                    speakerHeader(turn, run: { Self.run(startingAt: turn, in: layout) })
                     paragraph(turn)
                 }
             } else {
@@ -107,6 +115,26 @@ struct TranscriptView: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
+    }
+
+    /// One speaker's run: the paragraph a name heads and every paragraph after it until the
+    /// next name. Quiet and loss markers inside the run don't end it.
+    static func run(startingAt lead: TranscriptTurn, in layout: TranscriptLayout) -> [TranscriptTurn] {
+        guard let start = layout.rows.firstIndex(where: {
+            if case .turn(let turn, _) = $0.content { return turn.id == lead.id }
+            return false
+        }) else { return [lead] }
+        var turns = [lead]
+        for row in layout.rows[(start + 1)...] {
+            switch row.content {
+            case .turn(let turn, let opensRun):
+                if opensRun { return turns }
+                turns.append(turn)
+            case .quiet, .missing, .moment: continue
+            case .band, .provenance: return turns
+            }
+        }
+        return turns
     }
 
     private var lineHeightProbe: some View {
@@ -185,7 +213,7 @@ struct TranscriptView: View {
     /// One speaker's consecutive turns inside a band: a name header and a paragraph each.
     private func speechBlock(_ turns: [TranscriptTurn]) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            speakerHeader(turns[0])
+            speakerHeader(turns[0], run: { turns })
             // Provider fragments of one person's speech are paragraphs, not one run-on
             // block: they get their own spacing under the single name header.
             VStack(alignment: .leading, spacing: TranscriptLayout.paragraphGap) {
@@ -213,9 +241,18 @@ struct TranscriptView: View {
     }
 
     /// The name that heads a run of one speaker's paragraphs, and the time the run began.
-    private func speakerHeader(_ lead: TranscriptTurn) -> some View {
+    private func speakerHeader(_ lead: TranscriptTurn, run: @escaping () -> [TranscriptTurn]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            if let onSpeakerTap {
+            if let onSelectRun {
+                Button {
+                    onSelectRun(run().filter(\.canIdentifyPassage))
+                } label: {
+                    speakerName(lead).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(lead.name)
+                .accessibilityHint("Selects this speaker’s paragraphs to change who is speaking")
+            } else if let onSpeakerTap {
                 Button {
                     onSpeakerTap(lead)
                 } label: {
@@ -237,19 +274,39 @@ struct TranscriptView: View {
     }
 
     private func paragraph(_ turn: TranscriptTurn) -> some View {
-        TranscriptTurnText(
+        let picking = selection != nil && turn.canIdentifyPassage
+        let picked = selection?.contains(turn.id) == true
+        return TranscriptTurnText(
             turn: turn,
             timeZone: timeZone,
             playhead: playhead,
             lineHeight: bodyLineHeight,
             onSeekTo: onSeekTo,
-            onPlayFrom: onPlayFrom
+            onPlayFrom: onPlayFrom,
+            onPick: picking ? { onToggleTurn?(turn) } : nil
         )
-        .contextMenu {
-            if let onSpeakerTap, !turn.isInProgress {
-                Button(Copy.Speaker.title) { onSpeakerTap(turn) }
+        // Drawn past the text rather than padded around it, so picking never moves a line.
+        .background {
+            if picked {
+                RoundedRectangle(cornerRadius: 8).fill(Tokens.tintFill12)
+                    .padding(.horizontal, -8).padding(.vertical, -3)
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(Tokens.tint).frame(width: 3).offset(x: -8)
+                    }
             }
         }
+        .contextMenu {
+            if !turn.isInProgress, turn.canIdentifyPassage, let onToggleTurn {
+                Button(picked ? "Deselect" : "Select", systemImage: picked ? "minus.circle" : "checkmark.circle") {
+                    onToggleTurn(turn)
+                }
+            }
+            if let onSpeakerTap, !turn.isInProgress {
+                Button(Copy.Speaker.title, systemImage: "person.crop.circle") { onSpeakerTap(turn) }
+            }
+        }
+        .accessibilityAddTraits(picked ? .isSelected : [])
+        .accessibilityAction(named: picked ? "Deselect" : "Select") { onToggleTurn?(turn) }
         .accessibilityAction(named: Copy.Speaker.title) { onSpeakerTap?(turn) }
     }
 
@@ -352,6 +409,8 @@ private struct TranscriptTurnText: View {
     let lineHeight: CGFloat
     let onSeekTo: ((Int64) -> Void)?
     let onPlayFrom: ((Int64) -> Void)?
+    /// While paragraphs are being picked, a tap picks this one instead of moving the audio.
+    var onPick: (() -> Void)? = nil
 
     /// Kept locally rather than in a dictionary on the card: a per-row `@State` write on first
     /// layout invalidates one row, where a shared dictionary would invalidate the whole
@@ -451,6 +510,11 @@ private struct TranscriptTurnText: View {
     }
 
     private func handleTap(at point: CGPoint) {
+        if let onPick {
+            Haptics.checkedOff()
+            onPick()
+            return
+        }
         guard onSeekTo != nil || onPlayFrom != nil else { return }
         guard
             let target = TranscriptTapGeometry.seekTarget(
@@ -631,7 +695,9 @@ struct TranscriptStamp: View {
 
 struct SpeakerRenameSheet: View {
     let conversationId: String
-    let turn: TranscriptTurn
+    /// The paragraphs (or audio clip) being named, in transcript order; at least one.
+    let turns: [TranscriptTurn]
+    private var turn: TranscriptTurn { turns[0] }
     var onPlay: (() -> Void)?
     var onStop: (() -> Void)?
     let onDone: () -> Void
@@ -649,8 +715,15 @@ struct SpeakerRenameSheet: View {
 
     init(conversationId: String, turn: TranscriptTurn, model: SpeakerEditorModel = .init(),
          onPlay: (() -> Void)? = nil, onStop: (() -> Void)? = nil, onDone: @escaping () -> Void) {
+        self.init(conversationId: conversationId, turns: [turn], model: model, onPlay: onPlay,
+                  onStop: onStop, onDone: onDone)
+    }
+
+    init(conversationId: String, turns: [TranscriptTurn], model: SpeakerEditorModel = .init(),
+         onPlay: (() -> Void)? = nil, onStop: (() -> Void)? = nil, onDone: @escaping () -> Void) {
+        precondition(!turns.isEmpty, "A speaker change names at least one passage")
         self.conversationId = conversationId
-        self.turn = turn
+        self.turns = turns
         self.onPlay = onPlay
         self.onStop = onStop
         self.onDone = onDone
@@ -660,23 +733,20 @@ struct SpeakerRenameSheet: View {
     var body: some View {
         NavigationStack {
             SettingsScroll {
-                SettingsSectionHeader(title: turn.isAudioOnly ? "This audio clip" : (turn.identificationText == nil ? Copy.Speaker.passage : "Full timed passage"))
+                SettingsSectionHeader(title: passageHeader)
                 Card {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(turn.identificationText ?? turn.text).font(AppFont.callout).foregroundStyle(Tokens.label)
+                        Text(passageText).font(AppFont.callout).foregroundStyle(Tokens.label)
+                            .lineLimit(turns.count > 1 ? 8 : nil)
                             .fixedSize(horizontal: false, vertical: true)
                         if let onPlay {
                             Button(action: onPlay) {
-                                Label("Listen to this passage", systemImage: "play.fill")
+                                Label("Listen", systemImage: "play.fill")
                             }.buttonStyle(.smallBordered)
                         }
                     }
                 }
-                SettingsFooter(text: turn.canIdentifyPassage
-                    ? (turn.identificationText == nil
-                        ? "The name changes only this passage. You can choose to remember the voice separately."
-                        : "These paragraphs share one timed passage. The name applies to the full passage shown here.")
-                    : Copy.Speaker.timingUnavailable)
+                SettingsFooter(text: passageFooter)
                 if let error = model.errorMessage { VoiceMessageCard(text: error) }
                 if !model.loaded {
                     Button(Copy.Speaker.retry) { Task { await reload() } }.buttonStyle(.borderedTint)
@@ -706,7 +776,7 @@ struct SpeakerRenameSheet: View {
                     }
                     choiceRow(.newPerson, name: Copy.Speaker.newPerson, icon: "person.badge.plus")
                     choiceRow(.unnamed, name: Copy.Speaker.unnamed, icon: "person.crop.circle.dashed")
-                }.disabled(model.isSaving || !model.loaded || !turn.canIdentifyPassage)
+                }.disabled(model.isSaving || !model.loaded || !canIdentify)
                 if selection == .newPerson || selection == .me {
                     ListCard {
                         TextField(selection == .me ? Copy.Voices.yourName : Copy.Speaker.namePlaceholder, text: $freeText)
@@ -720,7 +790,7 @@ struct SpeakerRenameSheet: View {
                     }
                 }
                 if selection != nil && selection != .unnamed {
-                    if model.voiceAvailable && turn.canRememberVoice {
+                    if model.voiceAvailable && canRemember {
                         Card {
                             Toggle(isOn: $rememberVoice) {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -730,7 +800,7 @@ struct SpeakerRenameSheet: View {
                             }.tint(Tokens.tint).disabled(model.isSaving)
                         }
                     } else {
-                        if model.voiceAvailable && !turn.canRememberVoice {
+                        if model.voiceAvailable && !canRemember {
                             SettingsFooter(text: "To remember a voice, choose 2–30 seconds with one speaker, or record a sample in People & voices.")
                         }
                         Button { onStop?(); showVoiceSettings = true } label: {
@@ -789,8 +859,30 @@ struct SpeakerRenameSheet: View {
             } message: { _ in Text(Copy.Speaker.deletePersonMessage) }
     }
 
+    private var canIdentify: Bool { turns.allSatisfy(\.canIdentifyPassage) }
+    private var canRemember: Bool { turns.contains(where: \.canRememberVoice) }
+
+    private var passageHeader: String {
+        if turn.isAudioOnly { return "This audio clip" }
+        if turns.count > 1 { return "\(turns.count) paragraphs" }
+        return turn.identificationText == nil ? Copy.Speaker.passage : "Full timed passage"
+    }
+
+    private var passageText: String {
+        turns.count > 1 ? turns.map(\.text).joined(separator: "\n\n") : (turn.identificationText ?? turn.text)
+    }
+
+    private var passageFooter: String {
+        guard canIdentify else { return Copy.Speaker.timingUnavailable }
+        if turn.isAudioOnly { return "The name changes only this clip. You can choose to remember the voice separately." }
+        if turns.count > 1 { return "The name changes only these paragraphs. You can choose to remember the voice separately." }
+        return turn.identificationText == nil
+            ? "The name changes only this passage. You can choose to remember the voice separately."
+            : "These paragraphs share one timed passage. The name applies to the full passage shown here."
+    }
+
     private var canSave: Bool {
-        guard model.loaded, !model.isSaving, turn.canIdentifyPassage, let selection else { return false }
+        guard model.loaded, !model.isSaving, canIdentify, let selection else { return false }
         if selection == .newPerson || selection == .me {
             return !freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -814,7 +906,7 @@ struct SpeakerRenameSheet: View {
             }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityAddTraits(selection == choice ? .isSelected : [])
     }
-    private func reload() async { await model.load(conversationId: conversationId, turn: turn) }
+    private func reload() async { await model.load(conversationId: conversationId, turns: turns) }
     private func submit() {
         guard canSave, let selection else { return }
         Task {
@@ -822,13 +914,13 @@ struct SpeakerRenameSheet: View {
             switch selection {
             case .person(let id):
                 guard let person = model.people.first(where: { $0.id == id }) else { return }
-                success = await model.choose(person, for: turn, rememberVoice: rememberVoice)
+                success = await model.choose(person, for: turns, rememberVoice: rememberVoice)
             case .me:
-                success = await model.chooseMe(for: turn, name: freeText, rememberVoice: rememberVoice)
+                success = await model.chooseMe(for: turns, name: freeText, rememberVoice: rememberVoice)
             case .unnamed:
-                success = await model.choose(nil, for: turn)
+                success = await model.choose(nil, for: turns)
             case .newPerson:
-                success = await model.createAndChoose(name: freeText, for: turn, rememberVoice: rememberVoice)
+                success = await model.createAndChoose(name: freeText, for: turns, rememberVoice: rememberVoice)
             }
             if model.nameWasSaved { onDone() }
             if success { dismiss() }

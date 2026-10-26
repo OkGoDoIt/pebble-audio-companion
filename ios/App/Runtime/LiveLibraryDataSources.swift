@@ -99,7 +99,6 @@ final class LiveWorld {
         var transcribedAtMs: Int64?
         var zone: TimeZone?
         var voiceMatches: [ConversationVoiceMatch] = []
-        var voiceSelectionPieces: [ConversationAudioPiece] = []
     }
 
     /// Turns the loaded metas and transcripts into the screen's rows — OFF the main actor.
@@ -164,12 +163,6 @@ final class LiveWorld {
                 let before = result.mediaMs
                 let clock = SegmentMediaClock(meta)
                 let span = PieceSpan(member, clock: clock, frameDurationMs: Int64(meta.frameDurationMs))
-                let selectionEnd = min(span.mediaMs.upperBound, clock.mediaSpanMs)
-                if !meta.isOpen, selectionEnd > span.mediaMs.lowerBound {
-                    result.voiceSelectionPieces.append(ConversationAudioPiece(
-                        id: "\(segmentId):\(span.mediaMs.lowerBound):\(selectionEnd)", segmentId: segmentId,
-                        sourceStartMs: span.mediaMs.lowerBound, sourceEndMs: selectionEnd, playbackStartMs: before))
-                }
                 let namedPeople = Set(built.items.compactMap { item -> String? in
                     if case .turn(let turn) = item { return turn.personId }; return nil
                 })
@@ -496,8 +489,7 @@ extension LiveWorld: ConversationDataSource {
             // A live conversation has no end yet; the scrubber says "now" rather than naming the
             // last moment audio happened to arrive.
             endedAt: source.isLive ? nil : end,
-            voiceMatches: walked.voiceMatches,
-            voiceSelectionPieces: walked.voiceSelectionPieces
+            voiceMatches: walked.voiceMatches
         )
     }
 

@@ -221,4 +221,24 @@ struct TranscriptLayoutMemoTests {
             transcript: transcript, provenance: "p", focus: TranscriptFocus(segmentId: "seg-1"))
         #expect(cited.citedRowId == TranscriptLayout.citedAnchor)
     }
+
+    // MARK: - Tapping a name picks that speaker's run
+
+    @Test func aNamePicksTheParagraphsUnderItUpToTheNextName() throws {
+        let transcript = [
+            TranscriptLayoutTests.turn("a"), TranscriptLayoutTests.turn("b", at: 5),
+            TranscriptLayoutTests.quiet("q", at: 10), TranscriptLayoutTests.turn("c", at: 20),
+            TranscriptLayoutTests.turn("d", "S2", at: 30), TranscriptLayoutTests.turn("e", "S2", at: 40),
+            TranscriptLayoutTests.turn("f", at: 50),
+        ]
+        let layout = TranscriptLayout(transcript: transcript, provenance: nil, focus: nil)
+        func turn(_ id: String) throws -> TranscriptTurn {
+            try #require(transcript.compactMap { if case .turn(let t) = $0, t.id == id { t } else { nil } }.first)
+        }
+        #expect(TranscriptView.run(startingAt: try turn("a"), in: layout).map(\.id) == ["a", "b"])
+        // After a quiet stretch the transcript names the speaker again; that name heads its own run.
+        #expect(TranscriptView.run(startingAt: try turn("c"), in: layout).map(\.id) == ["c"])
+        #expect(TranscriptView.run(startingAt: try turn("d"), in: layout).map(\.id) == ["d", "e"])
+        #expect(TranscriptView.run(startingAt: try turn("f"), in: layout).map(\.id) == ["f"])
+    }
 }
