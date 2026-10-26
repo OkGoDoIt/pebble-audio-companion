@@ -57,7 +57,7 @@ extension VoiceIdentityStore {
     /// it twice. Manual corrections overlapping a prediction suppress that prediction only.
     @discardableResult public func advanceJob(
         id: String, expectedCursorMediaMs: Int64, nextCursorMediaMs: Int64,
-        attributions: [VoiceAutomaticAttribution],
+        attributions: [VoiceAutomaticAttribution], unmatched: [VoiceUnmatchedCrop] = [],
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> Bool {
         guard attributions.count <= 256 else { throw VoiceIdentityError.capacityExceeded }
@@ -77,6 +77,10 @@ extension VoiceIdentityStore {
                       a.sourceRevision == job.token.sourceRevision else { throw VoiceIdentityError.invalidRecord }
                 _ = try Self.insertAutomatic(d, attribution: a, token: job.token)
             }
+            guard unmatched.allSatisfy({ $0.segmentId == job.segmentId && $0.recipeID == job.recipeID
+                && $0.startMediaMs >= expectedCursorMediaMs && $0.endMediaMs <= nextCursorMediaMs
+                && $0.sourceRevision == job.token.sourceRevision }) else { throw VoiceIdentityError.invalidRecord }
+            try VoiceUnmatchedStore.insert(d, unmatched)
             try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
                           arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
             return true

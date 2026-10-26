@@ -900,6 +900,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-example-retirement-v1") { db in
             try VoiceArchiveRevocationStore.installRetirement(db)
         }
+        migrator.registerMigration("voice-unmatched-crops-v1") { db in
+            try VoiceUnmatchedStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

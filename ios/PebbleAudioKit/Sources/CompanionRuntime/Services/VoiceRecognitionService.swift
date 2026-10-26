@@ -614,6 +614,7 @@ public actor VoiceRecognitionService {
                           let context = try await store.workContext(segmentId: job.segmentId),
                           context.token == job.token else { throw VoiceEnrollmentError.changedDuringProcessing }
                     var attributions: [VoiceAutomaticAttribution] = []
+                    var unmatched: [VoiceUnmatchedCrop] = []
                     let next: Int64
                     if let range = source.nextRange(afterMediaMs: job.cursorMediaMs, throughMediaMs: job.endMediaMs) {
                         let pcm = try await Task.detached(priority: .utility) {
@@ -624,11 +625,13 @@ public actor VoiceRecognitionService {
                             sessionID: job.segmentId, sourceStartSample: Int(range.lowerBound) * 16))
                         attributions = try Self.match(analysis, job: job, examples: context.examples,
                                                       policy: policy, window: range, protector: protector)
+                        unmatched = try Self.unmatched(analysis, job: job, named: attributions,
+                                                       window: range, protector: protector)
                         next = range.upperBound
                     } else { next = job.endMediaMs }
                     try Task.checkCancellation()
                     let committed = try await store.advanceJob(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
-                        nextCursorMediaMs: next, attributions: attributions)
+                        nextCursorMediaMs: next, attributions: attributions, unmatched: unmatched)
                     if committed && !attributions.isEmpty { changedSegments.insert(job.segmentId) }
                     didWork = true; changed()
                 } catch {
@@ -670,6 +673,77 @@ public actor VoiceRecognitionService {
                 sourceRevision: job.token.sourceRevision, recipeID: analysis.recipeID, score: score,
                 margin: match.margin, calibrationID: match.calibrationID, runID: job.runID)
         }
+    }
+
+    /// Clear, single-voice crops long enough to be voice evidence that no one was named for:
+    /// kept, sealed, so recurring unnamed voices can be grouped and offered for naming.
+    static func unmatched(_ analysis: SpeakerAnalysis, job: VoiceRecognitionJob, named: [VoiceAutomaticAttribution],
+                          window: Range<Int64>, protector: any VoiceProfileProtecting) throws -> [VoiceUnmatchedCrop] {
+        let encoder = JSONEncoder()
+        return try analysis.turns.compactMap { turn in
+            let start = Int64(turn.startSample / 16), end = Int64(turn.endSample / 16)
+            guard !turn.overlap, turn.speechConfidence >= 0.7, let embedding = turn.embedding,
+                  turn.endSample - turn.startSample >= 32_000,
+                  turn.startSample >= Int(window.lowerBound) * 16, turn.endSample <= Int(window.upperBound) * 16,
+                  !named.contains(where: { $0.startMediaMs < end && $0.endMediaMs > start }) else { return nil }
+            return VoiceUnmatchedCrop(segmentId: job.segmentId, startMediaMs: start, endMediaMs: end,
+                sourceRevision: job.token.sourceRevision, recipeID: analysis.recipeID,
+                embeddingJSON: try protector.seal(encoder.encode(embedding)), speechConfidence: turn.speechConfidence)
+        }
+    }
+
+    /// A voice heard in several recordings that recognition couldn't name, with its clearest crops.
+    public struct UnknownVoiceGroup: Equatable, Sendable {
+        public let crops: [VoiceUnmatchedCrop]
+        public var recordingCount: Int { Set(crops.map(\.segmentId)).count }
+    }
+
+    /// Recurring unnamed voices, largest first. Reads at most the 400 most recent unnamed crops.
+    public func unknownVoiceGroups(limit: Int = 6) async throws -> [UnknownVoiceGroup] {
+        let crops = try await VoiceUnmatchedStore(db: store.db).recent(limit: 400).filter { $0.recipeID == recipeID }
+        let protector = protector
+        let items: [SpeakerGrouping.Item] = crops.compactMap { crop in
+            guard let data = try? protector.open(crop.embeddingJSON),
+                  let embedding = try? JSONDecoder().decode(SpeakerEmbedding.self, from: data) else { return nil }
+            return SpeakerGrouping.Item(id: crop.id, sourceID: crop.segmentId, embedding: embedding)
+        }
+        let byID = Dictionary(uniqueKeysWithValues: crops.map { ($0.id, $0) })
+        return await Task.detached(priority: .utility) { SpeakerGrouping.group(items) }.value
+            .prefix(limit)
+            .map { ids in UnknownVoiceGroup(crops: ids.compactMap { byID[$0] }
+                .sorted { $0.speechConfidence > $1.speechConfidence }) }
+    }
+
+    /// The person said who an unnamed voice is: every crop's range carries their name, the
+    /// clearest few teach the voice, and the group is no longer asked about.
+    public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws -> Int {
+        let corrections = SpeakerCorrectionStore(db: store.db)
+        for crop in group.crops {
+            try await corrections.set(segmentId: crop.segmentId, startMediaMs: crop.startMediaMs,
+                                      endMediaMs: crop.endMediaMs, personId: personId)
+        }
+        var learned = 0
+        // One crop per recording first: different recordings are the independent evidence.
+        var seen = Set<String>()
+        let firsts = group.crops.filter { seen.insert($0.segmentId).inserted }
+        let firstIDs = Set(firsts.map(\.id))
+        let teaching = firsts + group.crops.filter { !firstIDs.contains($0.id) }
+        for crop in teaching.prefix(5) {
+            if let outcome = try? await enroll(personId: personId, segmentId: crop.segmentId,
+                                               startMediaMs: crop.startMediaMs, endMediaMs: min(crop.endMediaMs, crop.startMediaMs + 30_000)) {
+                learned += outcome.examplesAdded
+            }
+        }
+        try await VoiceUnmatchedStore(db: store.db).remove(ids: group.crops.map(\.id))
+        changed()
+        return learned
+    }
+
+    /// "Not now" or "not one person": the group stops being asked about. New crops of the voice
+    /// may form a new group later.
+    public func dismissUnknownVoice(_ group: UnknownVoiceGroup) async throws {
+        try await VoiceUnmatchedStore(db: store.db).remove(ids: group.crops.map(\.id))
+        changed()
     }
 
     public func cancel(runId: String) async throws {
