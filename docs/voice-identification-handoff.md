@@ -56,6 +56,15 @@ Living notes for whichever agent continues this. Newest state first. The design 
   degrades to "unnamed", not a confident wrong name. Revisit only with evidence (e.g. a person whose
   crops sit inside another person's cluster → offer "Dana and Sam sound alike in some clips").
 
+- `acaaf214` "who is this?" backend: unmatched crops kept sealed in `voice_unmatched_crops` (migration
+  `voice-unmatched-crops-v1`; triggers drop them with the source's generation bump, source delete, and
+  recognition off; cap 2,000), `SpeakerGrouping` (average linkage, threshold 0.6, ≥ 3 crops, ≥ 2 recordings),
+  `VoiceRecognitionService.unknownVoiceGroups/nameUnknownVoice/dismissUnknownVoice`. **No UI yet.**
+- **Waiting on Roger:** three directions for the question UI — A queue in People & voices, B one question on
+  Today, C a hint inside the conversation with per-recording Yes/No — in
+  `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
+  https://claude.ai/artifact/1b6rnKKQptb4HULsoUYLWc. Build only the chosen parts.
+
 ## Shared checkout warning (2026-10-26)
 
 Session "Fix recording times drifting with the watch clock" (local_463214db…) works **in this same

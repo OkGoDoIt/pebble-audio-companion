@@ -1,0 +1,291 @@
+<title>Who Is This? Directions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a review sheet — each direction is a row of real-size phone screens on the app's own tokens,
+   with what it does and what it costs beside it. Tokens mirror ios/App/DesignSystem/Tokens.swift. */
+:root {
+  --tint: #5B5BD6; --tint-fill-12: rgba(91,91,214,0.12); --tint-border: rgba(91,91,214,0.40); --on-tint: #FFFFFF;
+  --speaker-other: #2E9E9E; --good-text: #248A3D;
+  --label: #1C1C1E; --secondary-body: #3C3C43; --meta: #6E6E73; --faint: #B0B0B6; --chevron: #C7C7CC;
+  --hairline: rgba(60,60,67,0.18); --gray-chip: #EFEFF4; --ground: #F2F2F7; --surface: #FFFFFF;
+  --page: #E7E7EE; --frame: #1C1C1E; --snack: #2C2C2E; --on-snack: #F2F2F7;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --tint: #7D7DE8; --tint-fill-12: rgba(125,125,232,0.26); --tint-border: rgba(125,125,232,0.55);
+  --speaker-other: #40C8C8; --good-text: #30D158;
+  --label: #F2F2F7; --secondary-body: #D1D1D6; --meta: #98989D; --faint: #7C7C80; --chevron: #48484A;
+  --hairline: rgba(84,84,88,0.40); --gray-chip: #2C2C2E; --ground: #000000; --surface: #1C1C1E;
+  --page: #121214; --frame: #3A3A3C; --snack: #E5E5EA; --on-snack: #1C1C1E; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --tint: #7D7DE8; --tint-fill-12: rgba(125,125,232,0.26); --tint-border: rgba(125,125,232,0.55);
+  --speaker-other: #40C8C8; --good-text: #30D158;
+  --label: #F2F2F7; --secondary-body: #D1D1D6; --meta: #98989D; --faint: #7C7C80; --chevron: #48484A;
+  --hairline: rgba(84,84,88,0.40); --gray-chip: #2C2C2E; --ground: #000000; --surface: #1C1C1E;
+  --page: #121214; --frame: #3A3A3C; --snack: #E5E5EA; --on-snack: #1C1C1E; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--label); font: 400 15px/1.45 var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 40px; }
+header.intro { max-width: 68ch; display: grid; gap: 10px; }
+h1 { font: 700 28px/1.15 var(--font); margin: 0; text-wrap: balance; letter-spacing: 0.2px; }
+h2 { font: 700 20px/1.2 var(--font); margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.lede { color: var(--secondary-body); }
+.eyebrow { font: 600 12px/1 var(--font); letter-spacing: 0.6px; text-transform: uppercase; color: var(--tint); }
+
+section.direction { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 28px; align-items: start; }
+.notes { display: grid; gap: 12px; max-width: 46ch; }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--secondary-body); }
+.notes .label { font: 600 13px/1 var(--font); color: var(--meta); letter-spacing: 0.4px; text-transform: uppercase; }
+.screens { display: flex; flex-wrap: wrap; gap: 20px; }
+@media (max-width: 900px) { section.direction { grid-template-columns: minmax(0, 1fr); } }
+
+/* Phone */
+.phone { width: 320px; max-width: 100%; height: 640px; border-radius: 40px; border: 10px solid var(--frame);
+  background: var(--ground); overflow: hidden; position: relative; display: flex; flex-direction: column; }
+.status { height: 34px; flex: none; display: flex; justify-content: space-between; align-items: center;
+  padding: 0 24px; font: 600 13px/1 var(--font); color: var(--label); font-variant-numeric: tabular-nums; }
+.navbar { display: flex; align-items: center; gap: 10px; padding: 4px 14px 8px; flex: none; }
+.navbar .back { font: 400 16px/1 var(--font); color: var(--tint); }
+.navbar .title { font: 600 16px/1 var(--font); margin: 0 auto; }
+.screen { flex: 1; overflow: hidden; padding: 6px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.big-title { font: 700 26px/1.15 var(--font); letter-spacing: 0.3px; }
+.section-h { font: 600 12px/1 var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta); padding: 8px 4px 0; }
+.card { background: var(--surface); border-radius: 12px; padding: 12px; display: grid; gap: 10px; }
+.list { background: var(--surface); border-radius: 12px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-height: 48px; }
+.row + .row { border-top: 0.5px solid var(--hairline); }
+.row .text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.row-title { font: 600 15px/1.25 var(--font); }
+.foot { font: 400 12.5px/1.35 var(--font); color: var(--meta); }
+.sub { font: 400 14px/1.35 var(--font); color: var(--secondary-body); }
+.avatar { width: 36px; height: 36px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: var(--tint-fill-12); color: var(--tint); font: 600 15px/1 var(--font); }
+.avatar.unknown { background: var(--gray-chip); color: var(--meta); }
+.chev { color: var(--chevron); font: 600 15px/1 var(--font); }
+.clip { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--ground); }
+.play { width: 30px; height: 30px; border-radius: 50%; background: var(--tint); flex: none; display: grid; place-items: center; }
+.play::after { content: ""; border-left: 9px solid var(--on-tint); border-top: 6px solid transparent; border-bottom: 6px solid transparent; margin-left: 3px; }
+.clip .text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.clip .when { font: 600 13px/1.2 var(--font); }
+.clip .what { font: 400 12.5px/1.3 var(--font); color: var(--meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wave { display: flex; gap: 2px; align-items: center; height: 20px; flex: none; }
+.wave i { width: 2px; border-radius: 1px; background: var(--faint); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border-radius: 999px; padding: 7px 12px; font: 600 14px/1 var(--font); background: var(--gray-chip); color: var(--label); }
+.chip.tint { background: var(--tint-fill-12); color: var(--tint); }
+.chip.ghost { background: transparent; color: var(--tint); padding-inline: 4px; }
+.btn { border-radius: 14px; padding: 13px; text-align: center; font: 600 15px/1 var(--font); background: var(--tint); color: var(--on-tint); }
+.btn.secondary { background: transparent; color: var(--tint); border: 1px solid var(--tint-border); }
+.progress { display: flex; justify-content: space-between; align-items: baseline; font: 400 12.5px/1 var(--font); color: var(--meta); font-variant-numeric: tabular-nums; }
+.dots { display: flex; gap: 5px; }
+.dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--chevron); }
+.dots i.on { background: var(--tint); }
+.speaker { font: 600 13px/1 var(--font); color: var(--speaker-other); display: flex; gap: 6px; align-items: center; }
+.speaker .stamp { color: var(--faint); font-weight: 400; }
+.para { font: 400 15px/1.4 var(--font); }
+.pill-hint { display: inline-flex; gap: 6px; align-items: center; border-radius: 999px; padding: 5px 10px;
+  background: var(--tint-fill-12); color: var(--tint); font: 600 12.5px/1 var(--font); width: fit-content; }
+.bar { margin-top: auto; background: var(--surface); border-top: 0.5px solid var(--hairline); padding: 10px 14px 16px;
+  display: grid; gap: 8px; margin-inline: -14px; margin-bottom: -14px; }
+.sheet { position: absolute; inset: 120px 0 0; background: var(--ground); border-radius: 16px 16px 0 0;
+  box-shadow: 0 -6px 30px rgba(0,0,0,0.25); display: flex; flex-direction: column; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.3); }
+.grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--chevron); margin: 6px auto 2px; }
+.snack { position: absolute; left: 14px; right: 14px; bottom: 18px; background: var(--snack); color: var(--on-snack);
+  border-radius: 12px; padding: 12px 14px; font: 500 14px/1.3 var(--font); }
+.check { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--chevron); flex: none; }
+.check.on { background: var(--tint); border-color: var(--tint); position: relative; }
+.check.on::after { content: ""; position: absolute; left: 7px; top: 3px; width: 5px; height: 10px;
+  border: solid var(--on-tint); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.yesno { display: flex; gap: 6px; flex: none; }
+.yesno span { border-radius: 999px; padding: 6px 10px; font: 600 13px/1 var(--font); background: var(--gray-chip); }
+.yesno span.on { background: var(--tint); color: var(--on-tint); }
+.today-row { display: flex; gap: 10px; align-items: center; }
+</style>
+
+<div class="wrap">
+  <header class="intro">
+    <span class="eyebrow">Voice identification · design review</span>
+    <h1>Who is this?</h1>
+    <p class="lede">The app now remembers voices it hears in several recordings but can’t name, and groups the ones that recur. These are three ways to ask you about them. Each answer names that voice wherever it was heard and teaches the app, so naming one group improves every recording after it. Pick a direction, or the parts of each that work.</p>
+  </header>
+
+  <!-- A -->
+  <section class="direction">
+    <div class="notes">
+      <span class="eyebrow">Direction A</span>
+      <h2>A queue in People &amp; voices</h2>
+      <p class="sub">A “Voices to name” section lists recurring unnamed voices. You work through them one at a time: listen to clips from different days, tap who it is.</p>
+      <span class="label">Good for</span>
+      <ul><li>Clearing a backlog in one sitting</li><li>Clips from several days make a voice easy to recognize</li><li>Stays out of the way until you go looking</li></ul>
+      <span class="label">Costs</span>
+      <ul><li>Easy to forget it exists</li><li>Out of context: no conversation around the clip</li></ul>
+    </div>
+    <div class="screens">
+      <div class="phone" aria-label="People and voices with a Voices to name section">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="navbar"><span class="back">‹ Settings</span><span class="title">People &amp; voices</span><span style="width:60px"></span></div>
+        <div class="screen">
+          <div class="section-h">Voices to name</div>
+          <div class="list">
+            <div class="row"><div class="avatar unknown">?</div><div class="text"><span class="row-title">Heard in 6 recordings</span><span class="foot">Mostly mornings · last heard today</span></div><span class="chev">›</span></div>
+            <div class="row"><div class="avatar unknown">?</div><div class="text"><span class="row-title">Heard in 4 recordings</span><span class="foot">Evenings · last heard Saturday</span></div><span class="chev">›</span></div>
+            <div class="row"><div class="avatar unknown">?</div><div class="text"><span class="row-title">Heard in 2 recordings</span><span class="foot">Last heard Thursday</span></div><span class="chev">›</span></div>
+          </div>
+          <div class="foot" style="padding:0 4px">Naming a voice names it in every recording it was heard in.</div>
+          <div class="section-h">Remembered voices</div>
+          <div class="list">
+            <div class="row"><div class="avatar">R</div><div class="text"><span class="row-title">Roger · You</span><span class="foot">5 samples</span></div><span class="chev">›</span></div>
+            <div class="row"><div class="avatar">D</div><div class="text"><span class="row-title">Dana</span><span class="foot">8 samples</span></div><span class="chev">›</span></div>
+            <div class="row"><div class="avatar">S</div><div class="text"><span class="row-title">Sam</span><span class="foot">3 samples</span></div><span class="chev">›</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="phone" aria-label="Naming one voice from the queue">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="navbar"><span class="back">‹ Back</span><span class="title">Who is this?</span><span style="width:40px"></span></div>
+        <div class="screen">
+          <div class="progress"><span>Voice 1 of 3</span><span class="dots"><i class="on"></i><i></i><i></i></span></div>
+          <div class="card">
+            <span class="row-title">Heard in 6 recordings</span>
+            <div class="clip"><span class="play"></span><span class="text"><span class="when">Today, 8:12 AM</span><span class="what">“…we could take the ferry if it’s not too windy”</span></span></div>
+            <div class="clip"><span class="play"></span><span class="text"><span class="when">Saturday, 7:40 AM</span><span class="what">“…I’ll grab the bread on the way back”</span></span></div>
+            <div class="clip"><span class="play"></span><span class="text"><span class="when">Thursday, 9:05 AM</span><span class="what">“…did you see the message from the school?”</span></span></div>
+          </div>
+          <div class="section-h">This is</div>
+          <div class="chips"><span class="chip tint">Dana</span><span class="chip">Sam</span><span class="chip">Me</span><span class="chip">Someone new…</span></div>
+          <div class="bar">
+            <div class="chips" style="justify-content:space-between"><span class="chip ghost">More than one person</span><span class="chip ghost">Not now</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- B -->
+  <section class="direction">
+    <div class="notes">
+      <span class="eyebrow">Direction B</span>
+      <h2>One question on Today</h2>
+      <p class="sub">When a voice has come up in several recordings, Today shows a single quiet row. One tap opens a sheet with clips and your people. At most one question a day.</p>
+      <span class="label">Good for</span>
+      <ul><li>Gets answered without you seeking it out</li><li>Small, frequent answers keep the app learning</li><li>The busiest voices get asked about first</li></ul>
+      <span class="label">Costs</span>
+      <ul><li>Another thing on Today</li><li>A backlog clears slowly at one a day</li></ul>
+    </div>
+    <div class="screens">
+      <div class="phone" aria-label="Today with a who-is-this row">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen" style="padding-top:10px">
+          <div class="big-title">Today</div>
+          <div class="card">
+            <div class="today-row"><div class="avatar unknown">?</div><div class="text" style="flex:1;min-width:0;display:grid;gap:2px"><span class="row-title">Who is this?</span><span class="foot">A voice from 6 of your recordings</span></div><span class="chip tint">Listen</span></div>
+          </div>
+          <div class="section-h">Conversations</div>
+          <div class="list">
+            <div class="row"><div class="text"><span class="row-title">Ferry plans for Saturday</span><span class="foot">8:10 – 8:24 AM · 14 min</span></div><span class="chev">›</span></div>
+            <div class="row"><div class="text"><span class="row-title">Standup with the studio</span><span class="foot">9:30 – 9:52 AM · 22 min</span></div><span class="chev">›</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="phone" aria-label="Sheet asking who the voice is">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="screen"><div class="big-title">Today</div></div>
+        <div class="scrim"></div>
+        <div class="sheet">
+          <div class="grabber"></div>
+          <div class="screen">
+            <div class="row-title" style="font-size:17px">Who is this?</div>
+            <div class="clip"><span class="play"></span><span class="text"><span class="when">Today, 8:12 AM</span><span class="what">“…we could take the ferry if it’s not too windy”</span></span></div>
+            <div class="clip"><span class="play"></span><span class="text"><span class="when">Saturday, 7:40 AM</span><span class="what">“…I’ll grab the bread on the way back”</span></span></div>
+            <div class="list">
+              <div class="row"><div class="avatar">D</div><span class="text row-title">Dana</span><span class="check on"></span></div>
+              <div class="row"><div class="avatar">S</div><span class="text row-title">Sam</span><span class="check"></span></div>
+              <div class="row"><div class="avatar unknown">+</div><span class="text row-title">Someone new</span><span class="check"></span></div>
+            </div>
+            <div class="bar"><div class="btn">Name in 6 recordings</div><div class="foot" style="text-align:center">Not now · More than one person</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- C -->
+  <section class="direction">
+    <div class="notes">
+      <span class="eyebrow">Direction C</span>
+      <h2>Ask inside the conversation</h2>
+      <p class="sub">When an unnamed speaker in a conversation is a voice heard elsewhere, a small hint sits under their name. Naming them here offers clips from the other recordings to confirm, then names all of them.</p>
+      <span class="label">Good for</span>
+      <ul><li>The question comes with the conversation you’re already reading</li><li>You confirm each other recording, so a wrong group can’t spread</li><li>Nothing new on Today or in Settings</li></ul>
+      <span class="label">Costs</span>
+      <ul><li>Only reached by opening a conversation</li><li>A confirmation step per clip, more taps</li></ul>
+    </div>
+    <div class="screens">
+      <div class="phone" aria-label="Transcript with a recurring voice hint">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="navbar"><span class="back">‹</span><span style="flex:1"></span></div>
+        <div class="screen">
+          <div class="big-title" style="font-size:22px">Ferry plans for Saturday</div>
+          <div class="card" style="gap:12px">
+            <div style="display:grid;gap:4px"><div class="speaker" style="color:var(--tint)">Roger <span class="stamp">8:10 AM</span></div><div class="para">If the wind drops we could do the early one.</div></div>
+            <div style="display:grid;gap:6px"><div class="speaker">Speaker 2 <span class="stamp">8:12 AM</span></div>
+              <span class="pill-hint">Heard in 5 other recordings · Name</span>
+              <div class="para">We could take the ferry if it’s not too windy, and come back for lunch.</div></div>
+            <div style="display:grid;gap:4px"><div class="speaker" style="color:var(--tint)">Roger <span class="stamp">8:13 AM</span></div><div class="para">Sounds good. I’ll check the times.</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="phone" aria-label="Confirming the same voice in other recordings">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="navbar"><span class="back">Cancel</span><span class="title">Name Speaker 2</span><span style="width:46px"></span></div>
+        <div class="screen">
+          <div class="chips"><span class="chip tint">Dana</span><span class="chip">Sam</span><span class="chip">Someone new…</span></div>
+          <div class="section-h">Same voice in other recordings?</div>
+          <div class="list">
+            <div class="row"><span class="play"></span><div class="text"><span class="row-title" style="font-size:14px">Saturday, 7:40 AM</span><span class="foot">“…I’ll grab the bread”</span></div><span class="yesno"><span class="on">Yes</span><span>No</span></span></div>
+            <div class="row"><span class="play"></span><div class="text"><span class="row-title" style="font-size:14px">Thursday, 9:05 AM</span><span class="foot">“…the school message”</span></div><span class="yesno"><span class="on">Yes</span><span>No</span></span></div>
+            <div class="row"><span class="play"></span><div class="text"><span class="row-title" style="font-size:14px">Tuesday, 6:55 PM</span><span class="foot">“…we’re out of coffee”</span></div><span class="yesno"><span>Yes</span><span class="on">No</span></span></div>
+          </div>
+          <div class="foot" style="padding:0 4px">2 more clips not shown. A “No” keeps that recording unnamed.</div>
+          <div class="bar"><div class="btn">Name Dana in 3 recordings</div></div>
+        </div>
+        <div class="snack" hidden>Named Dana in 3 recordings</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="direction">
+    <div class="notes">
+      <span class="eyebrow">In every direction</span>
+      <h2>What an answer does</h2>
+      <ul>
+        <li>The voice’s clips are named, and the clearest ones teach the app, one per recording first.</li>
+        <li>“More than one person” and “Not now” stop the question; new clips of the voice may ask again later.</li>
+        <li>Names you set yourself are never overwritten.</li>
+        <li>Everything stays on this phone, and turning recognition off forgets the unnamed voices.</li>
+      </ul>
+    </div>
+    <div class="screens">
+      <div class="phone" aria-label="After naming: a confirmation">
+        <div class="status"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="navbar"><span class="back">‹ Settings</span><span class="title">People &amp; voices</span><span style="width:60px"></span></div>
+        <div class="screen">
+          <div class="section-h">Voices to name</div>
+          <div class="list">
+            <div class="row"><div class="avatar unknown">?</div><div class="text"><span class="row-title">Heard in 4 recordings</span><span class="foot">Evenings · last heard Saturday</span></div><span class="chev">›</span></div>
+          </div>
+          <div class="section-h">Remembered voices</div>
+          <div class="list">
+            <div class="row"><div class="avatar">D</div><div class="text"><span class="row-title">Dana</span><span class="foot" style="color:var(--good-text)">13 samples · just learned 5</span></div><span class="chev">›</span></div>
+          </div>
+        </div>
+        <div class="snack">Named Dana in 6 recordings</div>
+      </div>
+    </div>
+  </section>
+</div>
