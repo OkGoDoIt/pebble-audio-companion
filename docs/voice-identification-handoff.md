@@ -115,20 +115,23 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 
 ## In flight
 
-**Recognition has named nothing on G17 (found 18:15, waiting on Roger).** Backup DB 17:58: 1 person,
-5 examples, 4 manual corrections, **0 automatic attributions**, 0 unmatched crops. Six `recent` jobs
-since recognition was enabled at 15:31; four still pending, cursors 4–74 s into 85–658 s recordings,
-unmoved since 17:09. Cause: recognition is foreground-only by design (`processPending` and
-`foregroundPass` both `guard foreground`; plan line "small foreground passes … no new periodic
-background task"). The phone runs headless behind the lock screen most of the day. Also, the
-voice-profile key is `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so every background launch logs
-"voice profile access failed: deviceLocked" until an unlock happens while something reads the key.
-The audio and transcripts themselves sit under the default class (readable after first unlock).
-Proposed: run `processPending` from the existing pipeline pass in the background when
-`BackgroundWorkPolicy` allows heavy work (charging, thermal OK), move the key to
-`AfterFirstUnlockThisDeviceOnly` (`SecItemUpdate` while unlocked), and give People & voices an honest
-"Waiting for charging" state. Battery gate after deploy; watch the BLE link (charger CPU has dropped
-it before). Asked Roger whether to do this; do not build it without his yes.
+**Background recognition while charging — built, committed `c51ab541` on main, NOT yet on the phone.**
+Roger chose it 2026-10-26 18:20 after the finding below. G17 went off the Mac at 18:26; a waiter
+(`scratchpad/deploy-when-back.sh`) deploys with `--replace` when it reconnects. After the install:
+- run `./scripts/phone-cost-report.sh --minutes 11` and diff systemCrashLogs;
+- read the "voice recognition: 10 background slices, N windows, M ms busy" lines (slice cost; pace is
+  `max(30 s, 10 × busy)`);
+- count link drops ("rebuilding the link", "watchUnreachable", "link disconnected") against the
+  heartbeat's `cpu=+Ns`;
+- check that "voice profile access failed: deviceLocked" stops after the first unlock (key moved to
+  after-first-unlock);
+- pull the DB and see `voice_jobs` cursors move and `voice_auto_attributions` appear.
+If the pace costs too much or links drop, raise the gap (`VoiceBackgroundPace.gapPerBusyMs`).
+
+The finding (18:15): recognition had named nothing on G17. The backup DB at 17:58 had 0 automatic
+attributions, with 4 of 6 `recent` jobs stuck a few seconds in. Recognition was foreground-only
+(`guard foreground`), the phone runs headless behind the lock screen, and the voice key was
+`WhenUnlockedThisDeviceOnly`.
 
 Later from the plan: quality weighting of exemplars (needs labelled real watch audio to measure; the
 public corpus is read speech through Speex), propagation feedback ("Found Dana in N places"),
