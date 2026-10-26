@@ -156,4 +156,17 @@ struct SpeakerEditorModelTests {
         #expect(voice.learnedRechecks == ["dana"], "One recheck per save, not one per paragraph")
         #expect(editor.learnNotice == nil)
     }
+
+    @Test func allByThisSpeakerStaysInTheRecordingAndKeepsEarlierDecisions() {
+        func turn(_ id: String, _ segment: String, _ label: String, person: String? = nil) -> TranscriptItem {
+            .turn(TranscriptTurn(id: id, speakerLabel: label, name: "Speaker", role: .unresolved, text: id,
+                                 segmentId: segment, personId: person, sourceStartMs: 0, sourceEndMs: 3_000))
+        }
+        let transcript = [turn("a", "s1", "2"), turn("b", "s1", "1"), turn("c", "s1", "2"),
+                          turn("d", "s1", "2", person: "sam"), turn("e", "s2", "2"), turn("f", "s1", "2")]
+        guard case .turn(let picked) = transcript[0] else { return }
+        let whole = ConversationScreen.wholeSpeaker(of: [picked], in: transcript)
+        #expect(whole.map(\.id) == ["a", "c", "f"],
+                "Same label in the same recording only; d was already named Sam, e is another recording's 2")
+    }
 }

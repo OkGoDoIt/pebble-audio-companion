@@ -791,6 +791,13 @@ struct ConversationScreen: View {
                     ActionPill(title: "Clear name") { clearNames(turns) }
                         .disabled(clearingNames)
                 }
+                let whole = wholeSpeaker(of: turns)
+                if whole.count > turns.count {
+                    ActionPill(title: "All by this speaker (\(whole.count))") {
+                        Haptics.checkedOff()
+                        self.picked = Set(whole.map(\.id))
+                    }.disabled(clearingNames)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -842,6 +849,24 @@ struct ConversationScreen: View {
         return transcript.compactMap { item in
             if case .turn(let turn) = item, picked.contains(turn.id) { return turn }
             return nil
+        }
+    }
+
+    /// Every paragraph the transcription service gave the same speaker as the picked ones, in
+    /// the same recording (its numbering restarts with each recording), that still has the same
+    /// name: a paragraph already named differently is a decision this must not overwrite.
+    private func wholeSpeaker(of turns: [TranscriptTurn]) -> [TranscriptTurn] {
+        Self.wholeSpeaker(of: turns, in: model.display?.transcript ?? [])
+    }
+
+    static func wholeSpeaker(of turns: [TranscriptTurn], in transcript: [TranscriptItem]) -> [TranscriptTurn] {
+        guard let first = turns.first, !first.speakerLabel.isEmpty,
+              turns.allSatisfy({ $0.segmentId == first.segmentId && $0.speakerLabel == first.speakerLabel
+                  && $0.personId == first.personId }) else { return [] }
+        return transcript.compactMap { item in
+            guard case .turn(let turn) = item, turn.canIdentifyPassage, turn.segmentId == first.segmentId,
+                  turn.speakerLabel == first.speakerLabel, turn.personId == first.personId else { return nil }
+            return turn
         }
     }
 
