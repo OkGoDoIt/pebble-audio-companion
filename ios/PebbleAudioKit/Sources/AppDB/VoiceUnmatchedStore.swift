@@ -47,6 +47,19 @@ public struct VoiceUnmatchedStore: Sendable {
         }
     }
 
+    /// Changes whenever `recent` could: crops added or removed, or names set or recognized
+    /// (the identity revision). One small read, so screens that reload often can ask it first.
+    public func fingerprint() async throws -> String {
+        try await db.reader.read { d in
+            let row = try Row.fetchOne(d, sql: """
+                SELECT (SELECT COUNT(*) FROM voice_unmatched_crops) AS crops,
+                       (SELECT COALESCE(MAX(createdAtMs), 0) FROM voice_unmatched_crops) AS newest,
+                       (SELECT COALESCE(MAX(revision), 0) FROM speaker_identity_state) AS identity
+                """)
+            return "\(row?["crops"] as Int64? ?? 0):\(row?["newest"] as Int64? ?? 0):\(row?["identity"] as Int64? ?? 0)"
+        }
+    }
+
     public func remove(ids: [String]) async throws {
         guard !ids.isEmpty else { return }
         try await db.writer.write { d in

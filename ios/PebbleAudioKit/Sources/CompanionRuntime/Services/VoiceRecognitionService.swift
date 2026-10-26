@@ -709,9 +709,10 @@ public actor VoiceRecognitionService {
     /// Recurring unnamed voices, largest first. Reads at most the 400 most recent unnamed crops;
     /// grouping runs again only when those change, so screens can ask freely.
     public func unknownVoiceGroups(limit: Int = 6) async throws -> [UnknownVoiceGroup] {
-        let crops = try await VoiceUnmatchedStore(db: store.db).recent(limit: 400).filter { $0.recipeID == recipeID }
-        let key = crops.map(\.id).joined(separator: ",")
+        let unmatched = VoiceUnmatchedStore(db: store.db)
+        let key = try await unmatched.fingerprint()
         if let groupCache, groupCache.key == key { return Array(groupCache.groups.prefix(limit)) }
+        let crops = try await unmatched.recent(limit: 400).filter { $0.recipeID == recipeID }
         let groups = try await groupUnknown(crops)
         groupCache = (key, groups)
         return Array(groups.prefix(limit))

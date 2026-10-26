@@ -45,3 +45,17 @@ import Testing
         #expect(try await unmatched.recent(limit: 10).isEmpty)
     }
 }
+
+extension VoiceUnmatchedStoreTests {
+    @Test func theFingerprintMovesWhenTheUnnamedSetCouldChange() async throws {
+        let (db, _, unmatched) = try await ready()
+        let first = try await unmatched.fingerprint()
+        #expect(try await unmatched.fingerprint() == first, "Nothing changed")
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
+        try await SpeakerCorrectionStore(db: db).set(segmentId: "s", startMediaMs: 3_000, endMediaMs: 5_000, personId: person.id)
+        let named = try await unmatched.fingerprint()
+        #expect(named != first, "A name set over a crop changes what is unnamed")
+        try await unmatched.remove(ids: [try #require(try await unmatched.recent(limit: 1).first).id])
+        #expect(try await unmatched.fingerprint() != named)
+    }
+}
