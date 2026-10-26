@@ -120,7 +120,8 @@ struct HistoryMomentScrubberTests {
     static let t0: Int64 = 1_727_690_400_000
 
     /// `wallMs` of wall time at 16 kHz / 20 ms frames starting at `startMs`, holding `storedMs`
-    /// of audio. Received as it ended, so `startWallMs` is the sample-derived start.
+    /// of audio. Received as it ended, newest sample on time, so `startWallMs` is the
+    /// sample-derived start.
     static func meta(
         _ id: String, startMs: Int64, wallMs: Int64 = 60_000, storedMs: Int64? = nil,
         gaps: [GapMeta] = [], extents: Bool = true
@@ -132,6 +133,7 @@ struct HistoryMomentScrubberTests {
             receivedAtMs: startMs + wallMs,
             firstSampleIndex: extents ? 0 : nil,
             lastSampleIndexExclusive: extents ? UInt64(wallMs) * 16 : nil,
+            headReceivedAtMs: startMs + wallMs,
             frameCount: (storedMs ?? wallMs) / 20,
             gaps: gaps)
     }

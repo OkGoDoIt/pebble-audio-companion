@@ -29,6 +29,7 @@ struct AudioContentClassifierTests {
             receivedAtMs: 1_700_000_000_000 + wallMs,
             firstSampleIndex: 0,
             lastSampleIndexExclusive: UInt64(wallMs) * 16,
+            headReceivedAtMs: 1_700_000_000_000 + wallMs,
             frameCount: (wallMs - withheld) / 20,
             gaps: gaps.map { gap in
                 GapMeta(

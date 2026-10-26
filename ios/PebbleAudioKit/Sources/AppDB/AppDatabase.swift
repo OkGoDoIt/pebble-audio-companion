@@ -903,6 +903,15 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-unmatched-crops-v1") { db in
             try VoiceUnmatchedStore.installSchema(db)
         }
+        // Marks placed on G17's paused sample clock, 15 minutes before what they marked
+        // (`SegmentMeta.sampleClockAnchorMs`, 2026-10-26).
+        migrator.registerMigration("moments-paused-clock-v1") { db in
+            try MomentStore.repairPausedClockMarks(db)
+        }
+        // Follow-up wall times stored from that placement, re-placed once by the startup fill.
+        migrator.registerMigration("follow-ups-wall-replace-v1") { db in
+            try FollowUpWallTimeFill.listForReplacement(db)
+        }
         try migrator.migrate(writer)
     }
 }

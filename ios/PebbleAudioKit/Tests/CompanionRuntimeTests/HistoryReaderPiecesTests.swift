@@ -31,6 +31,7 @@ private func meta(_ id: String, index: Int) -> SegmentMeta {
         startTimeMs: UInt64(t0), startMonotonicMs: 0,
         receivedAtMs: t0 + Int64(index + 1) * 30 * minute,
         firstSampleIndex: first, lastSampleIndexExclusive: first + UInt64(30 * minute) * 16,
+        headReceivedAtMs: t0 + Int64(index + 1) * 30 * minute,
         frameCount: 30 * minute / 20, gaps: [], closeReason: .rotated,
         transcriptionState: .complete)
 }

@@ -23,6 +23,11 @@ import SegmentStore
 ///
 /// A row whose segment is gone is left as it is (placement then falls back to the day in the
 /// segment id — see `FollowUpPlacement`) and is counted in `Outcome.segmentGone`.
+///
+/// It also re-places, once, the rows listed in `follow_up_wall_replace`: every wall time stored
+/// before recordings were placed by their arrival (`SegmentMeta.sampleClockAnchorMs`), which
+/// could be 15 minutes early. Each is recomputed from its segment's clock and taken off the
+/// list; one whose segment is gone keeps the time it has.
 public struct FollowUpWallTimeFill: Sendable {
     public struct Outcome: Equatable, Sendable {
         public var followUps: Int
@@ -57,6 +62,8 @@ public struct FollowUpWallTimeFill: Sendable {
         let segmentId: String
         let startMs: Int64
         let endMs: Int64?
+        /// On the `follow_up_wall_replace` list: it has a wall time, from the old placement.
+        var replacing = false
     }
 
     public let db: AppDatabase
@@ -67,13 +74,14 @@ public struct FollowUpWallTimeFill: Sendable {
     @discardableResult
     public func run(metaOf: (String) async -> SegmentMeta?) async throws -> Outcome {
         let pending = try await db.reader.read { db in
-            try Self.followUpsNeedingIt(db) + Self.candidatesNeedingIt(db)
+            try Self.followUpsNeedingIt(db) + Self.candidatesNeedingIt(db) + Self.replacing(db)
         }
         guard !pending.isEmpty else { return Outcome() }
 
         var clocks: [String: SegmentMediaClock] = [:]
         var gone = Set<String>()
         var updates: [(Pending, SegmentWallRange)] = []
+        var replaceDone: [Pending] = []
         var outcome = Outcome()
         for row in pending {
             if clocks[row.segmentId] == nil, !gone.contains(row.segmentId) {
@@ -84,31 +92,56 @@ public struct FollowUpWallTimeFill: Sendable {
                 }
             }
             guard let clock = clocks[row.segmentId] else {
-                outcome.segmentGone += 1
+                if row.replacing {
+                    replaceDone.append(row)
+                } else {
+                    outcome.segmentGone += 1
+                }
                 continue
             }
             let wall = clock.wallRange(ofMediaStartMs: row.startMs, endMs: row.endMs ?? row.startMs)
             updates.append((row, wall))
         }
-        guard !updates.isEmpty else { return outcome }
+        guard !updates.isEmpty || !replaceDone.isEmpty else { return outcome }
 
         let computed = updates
+        let unplaced = replaceDone
         let written = try await db.writer.write { db in
             var followUps = 0
             var candidates = 0
+            for row in unplaced {
+                try Self.takeOffReplaceList(row, db)
+            }
+            if !unplaced.isEmpty || computed.contains(where: \.0.replacing) {
+                // Listed rows that are gone or lost their quote have nothing to re-place.
+                try db.execute(
+                    sql: """
+                        DELETE FROM follow_up_wall_replace WHERE
+                            (tableName = 'follow_ups' AND id NOT IN (SELECT id FROM follow_ups
+                                WHERE sourceStartMs IS NOT NULL AND sourceSegmentId IS NOT NULL))
+                            OR (tableName = 'follow_up_candidates' AND id NOT IN (
+                                SELECT id FROM follow_up_candidates
+                                WHERE startMs IS NOT NULL AND segmentId IS NOT NULL))
+                        """)
+            }
             for (row, wall) in computed {
                 let table = row.table
                 try db.execute(
                     sql: """
                         UPDATE \(table.name)
                         SET sourceWallStartMs = ?, sourceWallEndMs = ?, sourceWallApproximate = ?
-                        WHERE id = ? AND sourceWallStartMs IS NULL AND \(table.segmentColumn) = ?
+                        WHERE id = ? \(row.replacing ? "" : "AND sourceWallStartMs IS NULL")
+                            AND \(table.segmentColumn) = ?
                             AND \(table.startColumn) = ? AND \(table.endColumn) IS ?
                         """,
                     arguments: [
                         wall.startMs, wall.endMs, wall.isApproximate,
                         row.id, row.segmentId, row.startMs, row.endMs,
                     ])
+                if row.replacing {
+                    try Self.takeOffReplaceList(row, db)
+                    continue
+                }
                 if table == .followUps {
                     followUps += db.changesCount
                 } else {
@@ -135,6 +168,72 @@ public struct FollowUpWallTimeFill: Sendable {
             Pending(
                 table: .followUps, id: $0["id"], segmentId: $0["sourceSegmentId"],
                 startMs: $0["sourceStartMs"], endMs: $0["sourceEndMs"])
+        }
+    }
+
+    /// The rows `follow-ups-wall-replace-v1` listed, where their quotes are now. One deleted or
+    /// unlocated since is taken off the list by the write that re-places the others.
+    private static func replacing(_ db: Database) throws -> [Pending] {
+        guard try db.tableExists("follow_up_wall_replace") else { return [] }
+        let followUps = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT f.id, f.sourceSegmentId, f.sourceStartMs, f.sourceEndMs
+                FROM follow_up_wall_replace r JOIN follow_ups f ON f.id = r.id
+                WHERE r.tableName = 'follow_ups'
+                    AND f.sourceStartMs IS NOT NULL AND f.sourceSegmentId IS NOT NULL
+                """
+        ).map {
+            Pending(
+                table: .followUps, id: $0["id"], segmentId: $0["sourceSegmentId"],
+                startMs: $0["sourceStartMs"], endMs: $0["sourceEndMs"], replacing: true)
+        }
+        let candidates = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT c.id, c.segmentId, c.startMs, c.endMs
+                FROM follow_up_wall_replace r JOIN follow_up_candidates c ON c.id = r.id
+                WHERE r.tableName = 'follow_up_candidates'
+                    AND c.startMs IS NOT NULL AND c.segmentId IS NOT NULL
+                """
+        ).map {
+            Pending(
+                table: .candidates, id: $0["id"], segmentId: $0["segmentId"],
+                startMs: $0["startMs"], endMs: $0["endMs"], replacing: true)
+        }
+        return followUps + candidates
+    }
+
+    private static func takeOffReplaceList(_ row: Pending, _ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM follow_up_wall_replace WHERE tableName = ? AND id = ?",
+            arguments: [row.table.name, row.id])
+    }
+
+    /// Lists every follow-up and pending candidate that already has a wall time for one
+    /// re-placement (`follow-ups-wall-replace-v1`).
+    static func listForReplacement(_ db: Database) throws {
+        try db.execute(
+            sql: """
+                CREATE TABLE IF NOT EXISTS follow_up_wall_replace (
+                    tableName TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (tableName, id))
+                """)
+        if try db.tableExists("follow_ups") {
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO follow_up_wall_replace SELECT 'follow_ups', id FROM follow_ups
+                    WHERE sourceWallStartMs IS NOT NULL AND sourceStartMs IS NOT NULL
+                        AND sourceSegmentId IS NOT NULL
+                    """)
+        }
+        if try db.tableExists("follow_up_candidates") {
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO follow_up_wall_replace
+                    SELECT 'follow_up_candidates', id FROM follow_up_candidates
+                    WHERE state = 'pending' AND sourceWallStartMs IS NOT NULL
+                        AND startMs IS NOT NULL AND segmentId IS NOT NULL
+                    """)
         }
     }
 

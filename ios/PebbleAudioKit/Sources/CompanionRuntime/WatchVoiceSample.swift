@@ -90,17 +90,18 @@ public struct WatchVoiceSampleReader: Sendable {
         return WatchVoiceSampleAudio(pcm16LE: pcm, receivedThroughWallMs: received, watchFromMs: start, watchToMs: end)
     }
 
-    /// How far the watch's sample clock trails this phone, read from the newest recording's
-    /// last sidecar write: the phone's time of that write minus the watch-clock time of the
-    /// newest sample it records. The watch's clock is not wall time: it stops while the
-    /// microphone is off without the stream restarting (2026-10-26: 27 s behind one day, 15 min
-    /// the next), and this also absorbs the Bluetooth delivery delay. Nil with no recent audio.
+    /// How far the recordings' clock trails this phone, read from the newest recording: the
+    /// phone's time its newest sample arrived (`headReceivedAtMs`, else the sidecar's last write)
+    /// minus where that sample sits on the recording's clock. That clock already places the
+    /// recording by its arrival (`SegmentMeta.sampleClockAnchorMs`), so what is left is about
+    /// the delivery time, plus whatever the watch's clock has lost since the recording's least
+    /// lag was seen. Nil with no recent audio.
     public func clockLagMs(now: Int64) -> Int64? {
         let newest = recentMetaURLs(since: now - 15 * 60_000).max { $0.1 < $1.1 }
         guard let (url, modified) = newest,
               let meta = files.readMeta(String(url.lastPathComponent.dropLast(SegmentStore.metaSuffix.count))),
               let head = Self.endWallMs(meta) else { return nil }
-        return Int64(modified.timeIntervalSince1970 * 1_000) - head
+        return (meta.headReceivedAtMs ?? Int64(modified.timeIntervalSince1970 * 1_000)) - head
     }
 
     static func wallMs(ofSample index: UInt64, in meta: SegmentMeta) -> Int64 {

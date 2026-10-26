@@ -45,6 +45,8 @@ enum PieceLibrary {
             receivedAtMs: Int64(t0) + Int64(index + 1) * segmentMs,
             firstSampleIndex: first,
             lastSampleIndexExclusive: first + UInt64(wallMs) * 16,
+            // Its newest sample arrived on time, so the late `receivedAtMs` is not a lagging clock.
+            headReceivedAtMs: Int64(t0) + Int64(index) * segmentMs + wallMs,
             frameCount: storedMs / 20,
             gaps: gaps,
             closeReason: .rotated,

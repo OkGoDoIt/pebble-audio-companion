@@ -44,6 +44,7 @@ struct GPSegmentMediaClockTests {
             receivedAtMs: 1_700_000_000_000 + wallMs,
             firstSampleIndex: 0,
             lastSampleIndexExclusive: UInt64(wallMs) * 16,
+            headReceivedAtMs: 1_700_000_000_000 + wallMs,
             frameCount: (wallMs - withheld) / 20,
             gaps: runs.map { run in
                 GapMeta(
@@ -219,6 +220,7 @@ struct SegmentWallRangeTests {
             frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 9_800, frameDurationMs: 20,
             startTimeMs: UInt64(startMs), startMonotonicMs: 0, receivedAtMs: startMs + wallMs,
             firstSampleIndex: 0, lastSampleIndexExclusive: UInt64(wallMs) * 16,
+            headReceivedAtMs: startMs + wallMs,
             frameCount: (storedMs ?? (wallMs - withheld)) / 20,
             gaps: runs.map {
                 GapMeta(

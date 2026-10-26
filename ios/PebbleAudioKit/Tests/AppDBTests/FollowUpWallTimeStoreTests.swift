@@ -132,7 +132,8 @@ import Testing
             frameSamples: 320, sampleRateHz: UInt32(rate), bitRateBps: 9_800,
             frameDurationMs: 20, startTimeMs: UInt64(startWallMs), startMonotonicMs: 1,
             receivedAtMs: startWallMs + 600_000,
-            firstSampleIndex: 0, lastSampleIndexExclusive: 600 * rate, frameCount: 15_000,
+            firstSampleIndex: 0, lastSampleIndexExclusive: 600 * rate,
+            headReceivedAtMs: startWallMs + 600_000, frameCount: 15_000,
             gaps: recordsTheGap
                 ? [
                     GapMeta(
@@ -202,6 +203,38 @@ import Testing
         #expect(try await wall("filed") != nil)
         #expect(try await candidateWall("pending") == exact)
         #expect(try await candidateWall("kept") == nil, "a decided candidate is never read again")
+    }
+
+    /// Wall times stored before recordings were placed by their arrival are re-placed once
+    /// (`follow-ups-wall-replace-v1`): this recording arrived 15 minutes after its sample clock
+    /// said, so its follow-up moves 15 minutes (less the delivery time) later. One whose
+    /// recording is gone keeps its time; neither is looked at again.
+    @Test func storedWallTimesAreRePlacedOnceByTheArrivalClock() async throws {
+        let lag: Int64 = 900_000
+        var lagging = Self.meta("seg-a")
+        lagging.receivedAtMs = Self.startWallMs + lag
+        lagging.headReceivedAtMs = Self.startWallMs + 600_000 + lag
+        let old = SegmentWallRange(startMs: Self.startWallMs + 30_000, endMs: Self.startWallMs + 30_000, isApproximate: false)
+        for (id, segment) in [("moved", "seg-a"), ("orphan", "seg-gone")] {
+            try await followUps.upsertExtracted(
+                FollowUp(
+                    id: id, text: id, done: false, sourceConversationId: "conv",
+                    sourceSegmentId: segment, createdAtMs: 1, sourceStartMs: 30_000,
+                    sourceEndMs: nil, sourceWall: old))
+        }
+        try await db.writer.write { try FollowUpWallTimeFill.listForReplacement($0) }
+
+        let fill = FollowUpWallTimeFill(db: db)
+        let metas = ["seg-a": lagging]
+        _ = try await fill.run(metaOf: { metas[$0] })
+        let shift = lag - SegmentMeta.deliveryMs
+        #expect(try await wall("moved")?.startMs == old.startMs + shift)
+        #expect(try await wall("orphan") == old)
+        let listed = try await db.reader.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM follow_up_wall_replace") ?? -1
+        }
+        #expect(listed == 0)
+        #expect(try await fill.run(metaOf: { metas[$0] }) == FollowUpWallTimeFill.Outcome())
     }
 
     @Test func leavesRowsWithNothingToComputeFromAlone() async throws {

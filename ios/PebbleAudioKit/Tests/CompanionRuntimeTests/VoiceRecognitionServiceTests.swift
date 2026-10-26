@@ -291,10 +291,11 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
 
     /// Runs on the watch's sample clock: 0–6 s, then 8–14 s after a skipped quiet stretch, then
     /// a 0.2 s fragment at 15 s. The recording is left open, as during a live sample.
-    static func openRecording(_ root: URL) async throws -> (SegmentStore, String) {
-        let store = SegmentStore(root: root, nowMs: { t0 + 20_000 })
+    /// `arrivalLagMs` is how far behind the phone the watch's sample clock ran as this arrived.
+    static func openRecording(_ root: URL, arrivalLagMs: Int64 = 0) async throws -> (SegmentStore, String) {
+        let store = SegmentStore(root: root, nowMs: { t0 + (arrivalLagMs == 0 ? 20_000 : 15_200 + arrivalLagMs) })
         _ = try await store.openSegment(start: Fixture.streamStart(startTimeMs: UInt64(t0)),
-                                        receivedAtMs: t0, provenance: nil)
+                                        receivedAtMs: t0 + arrivalLagMs, provenance: nil)
         // Real encoded tone, not the codec's silence packet: that packet marks deleted audio.
         let encoder = try SpeexFrameEncoder()
         let speech = [UInt8](try encoder.encodeFrame((0..<320).map { i -> Int16 in
@@ -342,8 +343,8 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
     @Test func aPhoneClockWindowFindsTheAudioWhenTheWatchClockIsFifteenMinutesBehind() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let (_, segmentId) = try await Self.openRecording(root)
         let lag: Int64 = 900_000
+        let (_, segmentId) = try await Self.openRecording(root, arrivalLagMs: lag)
         let head = Self.t0 + 15_200
         let sidecar = root.appendingPathComponent("segments/\(segmentId)\(SegmentStore.metaSuffix)").path
         try FileManager.default.setAttributes(
@@ -357,7 +358,8 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(audio.pcm16LE.count == expectedBytes, "1–14 s plus the delivery pad, on the watch's clock")
         let received: Int64 = head + lag
         #expect(audio.receivedThroughWallMs == received)
-        let watchFrom: Int64 = Self.t0 + 1_000
+        // On the recording's clock, which its arrival already put within delivery of this one.
+        let watchFrom: Int64 = phoneStart - SegmentMeta.deliveryMs
         #expect(audio.watchFromMs == watchFrom)
         #expect(await service.watchSampleAudio(phoneStartMs: phoneStart, phoneEndMs: phoneEnd,
                                                now: head + lag + 3_600_000) == nil, "No recent watch audio")

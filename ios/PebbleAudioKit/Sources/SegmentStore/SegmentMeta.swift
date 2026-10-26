@@ -33,6 +33,10 @@ public struct SegmentMeta: Equatable, Sendable {
     public var lastSequence: UInt32?
     public var firstSampleIndex: UInt64?
     public var lastSampleIndexExclusive: UInt64?
+    /// Phone wall clock when the frame ending at `lastSampleIndexExclusive` was stored: with
+    /// `receivedAtMs`, the arrival evidence that places a paused sample clock
+    /// (`sampleClockAnchorMs`). NEW 2026-10-26; nil in older sidecars, and omitted when nil.
+    public var headReceivedAtMs: Int64?
     public var frameCount: Int64
     /// Bytes of the segment's frame log on disk (as of the last meta flush).
     public var logBytes: Int64
@@ -87,6 +91,7 @@ public struct SegmentMeta: Equatable, Sendable {
         lastSequence: UInt32? = nil,
         firstSampleIndex: UInt64? = nil,
         lastSampleIndexExclusive: UInt64? = nil,
+        headReceivedAtMs: Int64? = nil,
         frameCount: Int64 = 0,
         logBytes: Int64 = 0,
         gaps: [GapMeta] = [],
@@ -115,6 +120,7 @@ public struct SegmentMeta: Equatable, Sendable {
         self.lastSequence = lastSequence
         self.firstSampleIndex = firstSampleIndex
         self.lastSampleIndexExclusive = lastSampleIndexExclusive
+        self.headReceivedAtMs = headReceivedAtMs
         self.frameCount = frameCount
         self.logBytes = logBytes
         self.gaps = gaps
@@ -153,9 +159,15 @@ public struct SegmentMeta: Equatable, Sendable {
     /// Earlier than anything this app could have recorded (2020-01-01 UTC).
     public static let earliestPlausibleWallMs: Int64 = 1_577_836_800_000
 
+    /// How long a frame takes to reach the phone when nothing holds it up: the 5th percentile of
+    /// the arrival lag (`sampleClockLagMs`) across the 2,954 recordings of the 2026-10-26
+    /// backup was 2.4 s, the 1st 1.4 s. A recording is placed this long before its arrival
+    /// evidence (`sampleClockAnchorMs`).
+    public static let deliveryMs: Int64 = 2_000
+
     /// The wall clock of sample index 0, as every sample → wall mapping must read it
     /// (`startWallMs`, `ConversationGrouper.wallMs(ofSample:in:)`): `startTimeMs`, unless the
-    /// watch's clock was not set when the stream began.
+    /// watch's clock was not set when the stream began, or its sample clock has fallen behind.
     ///
     /// A watch that has just been reset counts from its own epoch, 2010-01-01, until a phone
     /// sets its time, and the stream's birth clock is captured once and resent verbatim on every
@@ -165,13 +177,84 @@ public struct SegmentMeta: Equatable, Sendable {
     /// arrival (the watch's spool holds about a minute), so such a recording is placed at its
     /// arrival instead: its first sample at `receivedAtMs`, everything after it by the sample
     /// count, as the migration importer re-anchors (`LegacyImporter.clampedStartTimeMs`).
-    /// Repaired on read, like `repairedStartTimeMs`: the sidecar keeps what the watch sent.
+    ///
+    /// The sample count is not a wall clock either. The watch is meant to advance it through
+    /// every pause, but it falls behind while the microphone cycles through stationary listen
+    /// windows, and never catches up within the stream. On G17 (stream 3254668809) recordings
+    /// arrived 27–30 s after their sample-clock time for days, then fell back about a minute an
+    /// hour overnight to 910 s by 2026-10-26 05:26Z, filing everything after that 15 minutes
+    /// early with its transcript, its day and its marked moments. It is not one stream: in the
+    /// 2026-10-26 backup the median recording trailed its arrival by 37 s, a quarter by more than
+    /// 89 s, and every multi-day stream since September reached minutes. So every recording is
+    /// placed by its own arrival evidence (`sampleClockLagMs`): `deliveryMs` before it.
+    ///
+    /// Continuous, not past a threshold: a 60 s cut-off was tried against that backup, and
+    /// recordings whose lag wandered across it jumped a minute against their neighbours (103
+    /// overlaps between consecutive recordings of a stream, up to 65 s). Placed continuously,
+    /// consecutive recordings still meet: overlaps p90 0.2 s, at most 5 s; the stretches between
+    /// them are the time the clock lost inside the earlier one, one of them an hour.
+    ///
+    /// Spooled backfill legitimately arrives late, and with quiet skipped the watch's 98 s of
+    /// spool can span several minutes. It is not shifted because the lag is the LEAST the
+    /// recording shows: the spool drains in under half a minute, after which the newest frame
+    /// (`headReceivedAtMs`, or `closedAtMs` in older sidecars) arrives on time, while a clock
+    /// that fell behind never catches up. Only an open recording still draining its backlog can
+    /// be placed late, until its next sidecar flush shows the catch-up.
+    ///
+    /// Per recording, from its own sidecar, so every reader agrees without seeing the rest of
+    /// the stream. Repaired on read, like `repairedStartTimeMs`: the sidecar keeps what the
+    /// watch sent.
     public var sampleClockAnchorMs: Int64 {
         let stored = Int64(bitPattern: startTimeMs)
-        guard stored < Self.earliestPlausibleWallMs, receivedAtMs >= Self.earliestPlausibleWallMs,
-            let first = firstSampleIndex, sampleRateHz > 0
+        guard receivedAtMs >= Self.earliestPlausibleWallMs, let first = firstSampleIndex,
+            let firstMs = Self.sampleOffsetMs(first, rateHz: sampleRateHz)
         else { return stored }
-        return receivedAtMs - Int64(first * 1000 / UInt64(sampleRateHz))
+        if stored < Self.earliestPlausibleWallMs { return receivedAtMs - firstMs }
+        guard let lag = sampleClockLagMs, lag > Self.deliveryMs else { return stored }
+        return stored + (lag - Self.deliveryMs)
+    }
+
+    /// A mark's time on the clock its recording is placed on, from the two the watch gives it:
+    /// the stream's sample clock at the mark, and the watch's own clock. A recording sits where
+    /// its arrival puts it (`sampleClockAnchorMs`), which is the watch's clock give or take the
+    /// delivery time, so a mark goes there too — unless the sample clock is the later of the
+    /// two, as it is in a healthy stream. Applied as marks arrive and, once, to those already
+    /// stored (`MomentStore.repairPausedClockMarks`).
+    public static func markWallMs(sampleClockMs: Int64, watchClockMs: Int64) -> Int64 {
+        guard watchClockMs >= earliestPlausibleWallMs, sampleClockMs >= earliestPlausibleWallMs,
+            watchClockMs - sampleClockMs > deliveryMs
+        else { return sampleClockMs }
+        return watchClockMs
+    }
+
+    /// How far this recording's sample clock trails its arrival on the phone: the least of what
+    /// its first frame and its newest frame show (`sampleClockAnchorMs`). Delivery time is in
+    /// it too, normally a few seconds. Nil without frames or a usable watch clock.
+    public var sampleClockLagMs: Int64? {
+        let stored = Int64(bitPattern: startTimeMs)
+        guard stored >= Self.earliestPlausibleWallMs, let first = firstSampleIndex,
+            let firstMs = Self.sampleOffsetMs(first, rateHz: sampleRateHz)
+        else { return nil }
+        func lag(arrivedAtMs: Int64, sampleMs: Int64) -> Int64? {
+            let (wall, overflow) = stored.addingReportingOverflow(sampleMs)
+            let (lag, underflow) = arrivedAtMs.subtractingReportingOverflow(wall)
+            return overflow || underflow ? nil : lag
+        }
+        let atOpen = lag(arrivedAtMs: receivedAtMs, sampleMs: firstMs)
+        let atHead = (headReceivedAtMs ?? closedAtMs).flatMap { arrived in
+            lastSampleIndexExclusive.flatMap { Self.sampleOffsetMs($0, rateHz: sampleRateHz) }
+                .flatMap { lag(arrivedAtMs: arrived, sampleMs: $0) }
+        }
+        return [atOpen, atHead].compactMap { $0 }.min()
+    }
+
+    /// `index` samples in ms, or nil when that cannot be represented.
+    private static func sampleOffsetMs(_ index: UInt64, rateHz: UInt32) -> Int64? {
+        guard rateHz > 0 else { return nil }
+        let (scaled, overflow) = index.multipliedReportingOverflow(by: 1000)
+        guard !overflow else { return nil }
+        let ms = scaled / UInt64(rateHz)
+        return ms <= UInt64(Int64.max) ? Int64(ms) : nil
     }
 
     /// True for audio restored from `quarantine/` by the migration importer.
@@ -190,7 +273,7 @@ extension SegmentMeta: Codable {
         case segmentId, streamId, protocolVersion, codecIdRaw, channels, frameSamples
         case sampleRateHz, bitRateBps, frameDurationMs, startTimeMs, startMonotonicMs
         case receivedAtMs, firstSequence, lastSequence, firstSampleIndex
-        case lastSampleIndexExclusive, frameCount, logBytes, gaps, closeReason, closedAtMs
+        case lastSampleIndexExclusive, headReceivedAtMs, frameCount, logBytes, gaps, closeReason, closedAtMs
         case transcriptionState, provenance, dedupeFloorSequence, recordedTimeZone
         case recoveredAtMs, coldStorage
     }
@@ -213,6 +296,7 @@ extension SegmentMeta: Codable {
         lastSequence = try c.decodeIfPresent(UInt32.self, forKey: .lastSequence)
         firstSampleIndex = try c.decodeIfPresent(UInt64.self, forKey: .firstSampleIndex)
         lastSampleIndexExclusive = try c.decodeIfPresent(UInt64.self, forKey: .lastSampleIndexExclusive)
+        headReceivedAtMs = try c.decodeIfPresent(Int64.self, forKey: .headReceivedAtMs)
         frameCount = try c.decodeIfPresent(Int64.self, forKey: .frameCount) ?? 0
         logBytes = try c.decodeIfPresent(Int64.self, forKey: .logBytes) ?? 0
         gaps = try c.decodeIfPresent([GapMeta].self, forKey: .gaps) ?? []
@@ -287,6 +371,7 @@ extension SegmentMeta: Codable {
         try c.encodeIfPresent(lastSequence, forKey: .lastSequence)
         try c.encodeIfPresent(firstSampleIndex, forKey: .firstSampleIndex)
         try c.encodeIfPresent(lastSampleIndexExclusive, forKey: .lastSampleIndexExclusive)
+        try c.encodeIfPresent(headReceivedAtMs, forKey: .headReceivedAtMs)
         if frameCount != 0 { try c.encode(frameCount, forKey: .frameCount) }
         if logBytes != 0 { try c.encode(logBytes, forKey: .logBytes) }
         if !gaps.isEmpty { try c.encode(gaps, forKey: .gaps) }

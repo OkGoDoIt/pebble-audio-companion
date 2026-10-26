@@ -407,7 +407,9 @@ public actor SegmentStore: SegmentSink {
         // birth clock once in `prv_begin_stream_locked()`, resends it verbatim on every RESUME
         // re-announcement, and advances the sample counter through pauses (`elapsed_ms / 20`) so
         // the counter stays a wall clock. Measured against Roger's 88-day export, the 598 segments
-        // that kept the firmware's value land within ±32 s of their own `receivedAtMs`.
+        // that kept the firmware's value land within ±32 s of their own `receivedAtMs`. (Since
+        // stationary listen windows, the counter falls behind by minutes in long streams — 15 on
+        // G17 on 2026-10-26 — so `SegmentMeta.sampleClockAnchorMs` places by arrival evidence.)
         //
         // This used to re-anchor mid-stream segments at receive time, reasoning that a birth clock
         // "15 minutes (rotation successor) to hours (RESUME) old" filed them under the wrong time.
@@ -570,8 +572,11 @@ public actor SegmentStore: SegmentSink {
         segment.meta.lastSequence = segment.meta.lastSequence.map { max($0, maxSequence) } ?? maxSequence
         segment.meta.firstSampleIndex =
             segment.meta.firstSampleIndex.map { min($0, minSampleIndex) } ?? minSampleIndex
-        segment.meta.lastSampleIndexExclusive = max(
-            segment.meta.lastSampleIndexExclusive ?? 0, maxSampleEndExclusive)
+        if maxSampleEndExclusive > segment.meta.lastSampleIndexExclusive ?? 0 {
+            segment.meta.lastSampleIndexExclusive = maxSampleEndExclusive
+            // Arrival evidence for the newest sample (`SegmentMeta.sampleClockAnchorMs`).
+            segment.meta.headReceivedAtMs = nowMs()
+        }
         segment.meta.frameCount += Int64(accepted.count)
         segment.meta.logBytes = segment.logBytes
         segment.meta.gaps = newGaps
@@ -1327,6 +1332,10 @@ public actor SegmentStore: SegmentSink {
         reconciled.firstSampleIndex = records.map(\.sampleIndex).min()
         reconciled.lastSampleIndexExclusive =
             records.map { $0.sampleIndex + UInt64(meta.frameSamples) }.max()
+        // Its arrival time was for the head the sidecar recorded, not one the log adds to it.
+        if reconciled.lastSampleIndexExclusive != meta.lastSampleIndexExclusive {
+            reconciled.headReceivedAtMs = nil
+        }
         reconciled.frameCount = Int64(records.count)
         reconciled.logBytes = logBytes
         // A meta still marked open means we died with the segment open: it was interrupted.

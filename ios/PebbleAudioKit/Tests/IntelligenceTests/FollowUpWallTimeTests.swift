@@ -54,6 +54,7 @@ private final class OneAnswerProvider: AiProvider, @unchecked Sendable {
             frameDurationMs: 20, startTimeMs: UInt64(Self.startWallMs), startMonotonicMs: 1,
             receivedAtMs: Self.startWallMs + 600_000,
             firstSampleIndex: 0, lastSampleIndexExclusive: 600 * Self.rate,
+            headReceivedAtMs: Self.startWallMs + 600_000,
             frameCount: 15_000,
             gaps: recordsTheGap
                 ? [

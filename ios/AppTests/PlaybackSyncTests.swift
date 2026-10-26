@@ -52,6 +52,8 @@ struct PlaybackSyncTests {
             receivedAtMs: Int64(startTimeMs) + wallMs,
             firstSampleIndex: 0,
             lastSampleIndexExclusive: UInt64(wallMs) * 16,
+            // Its newest sample arrived on time, so the late `receivedAtMs` is not a paused clock.
+            headReceivedAtMs: Int64(startTimeMs) + wallMs,
             frameCount: storedMs / 20,
             gaps: gaps
         )

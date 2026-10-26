@@ -43,12 +43,13 @@ struct UnsetWatchClockTests {
         #expect(meta.startTimeMs == UInt64(Self.unsetBirth))
     }
 
-    @Test("a set clock is left exactly as the watch reported it")
+    @Test("a set clock on time is left exactly as the watch reported it")
     func setClockUntouched() {
-        // A healthy stream: born 20 h before this recording, which arrived 3 s after it began.
-        let birth = Self.arrival - 20 * 3_600_000 - 3_000
+        // A healthy stream: born 20 h before this recording, which arrived 1.5 s after it began
+        // (inside `SegmentMeta.deliveryMs`; a later arrival is placed by `PausedSampleClockTests`).
+        let birth = Self.arrival - 20 * 3_600_000 - 1_500
         let meta = Self.recording(birth: birth)
         #expect(meta.sampleClockAnchorMs == birth)
-        #expect(meta.startWallMs == Self.arrival - 3_000)
+        #expect(meta.startWallMs == Self.arrival - 1_500)
     }
 }

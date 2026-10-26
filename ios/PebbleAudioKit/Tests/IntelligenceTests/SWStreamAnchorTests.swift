@@ -64,6 +64,8 @@ private func swSegment(
             + receiveDelayMs,
         firstSampleIndex: first,
         lastSampleIndexExclusive: last,
+        // The newest sample arrived on time: a late `receivedAtMs` here is not a lagging clock.
+        headReceivedAtMs: streamBirthMs + (startedSecondsIntoStream + heldSeconds) * 1_000,
         frameCount: frames,
         gaps: gaps,
         closeReason: .rotated,

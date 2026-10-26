@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SegmentStore
 
 // A moment the person marked as important, from the watch's Mark Moment action.
 //
@@ -153,6 +154,31 @@ public struct MomentStore: Sendable {
             // a retry is acknowledged without bringing the person's deleted mark back.
             try db.execute(sql: "INSERT OR IGNORE INTO moment_tombstones (id) VALUES (?)", arguments: [id])
             try db.execute(sql: "DELETE FROM moments WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Moves marks stored on a paused sample clock to where their recordings now sit
+    /// (`SegmentMeta.markWallMs`). Watch marks name themselves by the watch's clock at the mark
+    /// (`watch-<ms>-<counter>`), which is the evidence. A moved mark's review read the audio at
+    /// its old time, so it is read again. Idempotent: a moved mark agrees with its own clock.
+    static func repairPausedClockMarks(_ db: Database) throws {
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT id, wallMs, reviewState FROM moments WHERE onAudioClock AND id LIKE 'watch-%'")
+        for row in rows {
+            let id: String = row["id"]
+            let wallMs: Int64 = row["wallMs"]
+            guard let watchMs = id.dropFirst("watch-".count).split(separator: "-").first
+                .flatMap({ Int64($0) })
+            else { continue }
+            let moved = SegmentMeta.markWallMs(sampleClockMs: wallMs, watchClockMs: watchMs)
+            guard moved != wallMs else { continue }
+            let state: String = row["reviewState"] ?? "pending"
+            try db.execute(
+                sql: """
+                    UPDATE moments SET wallMs = ?, reviewJSON = CASE WHEN ? THEN reviewJSON END,
+                        reviewState = ?, nextReviewMs = 0 WHERE id = ?
+                    """,
+                arguments: [moved, state == "unavailable", state == "unavailable" ? state : "pending", id])
         }
     }
 

@@ -144,6 +144,33 @@ import WireProtocol
         assertNoTempFiles(root)
     }
 
+    /// The arrival of the newest sample is what tells a paused sample clock from spooled backfill
+    /// (`SegmentMeta.sampleClockAnchorMs`), so it is stamped when the head advances, not when a
+    /// refill lands below it, and it survives a relaunch.
+    @Test func newestSampleArrivalIsStampedWhenTheHeadAdvances() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        try await store.openSegment(start: streamStart(), receivedAtMs: clock.now, provenance: nil)
+        let segmentId = try #require(await store.openSegmentId)
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(0, 4))
+        try await store.recordGap(streamId: streamId, gap: gap(4, 2))
+        clock.now += 1_000
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(6, 4))
+        let headAt = clock.now
+        clock.now += 1_000
+        // The skipped frames arrive late, below the head.
+        _ = try await store.appendFrames(streamId: streamId, frames: frames(4, 2))
+        clock.now += 1_000
+        try await store.closeSegment(reason: .interrupted)
+
+        let reopened = makeStore(root)
+        try await reopened.recover()
+        let meta = try #require(await reopened.readMeta(segmentId))
+        #expect(meta.lastSampleIndexExclusive == 10 * 320)
+        #expect(meta.headReceivedAtMs == headAt)
+        #expect(meta.closedAtMs == headAt + 2_000)
+    }
+
     @Test func readsAreServedFromTheInMemoryIndexNotDiskEachCall() async throws {
         let root = try tempRoot()
         let store = makeStore(root)

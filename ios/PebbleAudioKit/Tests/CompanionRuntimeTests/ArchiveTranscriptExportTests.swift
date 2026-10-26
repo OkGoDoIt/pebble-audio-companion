@@ -35,7 +35,15 @@ struct ArchiveTranscriptExportTests {
 
     static func pieces(masked: [ArchiveExport.MaskedRange] = []) throws -> [ArchiveExport.Piece] {
         func meta(_ id: String) throws -> SegmentMeta {
-            try JSONDecoder().decode(SegmentMeta.self, from: fixture("\(id).meta.json"))
+            var meta = try JSONDecoder().decode(SegmentMeta.self, from: fixture("\(id).meta.json"))
+            // The times below are the export's arithmetic on the sample clock. These sidecars
+            // arrived 84–91 s behind it, which now places them by their arrival instead
+            // (`SegmentMeta.sampleClockAnchorMs`, pinned by `PausedSampleClockTests`); here they
+            // arrive on time, so that is not what this suite measures.
+            let anchor = Int64(meta.startTimeMs)
+            meta.receivedAtMs = anchor + Int64(try #require(meta.firstSampleIndex) / 16)
+            meta.headReceivedAtMs = anchor + Int64(try #require(meta.lastSampleIndexExclusive) / 16)
+            return meta
         }
         func transcript(_ id: String) throws -> SegmentTranscript {
             try JSONDecoder().decode(SegmentTranscript.self, from: fixture("\(id).transcript.json"))
@@ -123,7 +131,8 @@ struct ArchiveTranscriptExportTests {
             frameSamples: 320, sampleRateHz: 16_000, bitRateBps: 9_800, frameDurationMs: 20,
             startTimeMs: UInt64(start), startMonotonicMs: 0, receivedAtMs: start + 60_000,
             firstSequence: 0, lastSequence: 2_999, firstSampleIndex: 0,
-            lastSampleIndexExclusive: 60_000 * 16, frameCount: 1_450, gaps: gaps,
+            lastSampleIndexExclusive: 60_000 * 16, headReceivedAtMs: start + 60_000,
+            frameCount: 1_450, gaps: gaps,
             closeReason: .rotated, transcriptionState: .complete)
         let pieces = [ArchiveExport.Piece(member: ConversationMember(segmentId: "seg-holes"), meta: meta)]
         let holes = ArchiveExport.holes(pieces, window: start..<(start + 60_000))

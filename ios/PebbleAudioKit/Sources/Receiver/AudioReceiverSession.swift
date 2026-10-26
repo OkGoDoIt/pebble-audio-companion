@@ -1472,8 +1472,10 @@ public actor AudioReceiverSession {
         if mark.whileRecording, let stream, stream.streamId == mark.streamId,
             stream.sampleRateHz > 0
         {
-            wallMs = Int64(clamping: stream.start.startTimeMs)
-                + Int64(clamping: mark.sampleIndex * 1000 / stream.sampleRateHz)
+            wallMs = SegmentMeta.markWallMs(
+                sampleClockMs: Int64(clamping: stream.start.startTimeMs)
+                    + Int64(clamping: mark.sampleIndex * 1000 / stream.sampleRateHz),
+                watchClockMs: wallMs)
             onAudioClock = true
         }
         // A watch whose clock was never set counts from 2010 (`SegmentMeta.sampleClockAnchorMs`);

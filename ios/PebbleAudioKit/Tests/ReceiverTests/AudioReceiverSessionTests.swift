@@ -815,8 +815,10 @@ import WireProtocol
     }
 
     @Test func aMarkedMomentIsPlacedOnTheRecordingsOwnClock() async {
-        // The watch's clock drifts from its sample count over a long stream, and the transcript
-        // is on the sample count: a mark naming the open stream is placed by its samples.
+        // The transcript is on the recording's clock, which is its sample count placed by its
+        // arrival (`SegmentMeta.sampleClockAnchorMs`). A mark naming the open stream stays on the
+        // sample count while that is on time, and goes to the watch's clock once the sample
+        // count trails it, as the recording does (`SegmentMeta.markWallMs`).
         let fx = await startSession()
         await authorize(fx)
         fx.link.pushData(streamStart())
@@ -824,6 +826,10 @@ import WireProtocol
         let received = MomentBox()
         await fx.session.setMomentHandler { received.append($0); return true }
 
+        fx.link.pushControl(
+            MomentMark(
+                markId: 2, flags: MomentMark.flagRecording, streamId: streamId,
+                sampleIndex: 16_000 * 60, wallMs: 1_781_000_061_000))
         fx.link.pushControl(
             MomentMark(
                 markId: 3, flags: MomentMark.flagRecording, streamId: streamId,
@@ -837,12 +843,14 @@ import WireProtocol
         await fx.settle()
 
         let moments = received.values
-        #expect(moments.count == 3)
-        #expect(moments.first?.wallMs == 1_781_000_090_000)
+        #expect(moments.count == 4)
+        #expect(moments.first?.wallMs == 1_781_000_060_000)
         #expect(moments.first?.onAudioClock == true)
-        #expect(moments.first?.id == "watch-1781000095000-3")
-        #expect(moments.dropFirst().first?.wallMs == 1_781_000_200_000)
-        #expect(moments.dropFirst().first?.onAudioClock == false)
+        #expect(moments.dropFirst().first?.wallMs == 1_781_000_095_000)
+        #expect(moments.dropFirst().first?.onAudioClock == true)
+        #expect(moments.dropFirst().first?.id == "watch-1781000095000-3")
+        #expect(moments.dropFirst(2).first?.wallMs == 1_781_000_200_000)
+        #expect(moments.dropFirst(2).first?.onAudioClock == false)
         #expect(moments.last?.wallMs == moments.last?.receivedAtMs)
         #expect(fx.writes().compactMap { $0 as? MomentSaved }.isEmpty) // legacy watch
     }
