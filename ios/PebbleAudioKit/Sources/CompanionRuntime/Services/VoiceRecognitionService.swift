@@ -302,7 +302,8 @@ public actor VoiceRecognitionService {
         try checkEnrollment(generation)
         let analysis = try await analyzer.analyze(audio)
         try checkEnrollment(generation)
-        let clean = try Self.enrollmentTurns(analysis, audio: audio)
+        let clean = try Self.enrollmentTurns(analysis, audio: audio,
+                                             sameVoiceSimilarity: policy.minimumSimilarity)
         let prior = context.examples.filter { $0.personId == personId && $0.recipeID == analysis.recipeID }
         let fresh = clean.filter { turn in
             !prior.contains { ($0.segmentId == audio.sourceID || $0.sourceRevision == audio.sourceRevision)
@@ -394,23 +395,36 @@ public actor VoiceRecognitionService {
 
     /// A human selection is necessary but cannot prove purity. Reject overlap and multiple
     /// acoustic clusters even when a transcriber calls the whole selection one speaker.
-    static func enrollmentTurns(_ analysis: SpeakerAnalysis,
-                                audio: SpeakerAnalysisAudio) throws -> [SpeakerTurn] {
+    /// The person has confirmed this audio is one voice. The model can still hear one voice as
+    /// two (a turned head, a raised voice, a room's echo) or flag a stretch as overlapping, and
+    /// neither is a reason to throw the sample away: on 2026-10-26 a 20-second sample of one
+    /// person turning their head was refused as "more than one voice". So stretches flagged as
+    /// overlapping are left out, the voice with the most speech is the sample, and stretches the
+    /// model put in another cluster join it only when they sound like it. A TV or a passer-by is
+    /// left out rather than learned. Only too little usable speech refuses the sample.
+    static func enrollmentTurns(_ analysis: SpeakerAnalysis, audio: SpeakerAnalysisAudio,
+                                sameVoiceSimilarity: Double) throws -> [SpeakerTurn] {
         let lower = audio.sourceStartSample
         let upper = lower + audio.pcm16LE.count / 2
-        guard !analysis.turns.contains(where: { $0.overlap }) else {
-            throw VoiceEnrollmentError.multipleSpeakers
-        }
-        let clusters = Set(analysis.turns.compactMap(\.clusterID))
-        guard clusters.count <= 1 else { throw VoiceEnrollmentError.multipleSpeakers }
-        let clean = analysis.turns.filter {
-            $0.embedding != nil && $0.clusterID != nil && $0.speechConfidence >= 0.7
+        let usable = analysis.turns.filter {
+            !$0.overlap && $0.embedding != nil && $0.clusterID != nil && $0.speechConfidence >= 0.7
                 && $0.startSample >= lower && $0.endSample <= upper
                 && $0.endSample - $0.startSample >= 32_000
+        }
+        var speech: [String: Int] = [:]
+        for turn in usable { speech[turn.clusterID!, default: 0] += turn.endSample - turn.startSample }
+        guard let dominant = speech.max(by: { a, b in a.value == b.value ? a.key > b.key : a.value < b.value })?.key
+        else { throw VoiceEnrollmentError.notEnoughSpeech }
+        let anchors = usable.filter { $0.clusterID == dominant }.compactMap(\.embedding)
+        let kept = usable.filter { turn in
+            guard turn.clusterID != dominant else { return true }
+            let closest = anchors.compactMap { try? turn.embedding!.cosineSimilarity(to: $0) }.max() ?? -1
+            return closest >= sameVoiceSimilarity
         }.sorted { $0.startSample < $1.startSample }
-        guard !clean.isEmpty else { throw VoiceEnrollmentError.notEnoughSpeech }
-        for pair in zip(clean, clean.dropFirst()) where pair.0.endSample > pair.1.startSample {
-            throw VoiceEnrollmentError.multipleSpeakers
+        // Turns never overlap in one voice; if the model's do, the earlier one stands.
+        var clean: [SpeakerTurn] = []
+        for turn in kept where clean.last.map({ $0.endSample <= turn.startSample }) ?? true {
+            clean.append(turn)
         }
         return clean
     }

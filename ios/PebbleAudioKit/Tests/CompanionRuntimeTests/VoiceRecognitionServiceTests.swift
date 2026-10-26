@@ -187,20 +187,27 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         }
     }
 
-    @Test func enrollmentRejectsOverlapAndDifferentAcousticVoicesEvenWithOneHumanLabel() throws {
-        let embedding = try Self.embedding()
-        let audio = SpeakerAnalysisAudio(pcm16LE: Data(repeating: 0, count: 128_000),
+    @Test func oneConfirmedVoiceHeardAsTwoClustersIsKeptButAnotherVoiceIsLeftOut() throws {
+        let raw = try Self.embedding()
+        let me = try SpeakerEmbedding(recipe: raw.recipe, values: [1, 0])
+        let meTurnedAway = try SpeakerEmbedding(recipe: raw.recipe, values: [0.8, 0.6])   // cosine 0.8
+        let someoneElse = try SpeakerEmbedding(recipe: raw.recipe, values: [0, 1])       // cosine 0
+        let audio = SpeakerAnalysisAudio(pcm16LE: Data(repeating: 0, count: 320_000),
             sourceID: "s", sourceRevision: "r", sessionID: "session", sourceStartSample: 0)
-        for overlap in [true, false] {
-            let analysis = SpeakerAnalysis(turns: [
-                SpeakerTurn(startSample: 0, endSample: 32_000, clusterID: "a", embedding: embedding,
-                    overlap: false, speechConfidence: 0.95),
-                SpeakerTurn(startSample: 32_000, endSample: 64_000, clusterID: overlap ? "a" : "b",
-                    embedding: embedding, overlap: overlap, speechConfidence: 0.95),
-            ], recipeID: "recipe", elapsedMilliseconds: 1)
-            #expect(throws: VoiceEnrollmentError.multipleSpeakers) {
-                try VoiceRecognitionService.enrollmentTurns(analysis, audio: audio)
-            }
+        func turn(_ start: Int, _ cluster: String, _ embedding: SpeakerEmbedding, overlap: Bool = false) -> SpeakerTurn {
+            SpeakerTurn(startSample: start * 16_000, endSample: (start + 2) * 16_000, clusterID: cluster,
+                        embedding: embedding, overlap: overlap, speechConfidence: 0.95)
+        }
+        let analysis = SpeakerAnalysis(turns: [
+            turn(0, "a", me), turn(2, "a", me), turn(4, "b", meTurnedAway),
+            turn(6, "c", someoneElse), turn(8, "a", me, overlap: true),
+        ], recipeID: "recipe", elapsedMilliseconds: 1)
+        let kept = try VoiceRecognitionService.enrollmentTurns(analysis, audio: audio, sameVoiceSimilarity: 0.55)
+        #expect(kept.map { $0.startSample / 16_000 } == [0, 2, 4])
+
+        let onlyOverlap = SpeakerAnalysis(turns: [turn(0, "a", me, overlap: true)], recipeID: "recipe", elapsedMilliseconds: 1)
+        #expect(throws: VoiceEnrollmentError.notEnoughSpeech) {
+            try VoiceRecognitionService.enrollmentTurns(onlyOverlap, audio: audio, sameVoiceSimilarity: 0.55)
         }
     }
 
