@@ -115,8 +115,24 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 
 ## In flight
 
-Nothing half-done. Next from the plan: quality weighting of exemplars, propagation feedback ("Found
-Dana in N places" after naming), per-person calibration (later).
+**Recognition has named nothing on G17 (found 18:15, waiting on Roger).** Backup DB 17:58: 1 person,
+5 examples, 4 manual corrections, **0 automatic attributions**, 0 unmatched crops. Six `recent` jobs
+since recognition was enabled at 15:31; four still pending, cursors 4–74 s into 85–658 s recordings,
+unmoved since 17:09. Cause: recognition is foreground-only by design (`processPending` and
+`foregroundPass` both `guard foreground`; plan line "small foreground passes … no new periodic
+background task"). The phone runs headless behind the lock screen most of the day. Also, the
+voice-profile key is `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, so every background launch logs
+"voice profile access failed: deviceLocked" until an unlock happens while something reads the key.
+The audio and transcripts themselves sit under the default class (readable after first unlock).
+Proposed: run `processPending` from the existing pipeline pass in the background when
+`BackgroundWorkPolicy` allows heavy work (charging, thermal OK), move the key to
+`AfterFirstUnlockThisDeviceOnly` (`SecItemUpdate` while unlocked), and give People & voices an honest
+"Waiting for charging" state. Battery gate after deploy; watch the BLE link (charger CPU has dropped
+it before). Asked Roger whether to do this; do not build it without his yes.
+
+Later from the plan: quality weighting of exemplars (needs labelled real watch audio to measure; the
+public corpus is read speech through Speex), propagation feedback ("Found Dana in N places"),
+per-person calibration.
 
 ## Plan: learning one person from many messy clips
 
