@@ -60,7 +60,15 @@ Living notes for whichever agent continues this. Newest state first. The design 
   `voice-unmatched-crops-v1`; triggers drop them with the source's generation bump, source delete, and
   recognition off; cap 2,000), `SpeakerGrouping` (average linkage, threshold 0.6, ≥ 3 crops, ≥ 2 recordings),
   `VoiceRecognitionService.unknownVoiceGroups/nameUnknownVoice/dismissUnknownVoice`. **No UI yet.**
-- **Waiting on Roger:** three directions for the question UI — A queue in People & voices, B one question on
+- `666b450a` "Who is this?" built per Roger's pick (A + C, B's picker, not on Today): People & voices
+  "Voices to name" queue; quiet "· heard before" after an unnamed speaker's time in a conversation; both
+  open `WhoIsThisSheet` (clips with quotes, single-choice checkmark people list, "Not Now" top-left,
+  primary "Name in N recordings", full-size "More than one person" → checkbox page of every recording
+  to name only the ticked ones; unticked stay unnamed and may regroup). Context menu "Don't Ask About
+  This Voice". Speaker sheet switched to single-choice checkmarks too. Filled buttons dim when disabled.
+  `DemoVoiceSource` (DEBUG, `-demo-data`) for review. Roger's reasoning on selection: one voice = one
+  person; multi-select only for "which recordings are this person".
+- (superseded) three directions for the question UI — A queue in People & voices, B one question on
   Today, C a hint inside the conversation with per-recording Yes/No — in
   `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
   https://claude.ai/artifact/1b6rnKKQptb4HULsoUYLWc. Build only the chosen parts.
