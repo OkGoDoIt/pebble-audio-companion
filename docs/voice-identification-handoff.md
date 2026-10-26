@@ -22,11 +22,40 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
-- G17 runs companion build with watch samples + transcript selection (installed 2026-10-26
-  ~15:45 +07 from main after `00fb6edc`). Previous build passed its ten-minute check (PASS,
-  charging, no new crash reports). **Run the ten-minute cost check for this install** and diff
-  systemCrashLogs against `crashes-before` (4 historical Pebble Audio reports; none new so far).
+- 15:45 +07 install of `e15ab431` (one-voice fix); its ten-minute check runs at 15:56 (report in session
+  scratch `cost-3.txt` — rerun `./scripts/phone-cost-report.sh --minutes 11` if lost).
+- ~16:03 install of `cc929a84` in progress: watch-clock calibration, detector gain, no Remember toggle.
+  **After it: ten-minute check + systemCrashLogs diff (4 historical Pebble reports, none new so far).**
+- Ask Roger to retry a watch sample (Quiet room) on this build; if it still fails, pull the open
+  segment + sidecar (`devicectl device copy from … segments/<id>.meta.json|.spxlog`) and check the lag:
+  sidecar mtime − (startTimeMs + lastSampleIndexExclusive/16).
 - Server (archive) runs `b04ab212`, healthy; no server change since.
+
+## Done since the plan below was written
+
+- `1b27dd0b` watch sample window on the watch's clock (lag-calibrated, 45 s arrival wait);
+  `DetectionGain` (speech detector input only, target −26 dBFS, ≤ +36 dB, soft limiter); crop floor
+  −60 → −75 dBFS. Embedding recipe untouched (level-independent; saved voices stay valid).
+- `cc929a84` plan step 1: naming always learns when recognition is on (≤ 5 longest paragraphs, > 30 s
+  trimmed to first 30 s), never blocks the name; snackbar line when nothing could be learned or part
+  sounded like someone else (`VoiceEnrollmentOutcome.otherVoiceSeconds`).
+- Known wrinkle: `LiveVoiceSource.enrollPassage` starts a history run after every learned passage once
+  ≥ 2 examples exist; with up to 5 passages per save that is up to 5 runs. Start it once per save.
+
+## Root cause: watch sample said "not enough speech" (2026-10-26 15:42)
+
+Pulled the open recording `seg-1793003836340-c1fe4e09-2` and metas of stream 3254668809 off G17
+(copies in the session scratchpad only). **The watch's sample clock is not wall-clock time.**
+`receivedAtMs − (startTimeMs + firstSampleIndex/16)` per recording: a steady ~27–30 s from 10-23 to
+10-25 14:09Z, then growing ~1 min/hour overnight to ~910 s (15 min) by 10-26 05:26Z, stable since.
+The sample counter evidently stops while the mic is off (overnight) without the stream restarting.
+`WatchVoiceSampleReader.audio(fromWallMs:toWallMs:)` mapped the phone's start/stop through
+`sampleClockAnchorMs + sampleIndex/16`, so a 20 s window pointed at audio 27 s–15 min in the future:
+nothing → "not enough speech". Never worked on device; the kit test used a fixture whose clocks agree.
+Fix: calibrate against arrival — the open recording's sidecar mtime vs its `lastSampleIndexExclusive`
+gives (watch-clock lag + delivery delay); translate the phone window by it, pad the end, wait up to
+~45 s for arrival. **Wider bug to raise with Roger:** `SegmentMeta.startWallMs` = min(anchored,
+receivedAt) puts this recording 15 min early; transcripts/History/moments placement inherit it.
 
 ## In flight
 
@@ -51,7 +80,7 @@ Facts from the code (verify before relying on them):
   off by default and only shown for a 2–30 s passage when recognition is on.
 
 Steps, in order:
-1. **Learning follows naming by default** when recognition is on: the toggle defaults on; a
+1. (DONE `cc929a84`) **Learning follows naming by default** when recognition is on: the toggle defaults on; a
    selection of several paragraphs learns from each clean 2–30 s paragraph (cap per save ~5),
    not just the longest three. Unusable paragraphs are skipped silently (never an error that
    discards the saved name).
