@@ -68,6 +68,9 @@ Living notes for whichever agent continues this. Newest state first. The design 
   This Voice". Speaker sheet switched to single-choice checkmarks too. Filled buttons dim when disabled.
   `DemoVoiceSource` (DEBUG, `-demo-data`) for review. Roger's reasoning on selection: one voice = one
   person; multi-select only for "which recordings are this person".
+- `620867b5` grouping reads gated by a one-row fingerprint (an open conversation reloads per DB tick).
+- `17a0049a` naming a group names each clip's transcript paragraph (≥ half the clip inside it), because a
+  correction over part of a paragraph resolves `.partial` and leaves it unnamed.
 - (superseded) three directions for the question UI — A queue in People & voices, B one question on
   Today, C a hint inside the conversation with per-recording Yes/No — in
   `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
