@@ -96,12 +96,14 @@ struct ArchiveSyncServiceTests {
         var http: ArchiveFakeHTTP
         var uploads: ArchiveFakeUploads
         var service: ArchiveSyncService
+        var directory: URL
     }
 
     /// `before` runs on the database and the service's directory before the service starts:
     /// the library and saved state an earlier release left behind.
     fileprivate func world(
         answer: @escaping @Sendable (Data) -> (Int, Data) = acceptAll,
+        starts: Bool = true,
         before: (AppDatabase, URL) async throws -> Void = { _, _ in }
     ) async throws -> World {
         let db = try AppDatabase.inMemory()
@@ -131,8 +133,10 @@ struct ArchiveSyncServiceTests {
                 },
                 token: { "pad_test" }, directory: directory, clock: clock,
                 isForeground: { true }, isCharging: { false }))
-        await service.start()
-        return World(db: db, outbox: outbox, http: http, uploads: uploads, service: service)
+        if starts { await service.start() }
+        return World(
+            db: db, outbox: outbox, http: http, uploads: uploads, service: service,
+            directory: directory)
     }
 
     @Test func aChangeIsSentOnceAndItsAnswerClearsIt() async throws {
@@ -184,6 +188,46 @@ struct ArchiveSyncServiceTests {
         #expect(try await w.outbox.counts().pending == 1)
         await w.service.pass(.userAsked)
         #expect(w.uploads.bodies.count == 1)
+    }
+
+    /// A pass can reach the service before the runtime calls `start()` (a background entry at
+    /// launch). It still works from the saved state: on empty state it re-sent the preferences
+    /// and re-exported the whole library, then saved that over the real state, every launch.
+    @Test(.timeLimit(.minutes(1))) func aPassBeforeStartWorksFromTheSavedState() async throws {
+        var saved = ArchiveSyncService.PersistedState()
+        saved.preferencesSent = ArchivePreferences()
+        saved.transcriptExportMarked = ArchiveExport.transcriptExportVersion
+        saved.alignedScope = ArchivePreferences().scope
+        let w = try await world(starts: false, before: { db, directory in
+            try await ArchiveOutbox(db: db).setActive(true)
+            let conversations = (0..<3).map { index in
+                GroupedConversation(
+                    id: "conv-seg-\(index)", startMs: 1_788_000_000_000 + Int64(index) * 60_000,
+                    endMs: 1_788_000_030_000 + Int64(index) * 60_000, timeZoneID: "UTC", isLive: false,
+                    members: [ConversationMember(segmentId: "seg-\(index)")])
+            }
+            try await db.writer.write { d in
+                _ = try ConversationGrouper.apply(conversations, in: d)
+                try d.execute(sql: "UPDATE sync_outbox SET pending = 0, sentVersion = version, sentHash = 'old'")
+            }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(saved).write(to: directory.appendingPathComponent("state.json"))
+        })
+
+        await w.service.pass(.backgroundEntry)
+        await w.service.idle()
+        await w.service.start()
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+
+        #expect(!w.http.requests.contains { $0.url?.path == "/sync/preferences" })
+        #expect(w.uploads.bodies.isEmpty)
+        let after = try JSONDecoder().decode(
+            ArchiveSyncService.PersistedState.self,
+            from: Data(contentsOf: w.directory.appendingPathComponent("state.json")))
+        #expect(after.preferencesSent == saved.preferencesSent)
+        #expect(after.transcriptExportMarked == saved.transcriptExportMarked)
+        #expect(after.alignedScope == saved.alignedScope)
     }
 
     /// A new export version sends every transcript again once, a batch's worth per pass rather

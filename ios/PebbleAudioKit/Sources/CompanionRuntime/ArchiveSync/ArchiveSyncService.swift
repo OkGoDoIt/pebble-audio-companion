@@ -200,24 +200,35 @@ public actor ArchiveSyncService {
     /// A batch with no answer and no task after this long is presumed lost and sent again.
     static let lostBatchMs: Int64 = 30 * 60_000
 
+    /// Reads the saved state here rather than in `start()`: a background entry or a settings
+    /// change can reach a pass before the runtime gets to `start()`, and a pass on empty state
+    /// re-sent the preferences, re-marked the whole library, and saved that over the real state
+    /// — on every launch (2026-10-26).
     public init(_ deps: Dependencies) {
+        state = Self.savedState(at: Self.stateURL(in: deps.directory))
         self.deps = deps
     }
 
-    private var stateURL: URL { deps.directory.appendingPathComponent("state.json") }
+    private static func stateURL(in directory: URL) -> URL {
+        directory.appendingPathComponent("state.json")
+    }
+
+    private static func savedState(at url: URL) -> PersistedState {
+        guard let data = try? Data(contentsOf: url),
+            let saved = try? JSONDecoder().decode(PersistedState.self, from: data)
+        else { return PersistedState() }
+        return saved
+    }
+
+    private var stateURL: URL { Self.stateURL(in: deps.directory) }
 
     // MARK: - Lifecycle
 
-    /// Loads the saved state, listens for answers, and watches the outbox. Idempotent.
+    /// Listens for answers and watches the outbox. Idempotent.
     public func start() async {
         guard !started else { return }
         started = true
         try? FileManager.default.createDirectory(at: deps.directory, withIntermediateDirectories: true)
-        if let data = try? Data(contentsOf: stateURL),
-            let saved = try? JSONDecoder().decode(PersistedState.self, from: data)
-        {
-            state = saved
-        }
         signal.observe(deps.outbox.db.writer)
         let uploads = deps.uploads
         outcomeTask = Task { [weak self] in
