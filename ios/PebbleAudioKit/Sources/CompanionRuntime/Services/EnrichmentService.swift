@@ -59,6 +59,12 @@ public actor EnrichmentService {
     private let isForeground: @Sendable () -> Bool
     private let audioContentMask: AudioContentMask?
     private let audioContentStore: AudioContentStore?
+    /// Reads the saved audio-content verdicts into `audioContentMask` if this launch has not yet
+    /// (`AudioContentService.loadSaved`). Every regroup waits for it: the first one of a launch
+    /// is often not the pipeline's, which classifies first, but the launch-time Spotlight
+    /// donation's (`grouping()`), and grouped without the mask a launch re-cut every
+    /// conversation a loop or lyrics decide.
+    private let loadAudioContent: (@Sendable () async throws -> Void)?
 
     public init(
         worker: EnrichmentWorker,
@@ -78,6 +84,7 @@ public actor EnrichmentService {
         isForeground: @escaping @Sendable () -> Bool = { false },
         audioContentMask: AudioContentMask? = nil,
         audioContentStore: AudioContentStore? = nil,
+        loadAudioContent: (@Sendable () async throws -> Void)? = nil,
         moments: MomentReviewWorker? = nil
     ) {
         self.isForeground = isForeground
@@ -147,6 +154,7 @@ public actor EnrichmentService {
         }
         self.audioContentMask = audioContentMask
         self.audioContentStore = audioContentStore
+        self.loadAudioContent = loadAudioContent
         self.clock = clock
         self.log = log
     }
@@ -548,6 +556,11 @@ public actor EnrichmentService {
     private func regroupDetailed(settling: Bool = true) async throws
         -> ConversationGrouper.RebuiltGrouping
     {
+        if let loadAudioContent {
+            do { try await loadAudioContent() } catch {
+                log.failure("audio content load before regroup", error)
+            }
+        }
         let segments = await store.listSegments()
         let openId = await store.openSegmentId
         let pauses: [PauseInterval]

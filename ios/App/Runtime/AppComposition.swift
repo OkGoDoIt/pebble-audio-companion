@@ -847,6 +847,7 @@ final class AppComposition {
             isForeground: { AppForegroundProbe.shared.isForeground },
             audioContentMask: audioContentMask,
             audioContentStore: audioContentStore,
+            loadAudioContent: { try await audioContent.loadSaved() },
             moments: MomentReviewWorker(store: MomentStore(db: database), router: aiRouter, nowMs: nowMs)
         )
 

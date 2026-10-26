@@ -172,6 +172,7 @@ public actor AudioContentService {
     private var judgements: [String: AudioContentJudgement] = [:]
     private let judge: (@Sendable (AiRunRequest) async throws -> RoutedAiResult)?
     private var loaded = false
+    private var loading: Task<Void, Error>?
 
     public init(
         listSegments: @escaping @Sendable () async -> [SegmentMeta],
@@ -193,6 +194,38 @@ public actor AudioContentService {
         self.log = log
     }
 
+    /// Reads the saved verdicts into the masks, once per launch. The grouping reads the speech
+    /// mask, so a regroup must not run before this: grouped without it, the loops and lyrics it
+    /// withholds count as speech, every conversation they decide is cut differently, and the
+    /// next pass cuts them back — on G17 that was 17 conversations superseded and 41 titles
+    /// withdrawn at every launch, then 9 more superseded a few seconds later
+    /// (`EnrichmentService.loadAudioContent`). Idempotent: a second call does nothing, and one
+    /// made while the first is reading waits for it.
+    public func loadSaved() async throws {
+        try await loadSaved(segments: nil)
+    }
+
+    private func loadSaved(segments: [SegmentMeta]?) async throws {
+        if loaded { return }
+        if let loading { return try await loading.value }
+        let task = Task { try await self.readSaved(segments: segments) }
+        loading = task
+        defer { loading = nil }
+        try await task.value
+    }
+
+    private func readSaved(segments: [SegmentMeta]?) async throws {
+        var segments = segments ?? []
+        if segments.isEmpty { segments = await listSegments() }
+        inputKeys = try await store.inputKeys()
+        judgements = try await store.judgements()
+        for (id, ranges) in try await store.conversationMediaRanges() {
+            mask.setConversationRanges(id, ranges)
+        }
+        try await loadMasks(segments: segments)
+        loaded = true
+    }
+
     /// Per-pass cap on segments classified. A segment is milliseconds of CPU; the cap exists
     /// so the first pass after install or a method change cannot hold the loop.
     public static let defaultBudget = 40
@@ -202,15 +235,7 @@ public actor AudioContentService {
     @discardableResult
     public func classifyPass(budget: Int = AudioContentService.defaultBudget) async throws -> Bool {
         let segments = await listSegments()
-        if !loaded {
-            inputKeys = try await store.inputKeys()
-            judgements = try await store.judgements()
-            for (id, ranges) in try await store.conversationMediaRanges() {
-                mask.setConversationRanges(id, ranges)
-            }
-            try await loadMasks(segments: segments)
-            loaded = true
-        }
+        try await loadSaved(segments: segments)
 
         // Wall order, because the stray-remark rule reads each segment's neighbours and a
         // neighbour settling changes the verdict (and the key) of the segments beside it.
