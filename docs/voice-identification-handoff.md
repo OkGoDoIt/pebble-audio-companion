@@ -110,6 +110,30 @@ Steps, in order:
 8. **Per-person calibration (later).** With ≥ 6 exemplars from ≥ 3 sessions, leave-one-session-out
    scores give a per-person threshold; until then the global 0.55/0.10 stands.
 
+### Labelling UX for messy audio (design notes, not built)
+
+The watch makes one person look like several "voices" to the model, so labelling has to be cheap,
+repeatable, and forgiving — and every answer should teach.
+
+- **Confirm, not just correct.** A recognized name gets a one-tap "That's Dana" (positive training,
+  explicit, so it doesn't break "predictions never train"), next to "Change speaker". Confirmations
+  are the cheapest high-value labels.
+- **Who is this? queue.** After recognition, recurring *unnamed* voices across recent conversations
+  are grouped conservatively by embedding (agglomerative, strict threshold, ≥ 2 conversations) and
+  offered one group at a time: three 4-second snippets from different conversations, a person picker
+  (known people + new), "Not one person" (splits the group), "Skip". Naming a group labels its
+  members as suggestions applied after the answer, and teaches from each member.
+- **Same person as…** Because one person splits into groups, the queue and the voices list allow
+  "This is also Dana" merges; the people picker shows each person's snippet so the user can listen.
+- **Not the wearer's mic only.** The wearer is usually loudest and closest; level can be a weak prior
+  for "you" when choosing which group to ask about first, never as identity proof.
+- **Pseudo-people.** "TV / radio" as a label that is excluded from participants, Ask, and follow-ups,
+  so a news anchor stops being asked about.
+- **Provider merged two people into one Speaker 1.** Selecting the run yields mixed audio; the
+  one-voice filter learns only the dominant voice and the snackbar says part was left out. Offer
+  "Split this speaker" later (needs acoustic sub-clustering of the run).
+- **Low-margin names** render with a subtle uncertainty mark and sort first in review.
+
 Edge cases to cover with tests: one person split into two clusters in one clip; two real people
 in one selection (the minority voice is dropped, not learned); a selection mixing named and
 unnamed paragraphs; untimed paragraphs in a selection (sheet refuses whole selection today —
