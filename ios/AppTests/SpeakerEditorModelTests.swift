@@ -169,4 +169,19 @@ struct SpeakerEditorModelTests {
         #expect(whole.map(\.id) == ["a", "c", "f"],
                 "Same label in the same recording only; d was already named Sam, e is another recording's 2")
     }
+
+    @Test func onlyAnAllRecognizedSamePersonSelectionOffersThatsThem() {
+        func turn(_ id: String, person: String?, match: Bool, role: SpeakerRole = .other) -> TranscriptTurn {
+            TranscriptTurn(id: id, speakerLabel: "1", name: person == "me" ? "You" : "Dana", role: role, text: id,
+                           segmentId: "s", personId: person, isVoiceMatch: match, sourceStartMs: 0, sourceEndMs: 3_000)
+        }
+        #expect(ConversationScreen.recognizedPerson(of: [turn("a", person: "dana", match: true),
+                                                         turn("b", person: "dana", match: true)])?.id == "dana")
+        #expect(ConversationScreen.recognizedPerson(of: [turn("a", person: "me", match: true, role: .you)])?.isCurrentUser == true)
+        #expect(ConversationScreen.recognizedPerson(of: [turn("a", person: "dana", match: true),
+                                                         turn("b", person: "dana", match: false)]) == nil,
+                "A name the person chose isn't something to confirm")
+        #expect(ConversationScreen.recognizedPerson(of: [turn("a", person: "dana", match: true),
+                                                         turn("b", person: "sam", match: true)]) == nil)
+    }
 }

@@ -783,7 +783,14 @@ struct ConversationScreen: View {
                     .font(AppFont.callout).foregroundStyle(Tokens.tint).fixedSize()
             }
             FlowLayout(horizontalSpacing: 10, verticalSpacing: 8) {
-                ActionPill(title: "Change speaker", systemImage: "person.crop.circle", style: .filled) {
+                if let recognized = Self.recognizedPerson(of: turns) {
+                    ActionPill(title: recognized.isCurrentUser ? "That’s you" : "That’s \(recognized.name)",
+                               systemImage: "checkmark", style: .filled) {
+                        confirm(turns, as: recognized)
+                    }.disabled(clearingNames)
+                }
+                ActionPill(title: "Change speaker", systemImage: "person.crop.circle",
+                           style: Self.recognizedPerson(of: turns) == nil ? .filled : .neutral) {
                     player.pause()
                     model.renameTurns = SpeakerPassages(turns: turns)
                 }.disabled(turns.isEmpty || clearingNames)
@@ -849,6 +856,32 @@ struct ConversationScreen: View {
         return transcript.compactMap { item in
             if case .turn(let turn) = item, picked.contains(turn.id) { return turn }
             return nil
+        }
+    }
+
+    /// The one person voice recognition named every picked paragraph as, if that is what is picked.
+    static func recognizedPerson(of turns: [TranscriptTurn]) -> Person? {
+        guard let first = turns.first, let id = first.personId,
+              turns.allSatisfy({ $0.isVoiceMatch && $0.personId == id }) else { return nil }
+        return Person(id: id, name: first.name, isCurrentUser: first.role == .you)
+    }
+
+    /// "That's Dana": the recognized name becomes the person's own decision, and the paragraphs
+    /// teach the voice like any other name they give.
+    private func confirm(_ turns: [TranscriptTurn], as person: Person) {
+        clearingNames = true
+        Task {
+            defer { clearingNames = false }
+            let editor = SpeakerEditorModel()
+            await editor.load(conversationId: conversationId, turns: turns)
+            if await editor.choose(person, for: turns, rememberVoice: editor.voiceAvailable) {
+                picked = nil
+                UndoCenter.shared.snackbar = SnackbarItem(message: editor.learnNotice
+                    ?? (person.isCurrentUser ? "Confirmed as you" : "Confirmed as \(person.name)"))
+            } else {
+                UndoCenter.shared.snackbar = SnackbarItem(message: editor.errorMessage ?? Copy.Speaker.saveFailed)
+            }
+            await load()
         }
     }
 
