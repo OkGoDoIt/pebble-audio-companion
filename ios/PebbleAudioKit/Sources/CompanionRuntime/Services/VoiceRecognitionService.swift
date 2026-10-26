@@ -10,6 +10,8 @@ public struct VoiceEnrollmentOutcome: Equatable, Sendable {
     public let personId: String
     public let examplesAdded: Int
     public let usableSpeechSeconds: Double
+    /// Groups every crop this one confirmation produced; nil when nothing new was saved.
+    public var confirmationID: String? = nil
 }
 
 public struct VoiceRecognitionStatus: Equatable, Sendable {
@@ -201,13 +203,19 @@ public actor VoiceRecognitionService {
         try await requireReady()
         try checkEnrollment(generation)
         let source = try await load(segmentId)
+        let pcm = try await Task.detached(priority: .utility) {
+            try source.pcm(startMediaMs: startMediaMs, endMediaMs: endMediaMs)
+        }.value
+        // A recording still being written changes revision when it grows, and a new revision
+        // erases every artifact tied to the old one, this sample included. Copy it out instead.
+        if source.meta.isOpen {
+            return try await enrollDetached(personId: personId, pcm16LE: pcm, sessionID: segmentId,
+                                            microphone: .watch, generation: generation)
+        }
         _ = try await store.prepareSource(segmentId: segmentId, revision: source.revision)
         guard let context = try await store.workContext(segmentId: segmentId) else {
             throw VoiceEnrollmentError.changedDuringProcessing
         }
-        let pcm = try await Task.detached(priority: .utility) {
-            try source.pcm(startMediaMs: startMediaMs, endMediaMs: endMediaMs)
-        }.value
         return try await enroll(personId: personId, audio: SpeakerAnalysisAudio(
             pcm16LE: pcm, sourceID: segmentId, sourceRevision: source.revision,
             sessionID: segmentId, sourceStartSample: Int(startMediaMs) * 16),
@@ -216,9 +224,41 @@ public actor VoiceRecognitionService {
 
     /// Raw phone enrollment exists only in this call's memory. The database retains derived
     /// embeddings and a digest/provenance, never a second recording or a WAV file.
-    public func enrollPCM(personId: String, pcm16LE: Data,
-                          sessionID: String) async throws -> VoiceEnrollmentOutcome {
+    public func enrollPCM(personId: String, pcm16LE: Data, sessionID: String,
+                          microphone: VoiceSampleMicrophone = .phone) async throws -> VoiceEnrollmentOutcome {
+        try await enrollDetached(personId: personId, pcm16LE: pcm16LE, sessionID: sessionID,
+                                 microphone: microphone, generation: beginEnrollment())
+    }
+
+    /// A sample the person recorded through the watch just now: its audio between two
+    /// phone-clock instants, copied out of the recording it landed in. The most recent 30 s
+    /// are used when the window is longer.
+    public func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64,
+                            sessionID: String) async throws -> VoiceEnrollmentOutcome {
         let generation = beginEnrollment()
+        let reader = WatchVoiceSampleReader(files: files)
+        guard let audio = try await Task.detached(priority: .utility, operation: {
+            try reader.audio(fromWallMs: fromWallMs, toWallMs: toWallMs)
+        }).value else { throw VoiceEnrollmentError.audioUnavailable }
+        guard audio.pcm16LE.count >= 64_000 else { throw VoiceEnrollmentError.notEnoughSpeech }
+        let pcm = audio.pcm16LE.suffix(960_000)
+        return try await enrollDetached(personId: personId, pcm16LE: Data(pcm), sessionID: sessionID,
+                                        microphone: .watch, generation: generation)
+    }
+
+    /// The watch's audio for a sample window as it stands now: what was said, and how far the
+    /// watch's audio has arrived, so the caller can wait for the last seconds and let the
+    /// person listen before saving. Nil when nothing from the window has arrived.
+    public nonisolated func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? {
+        let reader = WatchVoiceSampleReader(files: files)
+        return await Task.detached(priority: .utility) {
+            try? reader.audio(fromWallMs: fromWallMs, toWallMs: toWallMs)
+        }.value
+    }
+
+    private func enrollDetached(personId: String, pcm16LE: Data, sessionID: String,
+                                microphone: VoiceSampleMicrophone,
+                                generation: UInt64) async throws -> VoiceEnrollmentOutcome {
         try await reconcileProfileProtection()
         try checkEnrollment(generation)
         guard await models.isInstalled() else { throw VoiceEnrollmentError.modelsNotInstalled }
@@ -226,7 +266,7 @@ public actor VoiceRecognitionService {
         await analyzer.setEnabled(true)
         guard pcm16LE.count.isMultiple(of: 2), (64_000...960_000).contains(pcm16LE.count),
               !sessionID.isEmpty else { throw VoiceEnrollmentError.invalidRange }
-        let id = "enrollment:" + UUID().uuidString.lowercased()
+        let id = microphone.sourcePrefix + UUID().uuidString.lowercased()
         let revision = SHA256.hash(data: pcm16LE).map { String(format: "%02x", $0) }.joined()
         _ = try await store.prepareSource(segmentId: id, revision: revision)
         guard let context = try await store.workContext(segmentId: id) else {
@@ -275,7 +315,7 @@ public actor VoiceRecognitionService {
         // The watch's codec changes the embedding distribution. Keep one alternate acoustic
         // view of each real phone crop, never count it as another independent voice sample.
         let codecAudio: Data?
-        if audio.sourceID.hasPrefix("enrollment:"), !fresh.isEmpty {
+        if VoiceSampleMicrophone.of(segmentId: audio.sourceID) == .phone, !fresh.isEmpty {
             codecAudio = try await Task.detached(priority: .utility) {
                 try VoiceEnrollmentAudioCodec.watchVariant(audio.pcm16LE)
             }.value
@@ -322,7 +362,8 @@ public actor VoiceRecognitionService {
         }
         lastMessage = nil; changed()
         return VoiceEnrollmentOutcome(personId: personId, examplesAdded: examples.count,
-            usableSpeechSeconds: clean.reduce(0) { $0 + Double($1.endSample - $1.startSample) / 16_000 })
+            usableSpeechSeconds: clean.reduce(0) { $0 + Double($1.endSample - $1.startSample) / 16_000 },
+            confirmationID: examples.isEmpty ? nil : confirmation)
     }
 
     private struct EnrollmentQuality: Codable {

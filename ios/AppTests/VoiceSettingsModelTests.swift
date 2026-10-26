@@ -1,4 +1,5 @@
 import AppDB
+import CompanionRuntime
 import Foundation
 import Testing
 
@@ -27,9 +28,24 @@ import Testing
     }
     func setEnabled(_ enabled: Bool) async throws { enabledValues.append(enabled); state.enabled = enabled }
     func currentUser(name: String) async throws -> Person { Person(id: "me", name: name, isCurrentUser: true) }
-    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String) async throws -> Int {
+    var streaming = true
+    var watchAudio: WatchVoiceSampleAudio?
+    var enrolledKinds: [VoiceSampleKind?] = []
+    var watchWindows: [ClosedRange<Int64>] = []
+    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String, kind: VoiceSampleKind?) async throws -> Int {
         if failEnrollment { throw Failure.unavailable }
         enrollmentPeople.append(personId)
+        enrolledKinds.append(kind)
+        return 2
+    }
+    func watchIsStreaming() async -> Bool { streaming }
+    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? { watchAudio }
+    func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
+                     kind: VoiceSampleKind?) async throws -> Int {
+        if failEnrollment { throw Failure.unavailable }
+        enrollmentPeople.append(personId)
+        enrolledKinds.append(kind)
+        watchWindows.append(fromWallMs...toWallMs)
         return 2
     }
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int { 1 }
@@ -146,5 +162,91 @@ struct VoiceSettingsModelTests {
         #expect(!model.playing)
         #expect(model.positionMs == 2_000)
         model.stop()
+    }
+}
+
+/// Samples recorded through the watch: the phone marks the window, the watch's audio for it is
+/// what gets learned, and its last seconds may still be on their way when the person stops.
+@Suite("voice samples through the watch") @MainActor
+struct VoiceWatchSampleRecorderTests {
+    final class Clock { var ms: Int64 = 1_000_000 }
+
+    private func recorder(_ source: VoiceTestSource, _ clock: Clock, timeout: TimeInterval = 0.3) -> VoiceWatchSampleRecorder {
+        VoiceWatchSampleRecorder(source: source, now: { clock.ms }, pollInterval: .milliseconds(20),
+                                 arrivalTimeout: timeout)
+    }
+
+    private func audio(seconds: Int, through: Int64) -> WatchVoiceSampleAudio {
+        WatchVoiceSampleAudio(pcm16LE: Data(count: seconds * 32_000), receivedThroughWallMs: through)
+    }
+
+    @Test func aWatchThatIsNotStreamingCannotRecordASample() async {
+        let source = VoiceTestSource()
+        source.streaming = false
+        let recorder = recorder(source, Clock())
+        await recorder.start()
+        #expect(recorder.phase == .idle)
+        #expect(recorder.errorMessage?.contains("Start recording on the watch") == true)
+    }
+
+    @Test func stoppingWaitsForTheWatchThenUsesWhatArrived() async {
+        let source = VoiceTestSource(), clock = Clock()
+        let recorder = recorder(source, clock)
+        await recorder.start()
+        #expect(recorder.phase == .recording)
+        clock.ms += 15_000
+        // The last two seconds never arrive; the thirteen that did are plenty.
+        source.watchAudio = audio(seconds: 13, through: clock.ms - 2_000)
+        await recorder.finish()
+        #expect(recorder.phase == .ready)
+        #expect(recorder.window == 1_000_000...1_015_000)
+    }
+
+    @Test func tooLittleSpeechGoesBackToTheStartWithAReason() async {
+        let source = VoiceTestSource(), clock = Clock()
+        let recorder = recorder(source, clock)
+        await recorder.start()
+        clock.ms += 20_000
+        source.watchAudio = audio(seconds: 3, through: clock.ms)
+        await recorder.finish()
+        #expect(recorder.phase == .idle && recorder.window == nil)
+        #expect(recorder.errorMessage?.contains("enough speech") == true)
+    }
+
+    @Test func nothingArrivingSaysTheWatchDidNotDeliver() async {
+        let source = VoiceTestSource(), clock = Clock()
+        let recorder = recorder(source, clock)
+        await recorder.start()
+        clock.ms += 20_000
+        await recorder.finish()
+        #expect(recorder.phase == .idle)
+        #expect(recorder.errorMessage?.contains("didn’t reach the phone") == true)
+    }
+
+    @Test func savingAWatchSampleLearnsItsWindowAndSituationAndTurnsRecognitionOn() async {
+        let source = VoiceTestSource()
+        let model = VoiceSettingsModel(source: source)
+        let me = Person(id: "me", name: "Roger", isCurrentUser: true)
+        #expect(await model.saveWatchEnrollment(name: "", person: me, fromWallMs: 10, toWallMs: 20_010,
+                                                sessionID: "s", kind: .noisy))
+        #expect(source.watchWindows == [10...20_010])
+        #expect(source.enrolledKinds == [.noisy])
+        #expect(source.enabledValues == [true])
+    }
+
+    @Test func samplesAreLabelledByTheirSituationOrMicrophone() {
+        func example(_ confirmation: String, _ segment: String) -> VoiceConfirmedExample {
+            VoiceConfirmedExample(personId: "me", confirmationID: confirmation, sessionID: "s", segmentId: segment,
+                startMediaMs: 0, endMediaMs: 4_000, sourceRevision: "r", recipeID: "x",
+                recipeJSON: Data(), embeddingJSON: Data(), qualityJSON: Data())
+        }
+        let grouped = VoiceExampleDisplay.grouped([
+            example("a", "watch-enrollment:1"), example("b", "enrollment:2"),
+            example("c", "segment-from-a-conversation"), example("d", "watch-enrollment:3")],
+            kinds: ["a": "outdoors"])
+        let labels = Dictionary(uniqueKeysWithValues: grouped.map { ($0.id, $0.source) })
+        #expect(labels == ["a": "Outdoors or on the move", "b": "Phone microphone",
+                           "c": "From a conversation", "d": "Watch sample"])
+        #expect(grouped.first { $0.id == "b" }?.microphone == .phone)
     }
 }

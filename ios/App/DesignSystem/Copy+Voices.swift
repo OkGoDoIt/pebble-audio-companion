@@ -10,7 +10,7 @@ extension Copy {
         static let onDetail = "Names appear when there’s a clear match. Uncertain voices stay unnamed."
         static let yourVoice = "Your voice"
         static let setUp = "Set up your voice"
-        static let setUpDetail = "Speak for a few moments, then improve recognition with recordings from your watch."
+        static let setUpDetail = "Record a few short samples through your watch, each somewhere different."
         static let people = "Remembered voices"
         static let noPeople = "No voices remembered yet"
         static let noPeopleDetail = "Set up your voice, or tap a speaker in a conversation to teach the app someone else’s voice."

@@ -51,14 +51,29 @@ final class VoiceSettingsModel {
         await perform { source in try await self.prepare(source) }
     }
 
-    func saveEnrollment(name: String, person: Person?, pcm: Data, sessionID: String) async -> Bool {
+    func saveEnrollment(name: String, person: Person?, pcm: Data, sessionID: String,
+                        kind: VoiceSampleKind? = .phone) async -> Bool {
         await perform { source in
-            let target: Person
-            if let person { target = person }
-            else { target = try await source.currentUser(name: name.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            _ = try await source.enrollPCM(personId: target.id, pcm16LE: pcm, sessionID: sessionID)
+            let target = try await self.target(source, name: name, person: person)
+            _ = try await source.enrollPCM(personId: target.id, pcm16LE: pcm, sessionID: sessionID, kind: kind)
             try await source.setEnabled(true)
         }
+    }
+
+    /// A sample recorded through the watch between two instants on this phone's clock.
+    func saveWatchEnrollment(name: String, person: Person?, fromWallMs: Int64, toWallMs: Int64,
+                             sessionID: String, kind: VoiceSampleKind) async -> Bool {
+        await perform { source in
+            let target = try await self.target(source, name: name, person: person)
+            _ = try await source.enrollWatch(personId: target.id, fromWallMs: fromWallMs, toWallMs: toWallMs,
+                                             sessionID: sessionID, kind: kind)
+            try await source.setEnabled(true)
+        }
+    }
+
+    private func target(_ source: any VoiceRecognitionDataSource, name: String, person: Person?) async throws -> Person {
+        if let person { return person }
+        return try await source.currentUser(name: name.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     func cancelEnrollment() async { await source?.cancelEnrollment() }

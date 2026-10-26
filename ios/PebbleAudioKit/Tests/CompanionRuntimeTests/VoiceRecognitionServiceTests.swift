@@ -7,6 +7,7 @@ import SegmentStore
 import SpeakerRecognition
 import Testing
 import Transcription
+import WireProtocol
 @testable import CompanionRuntime
 
 private actor VoiceTestModels: VoiceModelManaging {
@@ -243,5 +244,123 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         steps.recognizeVoices = { calls.record("voice"); return true }
         _ = try await PipelinePass(steps: steps, clock: TestClock()).run()
         #expect(!calls.calls.contains("voice"))
+    }
+}
+
+/// Voice samples recorded through the watch: read from the recording the audio lands in, which
+/// is usually still open, and kept as their own source so the recording growing or closing
+/// never removes them.
+@Suite struct WatchVoiceSampleTests {
+    static let t0: Int64 = 1_792_000_000_000
+
+    /// Runs on the watch's sample clock: 0–6 s, then 8–14 s after a skipped quiet stretch, then
+    /// a 0.2 s fragment at 15 s. The recording is left open, as during a live sample.
+    static func openRecording(_ root: URL) async throws -> (SegmentStore, String) {
+        let store = SegmentStore(root: root, nowMs: { t0 + 20_000 })
+        _ = try await store.openSegment(start: Fixture.streamStart(startTimeMs: UInt64(t0)),
+                                        receivedAtMs: t0, provenance: nil)
+        // Real encoded tone, not the codec's silence packet: that packet marks deleted audio.
+        let encoder = try SpeexFrameEncoder()
+        let speech = [UInt8](try encoder.encodeFrame((0..<320).map { i -> Int16 in
+            Int16(6_000 * sin(2 * .pi * 220 * Double(i) / 16_000))
+        }))
+        func run(_ sequence: Range<Int>, at firstFrame: Int) -> [SegmentFrame] {
+            sequence.enumerated().map { offset, sequence in
+                SegmentFrame(sequence: UInt32(sequence), sampleIndex: UInt64(firstFrame + offset) * 320, payload: speech)
+            }
+        }
+        _ = try await store.appendFrames(streamId: 0x5EED_0001,
+            frames: run(0..<300, at: 0) + run(300..<600, at: 400) + run(600..<610, at: 750))
+        return (store, try #require(await store.openSegmentId))
+    }
+
+    private func service(_ db: AppDatabase, root: URL, analyzer: VoiceTestAnalyzer) -> VoiceRecognitionService {
+        VoiceRecognitionService(database: db, files: SegmentFileReader(root: root), models: VoiceTestModels(),
+            analyzer: analyzer, policy: VoiceRecognitionService.initialPolicy, recipeID: "test-recipe",
+            protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
+    }
+
+    private func temporaryRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("watch-sample-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    @Test func readsOnlyTheWindowJoiningRunsAcrossSkippedQuietAndDroppingFragments() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try await Self.openRecording(root)
+        let reader = WatchVoiceSampleReader(files: SegmentFileReader(root: root))
+        let audio = try #require(try reader.audio(fromWallMs: Self.t0 + 1_000, toWallMs: Self.t0 + 15_500))
+        // 5 s of the first run (from 1 s), all 6 s of the second; the 0.2 s fragment is left out.
+        let expectedBytes: Int = 550 * 640
+        #expect(audio.pcm16LE.count == expectedBytes)
+        let reach: Int64 = Self.t0 + 15_200
+        #expect(audio.receivedThroughWallMs == reach)
+        let skipped = try #require(try reader.audio(fromWallMs: Self.t0 + 6_100, toWallMs: Self.t0 + 7_900))
+        #expect(skipped.pcm16LE.isEmpty, "Nothing was said in the skipped stretch, but audio has arrived past it")
+    }
+
+    @Test func watchSampleIsItsOwnSourceAndSkipsThePhoneCodecVariant() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try await Self.openRecording(root)
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Roger")
+        let analyzer = VoiceTestAnalyzer(variants: true)
+        let service = service(db, root: root, analyzer: analyzer)
+        let outcome = try await service.enrollWatch(personId: person.id, fromWallMs: Self.t0,
+                                                    toWallMs: Self.t0 + 6_000, sessionID: "watch-sample")
+        #expect(outcome.examplesAdded == 2 && outcome.confirmationID != nil)
+        let examples = try await service.examples()
+        let sources: Set<String> = Set(examples.map { String($0.segmentId.prefix(17)) })
+        #expect(sources == ["watch-enrollment:"])
+        #expect(Set(examples.map(\.sessionID)) == ["watch-sample"])
+        let microphones: [VoiceSampleMicrophone] = examples.map { VoiceSampleMicrophone.of(segmentId: $0.segmentId) }
+        #expect(microphones == [.watch, .watch])
+        #expect(await analyzer.variantCalls == 0, "Watch audio already has the watch's codec")
+        await #expect(throws: VoiceEnrollmentError.notEnoughSpeech) {
+            try await service.enrollWatch(personId: person.id, fromWallMs: Self.t0 + 6_100,
+                                          toWallMs: Self.t0 + 7_900, sessionID: "quiet")
+        }
+    }
+
+    @Test func rememberingAPassageOfAnOpenRecordingSurvivesTheRecordingClosing() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, segmentId) = try await Self.openRecording(root)
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let service = service(db, root: root, analyzer: VoiceTestAnalyzer())
+        try await service.setEnabled(true)
+        _ = try await service.enroll(personId: person.id, segmentId: segmentId, startMediaMs: 1_000, endMediaMs: 5_000)
+        #expect(try await service.examples().count == 2)
+        try await store.closeSegment(reason: .stopped(reasonRaw: Int(StopReason.shutdown.rawValue),
+                                                      finalSequence: 609, finalSampleIndex: 760 * 320))
+        // Recognition reads the closed recording under a new revision, which erases artifacts
+        // tied to the old one. The remembered voice must not be one of them.
+        _ = try await VoiceIdentityStore(db: db).prepareSource(segmentId: segmentId, revision: "closed")
+        let examples = try await service.examples()
+        #expect(examples.count == 2)
+        let sources: Set<String> = Set(examples.map { String($0.segmentId.prefix(17)) })
+        #expect(sources == ["watch-enrollment:"])
+        #expect(Set(examples.map(\.sessionID)) == [segmentId])
+    }
+
+    @Test func aSampleSituationGoesWithItsLastCrop() async throws {
+        let db = try AppDatabase.inMemory()
+        let person = try await PeopleStore(db: db).createPerson(name: "Roger")
+        let service = VoiceRecognitionService(database: db, files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")),
+            models: VoiceTestModels(), analyzer: VoiceTestAnalyzer(), policy: VoiceRecognitionService.initialPolicy,
+            recipeID: "test-recipe", protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
+        let outcome = try await service.enrollPCM(personId: person.id, pcm16LE: Data(repeating: 1, count: 128_000),
+                                                  sessionID: "phone")
+        let situations = VoiceSampleSituationStore(db: db)
+        try await situations.set("quiet", confirmationID: try #require(outcome.confirmationID))
+        let ids = try await service.examples().map(\.id)
+        try await service.removeExamples(ids: [ids[0]])
+        #expect(try await situations.all().count == 1, "One crop remains, so the sample still exists")
+        try await service.removeExamples(ids: [ids[1]])
+        #expect(try await situations.all().isEmpty)
     }
 }

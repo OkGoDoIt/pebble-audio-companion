@@ -894,6 +894,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-archive-provenance-v1") { db in
             try VoiceArchiveRevocationStore.installSchema(db)
         }
+        migrator.registerMigration("voice-sample-situations-v1") { db in
+            try VoiceSampleSituationStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

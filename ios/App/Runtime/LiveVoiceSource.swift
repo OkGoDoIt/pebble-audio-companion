@@ -14,6 +14,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let status = try await service.status()
         let profiles = try await service.profiles()
         let examples = try await service.examples()
+        let kinds = try await VoiceSampleSituationStore(db: composition.database).all()
         let runs = try await service.runs()
         let plans = try await service.historyPlans()
         let plan = plans.first
@@ -24,7 +25,8 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             currentUser: try await composition.people.listPeople().first(where: { $0.person.isCurrentUser })?.person,
             people: profiles.map { profile in
                 VoicePersonDisplay(person: profile.person,
-                    examples: VoiceExampleDisplay.grouped(examples.filter { $0.personId == profile.person.id }),
+                    examples: VoiceExampleDisplay.grouped(examples.filter { $0.personId == profile.person.id },
+                                                          kinds: kinds),
                     compatibleExampleCount: examples.filter {
                         $0.personId == profile.person.id && $0.recipeID == LocalSpeakerDiarizer.recipeID
                     }.count)
@@ -74,10 +76,30 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     func currentUser(name: String) async throws -> Person {
         try await composition.people.ensureCurrentUser(displayName: name)
     }
-    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String) async throws -> Int {
+    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String, kind: VoiceSampleKind?) async throws -> Int {
         let result = try await service.enrollPCM(personId: personId, pcm16LE: pcm16LE, sessionID: sessionID)
+        try await record(kind, of: result)
         composition.runtime.notifyVoiceConfigurationChanged()
         return result.examplesAdded
+    }
+    func watchIsStreaming() async -> Bool {
+        if case .streaming = composition.runtime.receiverState.value { return true }
+        return false
+    }
+    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? {
+        await service.watchSampleAudio(fromWallMs: fromWallMs, toWallMs: toWallMs)
+    }
+    func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
+                     kind: VoiceSampleKind?) async throws -> Int {
+        let result = try await service.enrollWatch(personId: personId, fromWallMs: fromWallMs,
+                                                   toWallMs: toWallMs, sessionID: sessionID)
+        try await record(kind, of: result)
+        composition.runtime.notifyVoiceConfigurationChanged()
+        return result.examplesAdded
+    }
+    private func record(_ kind: VoiceSampleKind?, of result: VoiceEnrollmentOutcome) async throws {
+        guard let kind, let confirmation = result.confirmationID else { return }
+        try await VoiceSampleSituationStore(db: composition.database).set(kind.rawValue, confirmationID: confirmation)
     }
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int {
         guard turn.canRememberVoice, let start = turn.sourceStartMs, let end = turn.sourceEndMs else {

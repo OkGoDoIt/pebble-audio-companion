@@ -1,5 +1,30 @@
 import AppDB
+import CompanionRuntime
 import Foundation
+
+/// The samples setup asks for. Recognition listens through the watch, so three are the watch
+/// in different surroundings; the phone microphone adds a differently shaped view of the voice.
+enum VoiceSampleKind: String, CaseIterable, Identifiable, Sendable {
+    case quiet, noisy, outdoors, phone
+    var id: String { rawValue }
+    var microphone: VoiceSampleMicrophone { self == .phone ? .phone : .watch }
+    var title: String {
+        switch self {
+        case .quiet: "Quiet room"
+        case .noisy: "Background noise"
+        case .outdoors: "Outdoors or on the move"
+        case .phone: "Phone microphone"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .quiet: "Through your watch, with no TV or music on."
+        case .noisy: "Through your watch, with a TV, music, or people nearby."
+        case .outdoors: "Through your watch, outside, walking, or in a car."
+        case .phone: "Hold your phone and speak into it."
+        }
+    }
+}
 
 struct VoiceExampleDisplay: Equatable, Identifiable {
     var id: String
@@ -7,11 +32,14 @@ struct VoiceExampleDisplay: Equatable, Identifiable {
     var createdAt: Date
     var source: String
     var exampleIDs: [String] = []
+    var kind: VoiceSampleKind? = nil
+    var microphone: VoiceSampleMicrophone = .watch
 
     /// One explicit confirmation is one visible sample, even when the model extracts
     /// several embeddings or channel variants. Count overlapping evidence only once.
-    static func grouped(_ examples: [VoiceConfirmedExample]) -> [Self] {
+    static func grouped(_ examples: [VoiceConfirmedExample], kinds: [String: String] = [:]) -> [Self] {
         Dictionary(grouping: examples, by: \.confirmationID).map { confirmation, group in
+            let kind = kinds[confirmation].flatMap(VoiceSampleKind.init(rawValue:))
             let ordered = group.sorted { $0.startMediaMs < $1.startMediaMs }
             var duration: Int64 = 0
             var coveredUntil: Int64 = 0
@@ -22,9 +50,16 @@ struct VoiceExampleDisplay: Equatable, Identifiable {
             }
             return Self(id: confirmation, durationSeconds: Double(duration) / 1_000,
                 createdAt: Date(timeIntervalSince1970: Double(group.map(\.createdAtMs).min() ?? 0) / 1_000),
-                source: group.first?.segmentId.hasPrefix("enrollment:") == true ? "Phone sample" : "Watch recording",
-                exampleIDs: group.map(\.id).sorted())
+                source: Self.label(kind: kind, segmentId: group.first?.segmentId ?? ""),
+                exampleIDs: group.map(\.id).sorted(), kind: kind,
+                microphone: VoiceSampleMicrophone.of(segmentId: group.first?.segmentId ?? ""))
         }.sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt > $1.createdAt }
+    }
+
+    private static func label(kind: VoiceSampleKind?, segmentId: String) -> String {
+        if let kind { return kind.title }
+        if VoiceSampleMicrophone.of(segmentId: segmentId) == .phone { return "Phone microphone" }
+        return segmentId.hasPrefix("watch-enrollment:") ? "Watch sample" : "From a conversation"
     }
 }
 
@@ -64,7 +99,13 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func prepareModels(progress: @escaping @Sendable (Double) -> Void) async throws
     func setEnabled(_ enabled: Bool) async throws
     func currentUser(name: String) async throws -> Person
-    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String) async throws -> Int
+    func enrollPCM(personId: String, pcm16LE: Data, sessionID: String, kind: VoiceSampleKind?) async throws -> Int
+    /// Whether the watch is streaming to this phone now, so a sample can come through it.
+    func watchIsStreaming() async -> Bool
+    /// The watch's audio for a sample window so far; nil while none of it has arrived.
+    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio?
+    func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
+                     kind: VoiceSampleKind?) async throws -> Int
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int
     func cancelEnrollment() async
     func recognizeHistory(days: Int?) async throws
