@@ -39,8 +39,33 @@ Living notes for whichever agent continues this. Newest state first. The design 
 - `cc929a84` plan step 1: naming always learns when recognition is on (≤ 5 longest paragraphs, > 30 s
   trimmed to first 30 s), never blocks the name; snackbar line when nothing could be learned or part
   sounded like someone else (`VoiceEnrollmentOutcome.otherVoiceSeconds`).
-- Known wrinkle: `LiveVoiceSource.enrollPassage` starts a history run after every learned passage once
-  ≥ 2 examples exist; with up to 5 passages per save that is up to 5 runs. Start it once per save.
+- `9004844d` one recent-history recheck per save (past week, back to the labelled conversation) via
+  `recognizeAfterLearning`, instead of a whole-archive run per learned paragraph.
+- `0458f7f1` plan step 2: "All by this speaker (N)" in the selection bar — same provider label, same
+  recording (labels restart per recording), same current name (never overwrites a decision).
+- `21a580f9` "That's Dana" / "That's you" one-tap confirmation when everything selected was recognized
+  as one person: becomes a manual name and teaches.
+- `5962e12b` plan step 3: profiles no longer fill. ≤ 4 least-alike crops per passage (`diverse`); a full
+  profile retires its most redundant crop (`retirements`), sparing each sample's last crop and guided
+  samples while possible. Retirement deletes in the same write; the archive revocation trigger now has
+  `WHEN OLD.retiredAtMs IS NULL` (migration `voice-example-retirement-v1`), so pruning neither withdraws
+  archived names nor clears automatic ones. Real-model E2E still passes.
+- **Step 4 (mislabel guard) dropped on purpose:** its main trigger — the model confidently says Sam, the
+  person says Dana — is exactly the correction that must teach. Poisoning is bounded: the matcher averages
+  each person's best two crops and abstains when two people are within the 0.10 margin, so a mislabel
+  degrades to "unnamed", not a confident wrong name. Revisit only with evidence (e.g. a person whose
+  crops sit inside another person's cluster → offer "Dana and Sam sound alike in some clips").
+
+## Shared checkout warning (2026-10-26)
+
+Session "Fix recording times drifting with the watch clock" (local_463214db…) works **in this same
+`main` checkout** with uncommitted changes to `SegmentMeta.swift`, `SegmentStore.swift`, `Moments.swift`,
+`AudioReceiverSession.swift`, `PausedSampleClockTests.swift`, its own migration hunk in `AppDatabase.swift`
+(`moments-paused-clock-v1`), and `WatchVoiceSample.clockLagMs` (uses its new `headReceivedAtMs`). Stage by
+explicit path; stage partial files through the index (`git hash-object -w` + `git update-index
+--cacheinfo`). Verify and deploy from a clean scratch worktree at HEAD:
+`git worktree add --detach <dir> HEAD`, then `IOS_DIR=<dir>/ios ./scripts/deploy-ios-rebuild.sh --device
+G17 --replace --skip-tests`. Its WIP fails ~10 kit tests until it lands; not ours.
 
 ## Root cause: watch sample said "not enough speech" (2026-10-26 15:42)
 
@@ -84,16 +109,16 @@ Steps, in order:
    selection of several paragraphs learns from each clean 2–30 s paragraph (cap per save ~5),
    not just the longest three. Unusable paragraphs are skipped silently (never an error that
    discards the saved name).
-2. **Whole-speaker labelling.** The provider already groups a conversation into Speaker 1/2…:
+2. (DONE `0458f7f1`) **Whole-speaker labelling.** The provider already groups a conversation into Speaker 1/2…:
    offer "All of Speaker 2 in this conversation" when one paragraph of a provider label is
    selected (one tap names every paragraph with that label in this conversation's pieces). Most
    real labelling is "this whole speaker is Dana".
-3. **Profile capacity for many modes.** Replace the hard 32-example cap with pruning: keep the
+3. (DONE `5962e12b`) **Profile capacity for many modes.** Replace the hard 32-example cap with pruning: keep the
    most diverse exemplars (farthest-point / drop the most redundant by cosine to its nearest
    sibling), never dropping the last exemplar of a recording session or microphone. Count
    distinct *sessions* (recordings) as independent evidence; crops from one session are not
    independent (already true for codec variants via confirmationID).
-4. **Mislabel guard (inconsistent quality cuts both ways).** When a new labelled clip is far
+4. (DROPPED — see above) **Mislabel guard (inconsistent quality cuts both ways).** When a new labelled clip is far
    from every exemplar of the chosen person (best cosine < ~0.3) *and* matches another person
    (passes their threshold + margin), don't silently learn it: save the name, skip learning, and
    say one line ("Saved. This clip sounds more like Sam, so it wasn't used to learn Dana's voice").
