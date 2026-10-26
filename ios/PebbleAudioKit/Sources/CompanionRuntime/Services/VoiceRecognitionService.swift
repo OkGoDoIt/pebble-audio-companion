@@ -12,6 +12,14 @@ public struct VoiceEnrollmentOutcome: Equatable, Sendable {
     public let usableSpeechSeconds: Double
     /// Groups every crop this one confirmation produced; nil when nothing new was saved.
     public var confirmationID: String? = nil
+    /// Speech in the passage that sounded like someone else and was left out of learning.
+    public var otherVoiceSeconds: Double = 0
+    public init(personId: String, examplesAdded: Int, usableSpeechSeconds: Double,
+                confirmationID: String? = nil, otherVoiceSeconds: Double = 0) {
+        self.personId = personId; self.examplesAdded = examplesAdded
+        self.usableSpeechSeconds = usableSpeechSeconds; self.confirmationID = confirmationID
+        self.otherVoiceSeconds = otherVoiceSeconds
+    }
 }
 
 public struct VoiceRecognitionStatus: Equatable, Sendable {
@@ -230,8 +238,9 @@ public actor VoiceRecognitionService {
                                  microphone: microphone, generation: beginEnrollment())
     }
 
-    /// A sample the person recorded through the watch just now: its audio between two
-    /// phone-clock instants, copied out of the recording it landed in. The most recent 30 s
+    /// A sample the person recorded through the watch just now: its audio between two instants
+    /// on the watch's sample clock (`watchSampleAudio`'s `watchFromMs`/`watchToMs`), copied out of
+    /// the recording it landed in. The most recent 30 s
     /// are used when the window is longer.
     public func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64,
                             sessionID: String) async throws -> VoiceEnrollmentOutcome {
@@ -246,13 +255,19 @@ public actor VoiceRecognitionService {
                                         microphone: .watch, generation: generation)
     }
 
-    /// The watch's audio for a sample window as it stands now: what was said, and how far the
-    /// watch's audio has arrived, so the caller can wait for the last seconds and let the
-    /// person listen before saving. Nil when nothing from the window has arrived.
-    public nonisolated func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? {
+    /// The watch's audio for a sample the person is recording now, asked for on this phone's
+    /// clock: translated onto the watch's sample clock by its measured lag, padded at the end for
+    /// delivery delay. `receivedThroughWallMs` comes back on the phone's clock; `watchFromMs`/
+    /// `watchToMs` are what `enrollWatch` takes. Nil when no watch audio has arrived recently.
+    public nonisolated func watchSampleAudio(phoneStartMs: Int64, phoneEndMs: Int64,
+                                             now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)) async -> WatchVoiceSampleAudio? {
         let reader = WatchVoiceSampleReader(files: files)
         return await Task.detached(priority: .utility) {
-            try? reader.audio(fromWallMs: fromWallMs, toWallMs: toWallMs)
+            guard let lag = reader.clockLagMs(now: now),
+                  let audio = try? reader.audio(fromWallMs: phoneStartMs - lag, toWallMs: phoneEndMs - lag + 1_500)
+            else { return nil }
+            return WatchVoiceSampleAudio(pcm16LE: audio.pcm16LE, receivedThroughWallMs: audio.receivedThroughWallMs + lag,
+                                         watchFromMs: audio.watchFromMs, watchToMs: audio.watchToMs)
         }.value
     }
 
@@ -302,8 +317,8 @@ public actor VoiceRecognitionService {
         try checkEnrollment(generation)
         let analysis = try await analyzer.analyze(audio)
         try checkEnrollment(generation)
-        let clean = try Self.enrollmentTurns(analysis, audio: audio,
-                                             sameVoiceSimilarity: policy.minimumSimilarity)
+        let (clean, otherVoiceSamples) = try Self.enrollmentTurns(analysis, audio: audio,
+                                                                  sameVoiceSimilarity: policy.minimumSimilarity)
         let prior = context.examples.filter { $0.personId == personId && $0.recipeID == analysis.recipeID }
         let fresh = clean.filter { turn in
             !prior.contains { ($0.segmentId == audio.sourceID || $0.sourceRevision == audio.sourceRevision)
@@ -364,7 +379,8 @@ public actor VoiceRecognitionService {
         lastMessage = nil; changed()
         return VoiceEnrollmentOutcome(personId: personId, examplesAdded: examples.count,
             usableSpeechSeconds: clean.reduce(0) { $0 + Double($1.endSample - $1.startSample) / 16_000 },
-            confirmationID: examples.isEmpty ? nil : confirmation)
+            confirmationID: examples.isEmpty ? nil : confirmation,
+            otherVoiceSeconds: Double(otherVoiceSamples) / 16_000)
     }
 
     private struct EnrollmentQuality: Codable {
@@ -403,7 +419,7 @@ public actor VoiceRecognitionService {
     /// model put in another cluster join it only when they sound like it. A TV or a passer-by is
     /// left out rather than learned. Only too little usable speech refuses the sample.
     static func enrollmentTurns(_ analysis: SpeakerAnalysis, audio: SpeakerAnalysisAudio,
-                                sameVoiceSimilarity: Double) throws -> [SpeakerTurn] {
+                                sameVoiceSimilarity: Double) throws -> (turns: [SpeakerTurn], otherVoiceSamples: Int) {
         let lower = audio.sourceStartSample
         let upper = lower + audio.pcm16LE.count / 2
         let usable = analysis.turns.filter {
@@ -426,7 +442,9 @@ public actor VoiceRecognitionService {
         for turn in kept where clean.last.map({ $0.endSample <= turn.startSample }) ?? true {
             clean.append(turn)
         }
-        return clean
+        let other = usable.filter { turn in !kept.contains { $0.startSample == turn.startSample } }
+            .reduce(0) { $0 + $1.endSample - $1.startSample }
+        return (clean, other)
     }
 
     /// The normal foreground/new-recording hook. Repeating it is idempotent in the DB.

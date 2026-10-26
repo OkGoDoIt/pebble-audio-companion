@@ -203,7 +203,8 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
             turn(6, "c", someoneElse), turn(8, "a", me, overlap: true),
         ], recipeID: "recipe", elapsedMilliseconds: 1)
         let kept = try VoiceRecognitionService.enrollmentTurns(analysis, audio: audio, sameVoiceSimilarity: 0.55)
-        #expect(kept.map { $0.startSample / 16_000 } == [0, 2, 4])
+        #expect(kept.turns.map { $0.startSample / 16_000 } == [0, 2, 4])
+        #expect(kept.otherVoiceSamples == 32_000, "Two seconds sounded like someone else")
 
         let onlyOverlap = SpeakerAnalysis(turns: [turn(0, "a", me, overlap: true)], recipeID: "recipe", elapsedMilliseconds: 1)
         #expect(throws: VoiceEnrollmentError.notEnoughSpeech) {
@@ -306,6 +307,32 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(audio.receivedThroughWallMs == reach)
         let skipped = try #require(try reader.audio(fromWallMs: Self.t0 + 6_100, toWallMs: Self.t0 + 7_900))
         #expect(skipped.pcm16LE.isEmpty, "Nothing was said in the skipped stretch, but audio has arrived past it")
+    }
+
+    /// G17 on 2026-10-26: the watch's sample clock was 15 minutes behind the phone (it stops
+    /// while the mic is off), so a window taken straight from the phone's clock found nothing.
+    @Test func aPhoneClockWindowFindsTheAudioWhenTheWatchClockIsFifteenMinutesBehind() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (_, segmentId) = try await Self.openRecording(root)
+        let lag: Int64 = 900_000
+        let head = Self.t0 + 15_200
+        let sidecar = root.appendingPathComponent("segments/\(segmentId)\(SegmentStore.metaSuffix)").path
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: Double(head + lag) / 1_000)], ofItemAtPath: sidecar)
+        let service = service(try AppDatabase.inMemory(), root: root, analyzer: VoiceTestAnalyzer())
+        let phoneStart: Int64 = Self.t0 + 1_000 + lag
+        let phoneEnd: Int64 = Self.t0 + 14_000 + lag
+        let audio = try #require(await service.watchSampleAudio(phoneStartMs: phoneStart, phoneEndMs: phoneEnd,
+                                                                now: head + lag + 1_000))
+        let expectedBytes: Int = 550 * 640
+        #expect(audio.pcm16LE.count == expectedBytes, "1–14 s plus the delivery pad, on the watch's clock")
+        let received: Int64 = head + lag
+        #expect(audio.receivedThroughWallMs == received)
+        let watchFrom: Int64 = Self.t0 + 1_000
+        #expect(audio.watchFromMs == watchFrom)
+        #expect(await service.watchSampleAudio(phoneStartMs: phoneStart, phoneEndMs: phoneEnd,
+                                               now: head + lag + 3_600_000) == nil, "No recent watch audio")
     }
 
     @Test func watchSampleIsItsOwnSourceAndSkipsThePhoneCodecVariant() async throws {

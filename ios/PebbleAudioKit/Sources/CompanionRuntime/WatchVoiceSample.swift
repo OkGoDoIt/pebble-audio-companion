@@ -17,16 +17,21 @@ public enum VoiceSampleMicrophone: String, Sendable, CaseIterable {
     }
 }
 
-/// Speech the watch captured between two phone-clock instants.
+/// Speech the watch captured for a sample, with where it sits on both clocks.
 public struct WatchVoiceSampleAudio: Equatable, Sendable {
     public let pcm16LE: Data
-    /// How far the watch's audio had reached when this was read, so a caller can tell whether
-    /// the window's last seconds are still on their way over Bluetooth.
+    /// How far the watch's audio had reached when this was read, on the clock it was asked on,
+    /// so a caller can tell whether the window's last seconds are still on their way.
     public let receivedThroughWallMs: Int64
+    /// The window on the watch's own sample clock: what enrollment reads again.
+    public var watchFromMs: Int64 = 0
+    public var watchToMs: Int64 = 0
     public var seconds: Double { Double(pcm16LE.count) / 32_000 }
-    public init(pcm16LE: Data, receivedThroughWallMs: Int64) {
+    public init(pcm16LE: Data, receivedThroughWallMs: Int64, watchFromMs: Int64 = 0, watchToMs: Int64 = 0) {
         self.pcm16LE = pcm16LE
         self.receivedThroughWallMs = receivedThroughWallMs
+        self.watchFromMs = watchFromMs
+        self.watchToMs = watchToMs
     }
 }
 
@@ -44,7 +49,7 @@ public struct WatchVoiceSampleReader: Sendable {
         guard end > start else { return nil }
         var pcm = Data()
         var received: Int64?
-        for meta in recentMetas(since: start - 60_000).sorted(by: { $0.startWallMs < $1.startWallMs }) {
+        for meta in recentMetas(since: start - 60 * 60_000).sorted(by: { $0.startWallMs < $1.startWallMs }) {
             // An open recording's sidecar trails its frames by up to a flush interval, so its
             // frames are read whatever the sidecar says about how far they reach.
             guard meta.sampleRateHz == 16_000, meta.channels == 1, meta.frameSamples == 320,
@@ -77,7 +82,20 @@ public struct WatchVoiceSampleReader: Sendable {
             try flush()
         }
         guard let received else { return nil }
-        return WatchVoiceSampleAudio(pcm16LE: pcm, receivedThroughWallMs: received)
+        return WatchVoiceSampleAudio(pcm16LE: pcm, receivedThroughWallMs: received, watchFromMs: start, watchToMs: end)
+    }
+
+    /// How far the watch's sample clock trails this phone, read from the newest recording's
+    /// last sidecar write: the phone's time of that write minus the watch-clock time of the
+    /// newest sample it records. The watch's clock is not wall time: it stops while the
+    /// microphone is off without the stream restarting (2026-10-26: 27 s behind one day, 15 min
+    /// the next), and this also absorbs the Bluetooth delivery delay. Nil with no recent audio.
+    public func clockLagMs(now: Int64) -> Int64? {
+        let newest = recentMetaURLs(since: now - 15 * 60_000).max { $0.1 < $1.1 }
+        guard let (url, modified) = newest,
+              let meta = files.readMeta(String(url.lastPathComponent.dropLast(SegmentStore.metaSuffix.count))),
+              let head = Self.endWallMs(meta) else { return nil }
+        return Int64(modified.timeIntervalSince1970 * 1_000) - head
     }
 
     static func wallMs(ofSample index: UInt64, in meta: SegmentMeta) -> Int64 {
@@ -91,6 +109,12 @@ public struct WatchVoiceSampleReader: Sendable {
     /// Only sidecars written recently: the open recording and any that closed in the window.
     /// Decoding every sidecar in a large library on each poll would cost far more than this.
     private func recentMetas(since wallMs: Int64) -> [SegmentMeta] {
+        recentMetaURLs(since: wallMs).compactMap { url, _ in
+            files.readMeta(String(url.lastPathComponent.dropLast(SegmentStore.metaSuffix.count)))
+        }
+    }
+
+    private func recentMetaURLs(since wallMs: Int64) -> [(URL, Date)] {
         let directory = files.root.appendingPathComponent("segments", isDirectory: true)
         let entries = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
@@ -99,7 +123,7 @@ public struct WatchVoiceSampleReader: Sendable {
             guard url.lastPathComponent.hasSuffix(SegmentStore.metaSuffix),
                   let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                   modified >= cutoff else { return nil }
-            return files.readMeta(String(url.lastPathComponent.dropLast(SegmentStore.metaSuffix.count)))
+            return (url, modified)
         }
     }
 }

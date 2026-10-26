@@ -326,7 +326,7 @@ struct VoiceSetupScreen: View {
     private func save(_ kind: VoiceSampleKind) {
         operation = Task {
             let saved: Bool
-            if kind.microphone == .watch, let window = watch.window {
+            if kind.microphone == .watch, let window = watch.watchWindow {
                 saved = await model.saveWatchEnrollment(name: name, person: person, fromWallMs: window.lowerBound,
                     toWallMs: window.upperBound, sessionID: watch.sessionID, kind: kind)
             } else if let pcm = recorder.pcm {

@@ -39,7 +39,7 @@ import Testing
         return 2
     }
     func watchIsStreaming() async -> Bool { streaming }
-    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? { watchAudio }
+    func watchSampleAudio(phoneStartMs: Int64, phoneEndMs: Int64) async -> WatchVoiceSampleAudio? { watchAudio }
     func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
                      kind: VoiceSampleKind?) async throws -> Int {
         if failEnrollment { throw Failure.unavailable }
@@ -48,7 +48,9 @@ import Testing
         watchWindows.append(fromWallMs...toWallMs)
         return 2
     }
-    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int { 1 }
+    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome {
+        VoiceEnrollmentOutcome(personId: personId, examplesAdded: 1, usableSpeechSeconds: 4)
+    }
     func cancelEnrollment() async { cancelled = true }
     func recognizeHistory(days: Int?) async throws { scopes.append(days) }
     func cancelRun(id: String) async throws {}
@@ -177,7 +179,8 @@ struct VoiceWatchSampleRecorderTests {
     }
 
     private func audio(seconds: Int, through: Int64) -> WatchVoiceSampleAudio {
-        WatchVoiceSampleAudio(pcm16LE: Data(count: seconds * 32_000), receivedThroughWallMs: through)
+        WatchVoiceSampleAudio(pcm16LE: Data(count: seconds * 32_000), receivedThroughWallMs: through,
+                              watchFromMs: 5, watchToMs: 15)
     }
 
     @Test func aWatchThatIsNotStreamingCannotRecordASample() async {
@@ -200,6 +203,7 @@ struct VoiceWatchSampleRecorderTests {
         await recorder.finish()
         #expect(recorder.phase == .ready)
         #expect(recorder.window == 1_000_000...1_015_000)
+        #expect(recorder.watchWindow == 5...15, "Enrollment reads the window on the watch's own clock")
     }
 
     @Test func tooLittleSpeechGoesBackToTheStartWithAReason() async {

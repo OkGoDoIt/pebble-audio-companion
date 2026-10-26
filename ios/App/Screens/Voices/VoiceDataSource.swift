@@ -111,11 +111,12 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func enrollPCM(personId: String, pcm16LE: Data, sessionID: String, kind: VoiceSampleKind?) async throws -> Int
     /// Whether the watch is streaming to this phone now, so a sample can come through it.
     func watchIsStreaming() async -> Bool
-    /// The watch's audio for a sample window so far; nil while none of it has arrived.
-    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio?
+    /// The watch's audio for a sample window on this phone's clock, so far; nil while none of it
+    /// has arrived. Its `watchFromMs`/`watchToMs` are what `enrollWatch` takes.
+    func watchSampleAudio(phoneStartMs: Int64, phoneEndMs: Int64) async -> WatchVoiceSampleAudio?
     func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
                      kind: VoiceSampleKind?) async throws -> Int
-    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int
+    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome
     func cancelEnrollment() async
     func recognizeHistory(days: Int?) async throws
     func cancelRun(id: String) async throws

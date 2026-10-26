@@ -141,7 +141,8 @@ public final class LocalSpeakerDiarizer: SpeakerSpeechAnalyzing {
             try authorize(); try Task.checkCancellation()
             let windowEnd = min(offset + 160_000, sampleCount)
             let pcm = audio.pcm16LE.subdata(in: (offset * 2)..<(windowEnd * 2))
-            let scores = try await segmentation.scores(pcm16LE: pcm, model: model, authorize: authorize)
+            let scores = try await segmentation.scores(pcm16LE: DetectionGain.apply(to: pcm), model: model,
+                                                       authorize: authorize)
             try authorize()
             let intervals = Self.splitForEmbeddings(Self.intervals(scores, sampleCount: windowEnd - offset), scores: scores)
             var embeddings: [Int: SpeakerEmbedding] = [:]

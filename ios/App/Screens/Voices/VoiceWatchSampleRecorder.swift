@@ -18,7 +18,10 @@ final class VoiceWatchSampleRecorder {
     private(set) var phase: Phase = .idle
     private(set) var elapsed: TimeInterval = 0
     private(set) var errorMessage: String?
+    /// Start and stop on this phone's clock.
     private(set) var window: ClosedRange<Int64>?
+    /// The same window on the watch's sample clock, once its audio has arrived: what is learned.
+    private(set) var watchWindow: ClosedRange<Int64>?
     private(set) var sessionID = UUID().uuidString.lowercased()
     private var pcm: Data?
     private var player: AVAudioPlayer?
@@ -33,7 +36,7 @@ final class VoiceWatchSampleRecorder {
 
     init(source: (any VoiceRecognitionDataSource)? = nil,
          now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
-         pollInterval: Duration = .seconds(1), arrivalTimeout: TimeInterval = 20) {
+         pollInterval: Duration = .seconds(1), arrivalTimeout: TimeInterval = 45) {
         injectedSource = source
         self.now = now
         self.pollInterval = pollInterval
@@ -71,11 +74,11 @@ final class VoiceWatchSampleRecorder {
         window = start...end
         phase = .collecting
         let deadline = Date().addingTimeInterval(arrivalTimeout)
-        var audio = await source.watchSampleAudio(fromWallMs: start, toWallMs: end)
+        var audio = await source.watchSampleAudio(phoneStartMs: start, phoneEndMs: end)
         while token == generation, (audio?.receivedThroughWallMs ?? .min) < end, Date() < deadline {
             try? await Task.sleep(for: pollInterval)
             guard token == generation else { return }
-            audio = await source.watchSampleAudio(fromWallMs: start, toWallMs: end)
+            audio = await source.watchSampleAudio(phoneStartMs: start, phoneEndMs: end)
         }
         guard token == generation else { return }
         guard let audio else {
@@ -87,6 +90,7 @@ final class VoiceWatchSampleRecorder {
             return
         }
         pcm = audio.pcm16LE
+        watchWindow = audio.watchFromMs...max(audio.watchFromMs, audio.watchToMs)
         phase = .ready
     }
 
@@ -113,6 +117,7 @@ final class VoiceWatchSampleRecorder {
         player = nil
         pcm = nil
         window = nil
+        watchWindow = nil
         elapsed = 0
         errorMessage = nil
         phase = .idle

@@ -86,8 +86,8 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         if case .streaming = composition.runtime.receiverState.value { return true }
         return false
     }
-    func watchSampleAudio(fromWallMs: Int64, toWallMs: Int64) async -> WatchVoiceSampleAudio? {
-        await service.watchSampleAudio(fromWallMs: fromWallMs, toWallMs: toWallMs)
+    func watchSampleAudio(phoneStartMs: Int64, phoneEndMs: Int64) async -> WatchVoiceSampleAudio? {
+        await service.watchSampleAudio(phoneStartMs: phoneStartMs, phoneEndMs: phoneEndMs)
     }
     func enrollWatch(personId: String, fromWallMs: Int64, toWallMs: Int64, sessionID: String,
                      kind: VoiceSampleKind?) async throws -> Int {
@@ -101,12 +101,14 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         guard let kind, let confirmation = result.confirmationID else { return }
         try await VoiceSampleSituationStore(db: composition.database).set(kind.rawValue, confirmationID: confirmation)
     }
-    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> Int {
-        guard turn.canRememberVoice, let start = turn.sourceStartMs, let end = turn.sourceEndMs else {
+    func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome {
+        guard turn.canIdentifyPassage, let start = turn.sourceStartMs, let full = turn.sourceEndMs,
+              full - start >= 2_000 else {
             throw SpeakerEditorError.timingUnavailable
         }
+        // A long passage still teaches the voice: its first 30 seconds are plenty.
         let result = try await service.enroll(personId: personId, segmentId: turn.segmentId,
-                                              startMediaMs: start, endMediaMs: end)
+                                              startMediaMs: start, endMediaMs: min(full, start + 30_000))
         // Remembering a passage explicitly promises to update older retained recordings.
         // The durable fixed-scope plan resumes a bounded queue in the foreground.
         if try await service.status().configuration.mode == .local,
@@ -114,7 +116,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             _ = try await service.recognizeHistory(fromMs: 0, toMs: Int64(Date().timeIntervalSince1970 * 1_000))
         }
         composition.runtime.notifyVoiceConfigurationChanged()
-        return result.examplesAdded
+        return result
     }
     func cancelEnrollment() async {
         service.cancelEnrollment()

@@ -140,7 +140,8 @@ public struct SpeakerAudioSample: Sendable {
         guard rms > 0 else { throw SpeakerRecognitionError.invalidAudio("No audible signal") }
         let db = 20 * log10(rms)
         let clippedFraction = Double(clipped) / Double(count)
-        guard db >= -60 else { throw SpeakerRecognitionError.invalidAudio("Signal is too quiet") }
+        // Watch speech routinely sits at −55 to −65 dBFS; the floor only refuses near-silence.
+        guard db >= -75 else { throw SpeakerRecognitionError.invalidAudio("Signal is too quiet") }
         guard clippedFraction <= 0.01 else { throw SpeakerRecognitionError.invalidAudio("Signal is clipped") }
         return SpeakerAudioQuality(durationSeconds: Double(count) / 16_000,
                                    rmsDBFS: db, clippedFraction: clippedFraction)
