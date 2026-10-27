@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import MuseLink
 import WireProtocol
 
@@ -154,6 +155,9 @@ actor MuseTools {
     private var inFlightChanges: [String: Task<MuseJSON, Never>] = [:]
     private var questionGeneration = 0
     private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
+    private var invocationResults: [String: (generation: Int, result: MuseJSON)] = [:]
+    private var invocationTasks: [String: Task<MuseJSON, Never>] = [:]
+    private var invocationReceipts: [String: [String: String]]
     /// A call that changes something, repeated within this, gets the first one's result: Muse
     /// retries a call whose reply it never got, and the timer may already be running.
     static let repeatWindow: TimeInterval = 180
@@ -165,6 +169,7 @@ actor MuseTools {
     ) {
         self.holdLimit = holdLimit
         self.preferences = preferences
+        self.invocationReceipts = preferences.invocationReceipts()
         self.data = data
         self.eventKit = eventKit
         self.clock = clock
@@ -211,22 +216,22 @@ actor MuseTools {
         let actions = prefs.watchActions
         if actions.contains(.timer) {
             c[timerCommand] = [
-                "description": "Start a countdown timer on the user's Pebble watch. Returns its id and current state. Use watch.timers to list, check, pause, resume, change, restart or cancel timers. Maximum four live timers; timers do not survive a watch reboot.",
+                "description": "Start a real countdown in Timer by Pebble/Core Devices on the watch. It appears in that app and survives a watch reboot. Returns its id and state. Use watch.timers to manage it. Eight stored timers maximum; labels are unsupported by the native app. Requires compatible firmware and the Timer app installed.",
                 "required": ["seconds": param("integer", "How long, in seconds, from 1 to 86400.")],
-                "optional": ["label": param("string", "A word or two shown when it ends, like \"Pasta\".")],
+                "optional": ["label": param("string", "Not supported by the native Timer app; omit.")],
                 "timeout_ms": 30_000,
             ]
         }
         if actions.contains(.timer) {
             c[timersCommand] = [
-                "description": "Manage Pebble watch countdowns. List first to get ids and labels; ask which timer if ambiguous. get reads live time remaining. update preserves omitted fields: seconds sets time remaining from now (and the restart duration), preserving paused state; label renames. restart starts the original or updated duration again. cancel removes a timer. Finished timers remain readable/restartable until their slot is reused. At most four running/paused timers; all are lost on watch reboot. Never create a replacement to edit a timer. After an unconfirmed change, read status before retrying.",
+                "description": "Manage the actual timers in Timer by Pebble/Core Devices. List first; ask which timer if ambiguous. get reads time remaining. update changes seconds, preserving paused state. restart runs the saved duration again; cancel deletes it. All eight stored timers, including paused and finished ones, count toward capacity. They survive reboot and work without the phone. Labels are unsupported. Native app edits may change ids, so refresh the list. Close Timer before using Muse to manage it. After an unconfirmed change, read status before retrying.",
                 "required": ["action": param("string", "list, create, get, pause, resume, update, restart or cancel.")],
                 "optional": [
                     "id": param("integer", "Timer id from list/create; required except for list/create."),
                     "seconds": param("integer", "Required for create; optional for update: 1-86400 seconds remaining."),
-                    "label": param("string", "With create/update: label, up to 48 UTF-8 bytes; empty clears it."),
+                    "label": param("string", "Unsupported by native Timer; omit."),
                 ],
-                "timeout_ms": 60_000,
+                "timeout_ms": 110_000,
             ]
         }
         if actions.contains(.alarm) {
@@ -369,14 +374,18 @@ actor MuseTools {
     func questionBegan() {
         questionGeneration += 1
         recentChanges.removeAll()
+        invocationResults.removeAll()
         allowedOnce.removeAll()
         changesAllowedOnce.removeAll()
         changesDeclined.removeAll()
     }
 
-    func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
+    func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide, invocationID: String? = nil) async -> MuseJSON {
         guard Self.commands(for: preferences.current.value, hasData: data != nil)[command] != nil else {
             return await perform(command, params, watch: watch)
+        }
+        if let invocationID, Self.changesState(command, params) {
+            return await runInvocation(command, params, watch: watch, id: invocationID)
         }
         let key = Self.changeKey(command, params)
         let now = clock()
@@ -408,6 +417,45 @@ actor MuseTools {
             recentChanges.append((key, clock(), result))
         }
         return result
+    }
+
+    private func runInvocation(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide, id: String) async -> MuseJSON {
+        guard !id.isEmpty, id.utf8.count <= 256 else { return Self.error("Invalid invocation id.") }
+        func hash(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+        let key = hash(id)
+        let fingerprint = hash(command + " " + params.compactString())
+        let now = clock().timeIntervalSince1970
+        invocationReceipts = invocationReceipts.filter { now - (Double($0.value["at"] ?? "") ?? 0) < 30 * 86400 }
+        if let receipt = invocationReceipts[key] {
+            guard receipt["fingerprint"] == fingerprint else { return Self.error("Invocation id was reused for a different command. Nothing was changed.") }
+            if let pending = invocationTasks[key] { return await pending.value }
+            if let saved = invocationResults[key], saved.generation == questionGeneration { return saved.result }
+            return ["ok": false, "outcome_unknown": true,
+                    "error": "This invocation was already handled. Read the current state before issuing a new change; it was not repeated."]
+        }
+        // Keep retry protection instead of evicting a recent uncertain change to make room.
+        guard invocationReceipts.count < 10_000 else { return Self.error("Command history is full. No change was attempted.") }
+        invocationReceipts[key] = ["fingerprint": fingerprint, "at": String(now)]
+        preferences.saveInvocationReceipts(invocationReceipts)
+        let generation = questionGeneration
+        let task = Task { await self.perform(command, params, watch: watch) }
+        invocationTasks[key] = task
+        let result = await task.value
+        invocationTasks[key] = nil
+        invocationResults[key] = (generation, result)
+        return result
+    }
+
+    private static func changesState(_ command: String, _ params: MuseJSON) -> Bool {
+        if changeKey(command, params) != nil { return true }
+        switch command {
+        case musicCommand: return params["action"]?.string != "now_playing"
+        case quietTimeCommand, openAppCommand, findCommand: return params["action"]?.string != "status" && params["action"]?.string != "list"
+        case recordingCommand: return params["action"]?.string != "status"
+        case remindersCommand: return MuseReminders.Action(params["action"]?.string)?.changes == true
+        case calendarCommand: return ["edit", "update", "delete"].contains(params["action"]?.string ?? "")
+        default: return false
+        }
     }
 
     /// What identifies a call that changes something (a timer, an alarm, a new or deleted
@@ -565,17 +613,12 @@ actor MuseTools {
         guard params["seconds"] == nil || (1...86400).contains(seconds) else {
             return Self.error("seconds must be an integer from 1 to 86400")
         }
-        let request = WatchActionRequest.timers(operation, id: id, seconds: seconds, label: label)
+        let request = WatchActionRequest.nativeTimers(operation, id: id, seconds: seconds, label: label)
         guard (try? request.payload()) != nil else { return Self.error("Invalid fields for this timer action.") }
-        var result = await watch.runWatchAction(request, wait: .seconds(10))
-        if operation == .create, result?.status == .unsupported {
-            // Only a definitive Unsupported permits fallback; never retry an ambiguous write.
-            result = await watch.runWatchAction(.timer(seconds: seconds, label: label ?? ""), wait: .seconds(10))
-            guard let result else { return Self.unconfirmed("timer", read: "watch.timers list after updating firmware") }
-            return Self.outcome(result) { _ in
-                ["set": true, "seconds": .number(Double(seconds)), "managed": false,
-                 "note": "Timer started on older firmware. Update the watch for status, edits and cancellation."]
-            }
+        guard label?.isEmpty != false else { return Self.error("Timer by Pebble/Core Devices does not support labels. No timer was changed.") }
+        let result = await watch.runWatchAction(request, wait: .seconds(10))
+        if result?.status == .unsupported {
+            return Self.error("The watch needs updated firmware for native Timer management. No private background timer was created.")
         }
         guard let result else {
             return operation == .get || operation == .list ? Self.error("The watch did not answer; timer state is unknown.")
@@ -589,19 +632,19 @@ actor MuseTools {
         if operation == .list {
             let fields = (result.textString ?? "").split(separator: "\n")
             let ids = fields.compactMap { UInt32($0) }
-            guard fields.count == ids.count, ids.count <= 4, !ids.contains(0), Set(ids).count == ids.count else {
+            guard fields.count == ids.count, ids.count <= 8, !ids.contains(0), Set(ids).count == ids.count else {
                 return Self.error("The watch returned an invalid timer list.")
             }
             var rows: [MuseJSON] = []
             for timerID in ids {
-                let detail = await watch.runWatchAction(.timers(.get, id: timerID), wait: .seconds(10))
+                let detail = await watch.runWatchAction(.nativeTimers(.get, id: timerID), wait: .seconds(10))
                 guard detail?.status == .done, let row = Self.timerJSON(detail?.textString),
                       row["id"]?.number == Double(timerID) else {
                     return Self.error("Timer list changed or could not be fully read; list again before changing a timer.")
                 }
                 rows.append(row)
             }
-            return ["ok": true, "payload": ["timers": .array(rows), "max_live_timers": 4, "survives_watch_restart": false]]
+            return ["ok": true, "payload": ["timers": .array(rows), "max_stored_timers": 8, "survives_watch_restart": true, "app": "Timer by Pebble/Core Devices", "labels_supported": false]]
         }
         guard let row = Self.timerJSON(result.textString), operation == .create || row["id"]?.number == Double(id) else {
             return operation == .get ? Self.error("The watch returned invalid timer status.")
@@ -617,12 +660,13 @@ actor MuseTools {
         let fields = parts[0].split(separator: ",", omittingEmptySubsequences: false)
         guard fields.count == 4, let id = UInt32(fields[0]), id != 0,
               let state = Int(fields[1]), (1...3).contains(state),
-              let ms = Int(fields[2]), (0...86_400_000).contains(ms),
-              let duration = Int(fields[3]), (1...86400).contains(duration) else { return nil }
+              let ms = Int(fields[2]), (0...Int(Int32.max)).contains(ms),
+              let duration = Int(fields[3]), (1...2_147_484).contains(duration) else { return nil }
         return ["id": .number(Double(id)), "label": .string(String(parts[1])),
                 "state": .string(["running", "paused", "finished"][state - 1]),
                 "remaining_seconds": .number(Double((ms + 999) / 1000)),
-                "duration_seconds": .number(Double(duration)), "survives_watch_restart": false]
+                "duration_seconds": .number(Double(duration)), "survives_watch_restart": true,
+                "app": "Timer by Pebble/Core Devices", "labels_supported": false]
     }
 
     private func alarms(_ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
@@ -680,6 +724,7 @@ actor MuseTools {
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
         change: Bool = false
     ) async -> MuseJSON? {
+        let generation = questionGeneration
         let what = source == .calendar ? "calendar" : "reminders"
         if phoneRefused(source) {
             _ = await watch.runWatchAction(.notice(Self.refusedNotice(what)), wait: .seconds(5))
@@ -696,6 +741,8 @@ actor MuseTools {
         var lastStatus = ContinuousClock.now
         await watch.showStatus("Waiting for your iPhone")
         while ContinuousClock.now < deadline {
+            guard generation == questionGeneration else { return Self.reply(.notAnswered, source) }
+            guard preferences.current.value.access(source) != .off else { return Self.reply(.notAllowed, source) }
             if phoneAuthorized(source) {
                 log("\(source.rawValue): iOS access given")
                 return nil
@@ -811,6 +858,7 @@ actor MuseTools {
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
         change: Bool = false
     ) async -> MuseJSON? {
+        let generation = questionGeneration
         switch prefs.access(source) {
         case .allowed: return nil
         case .off: return Self.reply(.notAllowed, source)
@@ -820,7 +868,7 @@ actor MuseTools {
         if !change, mayReadOnce(source) { return nil }
         // One question on the watch at a time; a second source waits its turn.
         while prompting {
-            guard ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
+            guard generation == questionGeneration, ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
             try? await Task.sleep(for: .milliseconds(100))
         }
         // The answer may have come while waiting.
@@ -844,6 +892,8 @@ actor MuseTools {
                 question: change ? Self.changeQuestion(source) : Self.consentQuestion(source), options: Self.consentOptions,
                 timeoutSeconds: shown),
             wait: .seconds(shown + 8))
+        guard generation == questionGeneration, ContinuousClock.now < deadline else { return Self.reply(.notAnswered, source) }
+        guard preferences.current.value.access(source) != .off else { return Self.reply(.notAllowed, source) }
         switch (result?.status, result?.value) {
         case (.done?, 0?):
             allowedOnce[source] = clock()

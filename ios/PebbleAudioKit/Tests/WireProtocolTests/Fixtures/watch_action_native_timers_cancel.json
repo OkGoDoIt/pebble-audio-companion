@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Core Devices Timer app management: cancel",
+  "expect": "parse",
+  "fields": {
+    "action_id": 9,
+    "flags": 0,
+    "payload_hex": "0c0778563412000000000000",
+    "request_token": 83
+  },
+  "name": "watch_action_native_timers_cancel",
+  "size": 17
+}

@@ -812,6 +812,7 @@ data class WatchAlarms(
 /** Countdown lifecycle (WATCH_ACTION kind 11). IDs come from the watch, never from a slot. */
 data class WatchTimers(
     val operation: Int, val id: UInt = 0u, val seconds: Int = 0, val label: String? = null,
+    val native: Boolean = false,
 ) {
     fun payload(): ByteArray {
         require(operation in 0..7 && seconds in 0..86400)
@@ -822,7 +823,7 @@ data class WatchTimers(
         val encoded = (label ?: "").encodeToByteArray()
         var count = minOf(encoded.size, 48)
         while (count > 0 && count < encoded.size && (encoded[count].toInt() and 0xC0) == 0x80) count--
-        return WireWriter(12 + count).u8(11).u8(operation).u32(id).u32(seconds.toUInt())
+        return WireWriter(12 + count).u8(if (native) 12 else 11).u8(operation).u32(id).u32(seconds.toUInt())
             .u8(if (label == null) 0 else 1).u8(count).bytes(encoded.copyOf(count)).toByteArray()
     }
 }

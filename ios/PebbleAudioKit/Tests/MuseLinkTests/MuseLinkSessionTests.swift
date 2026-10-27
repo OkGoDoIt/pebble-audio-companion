@@ -204,7 +204,7 @@ struct MuseLinkSessionTests {
             url: URL(string: "ws://127.0.0.1:\(port)/v1/noise?vm_id=vm1")!, vmAuthToken: "vm-token",
             device: .init(nodeID: "homelink-abc123", displayName: "Pebble watch", version: "0.1.0",
                           commands: ["watch.show": ["description": "Show text", "required": [:], "optional": [:]]]),
-            commandHandler: { command, params, _ in
+            commandHandler: { command, params, _, _ in
                 calls.append("\(command) \(params["title"]?.string ?? "")")
                 return ["ok": true, "payload": ["shown": true]]
             })

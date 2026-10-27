@@ -166,6 +166,7 @@ public actor MusePushToTalk: MuseWatchSide {
     private var preferencesFollower: Task<Void, Never>?
     private var isPaired = false
     private var listenedChat = ""
+    private var registeredCommands: MuseJSON?
 
 
     private enum Outgoing {
@@ -274,7 +275,8 @@ public actor MusePushToTalk: MuseWatchSide {
         if let paired { isPaired = paired }
         let prefs = preferences.current.value
         let chat = prefs.chatPlace == .watchChat ? "watch" : "main"
-        if listening, chat != listenedChat {
+        let commandsChanged = registeredCommands.map { $0 != MuseTools.commands(for: prefs, hasData: hasData) } ?? false
+        if listening, chat != listenedChat || (commandsChanged && (turn == nil || turn?.finished == true) && commandsInFlight == 0) {
             // Another chat: follow that one from a new link.
             setListening(false)
             let open = conversation
@@ -757,17 +759,22 @@ public actor MusePushToTalk: MuseWatchSide {
     /// The open link, or a new one.
     private func readyConversation() async throws -> any MuseVoiceConversation {
         idleClose?.cancel()
-        if let conversation, await conversation.isOpen { return conversation }
-        conversation = nil
         let prefs = preferences.current.value
+        let commands = MuseTools.commands(for: prefs, hasData: hasData)
+        if let conversation, await conversation.isOpen {
+            if registeredCommands == commands { return conversation }
+            await conversation.close()
+        }
+        conversation = nil
         let chatID: String? = prefs.chatPlace == .watchChat ? preferences.watchChatID() : nil
         let opened = try await connector.open(
-            chatID: chatID, commands: MuseTools.commands(for: prefs, hasData: hasData)
-        ) { [weak self] command, params, _ in
+            chatID: chatID, commands: commands
+        ) { [weak self] command, params, _, invocationID in
             guard let self else { return ["ok": false, "error": "The watch is not available."] }
-            return await self.runCommandFromMuse(command, params)
+            return await self.runCommandFromMuse(command, params, invocationID: invocationID)
         }
         conversation = opened
+        registeredCommands = commands
         return opened
     }
 
@@ -962,7 +969,7 @@ public actor MusePushToTalk: MuseWatchSide {
         do {
             conversation = try await connector.open(
                 chatID: UUID().uuidString.lowercased(), commands: [:]
-            ) { _, _, _ in ["ok": false, "error": "unsupported command"] }
+            ) { _, _, _, _ in ["ok": false, "error": "unsupported command"] }
         } catch {
             log("level check: could not reach Muse: \(error)")
             levelCheck.value?.phase = .failed
@@ -1114,20 +1121,20 @@ public actor MusePushToTalk: MuseWatchSide {
         "The person allows this only while you answer a question they asked on their Pebble watch."
 
     /// A call from Muse over the link: run while a watch question is being answered, refused otherwise.
-    func runCommandFromMuse(_ command: String, _ params: MuseJSON) async -> MuseJSON {
+    func runCommandFromMuse(_ command: String, _ params: MuseJSON, invocationID: String? = nil) async -> MuseJSON {
         guard let lastAskedAt, Date().timeIntervalSince(lastAskedAt) < Self.toolWindow else {
             log("tools: \(command) refused: no question from the watch is open")
             return ["ok": false, "error": .string(Self.outsideQuestion)]
         }
-        return await runCommand(command, params)
+        return await runCommand(command, params, invocationID: invocationID)
     }
 
     /// What Muse calls while answering: runs on the watch or the phone, through `MuseTools`.
-    func runCommand(_ command: String, _ params: MuseJSON) async -> MuseJSON {
+    func runCommand(_ command: String, _ params: MuseJSON, invocationID: String? = nil) async -> MuseJSON {
         commandsInFlight += 1
         defer { commandsInFlight -= 1 }
         let asking = turn
-        let result = await tools.run(command, params, watch: self)
+        let result = await tools.run(command, params, watch: self, invocationID: invocationID)
         let use = MuseToolUse(command: command, outcome: MuseTools.outcome(of: result))
         log("tools: \(command) \(Self.describe(use.outcome))")
         if let asking, !asking.finished || turn === asking { asking.tools.append(use) }
@@ -1190,7 +1197,7 @@ public actor MusePushToTalk: MuseWatchSide {
     static func describe(_ request: WatchActionRequest) -> String {
         switch request {
         case .timer: return "timer"
-        case .timers: return "timers"
+        case .timers, .nativeTimers: return "timers"
         case .alarm: return "alarm"
         case .alarms: return "alarms"
         case .choose(_, let options, _): return "choice of \(options.count)"

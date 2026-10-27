@@ -1073,6 +1073,8 @@ public struct WatchAction: ControlInMessage, Equatable {
 public enum WatchActionRequest: Equatable, Sendable {
     case timer(seconds: Int, label: String)
     case timers(TimerOperation, id: UInt32 = 0, seconds: Int = 0, label: String? = nil)
+    /// Core Devices Timer app records; never falls back to private background countdowns.
+    case nativeTimers(TimerOperation, id: UInt32 = 0, seconds: Int = 0, label: String? = nil)
 
     public enum TimerOperation: UInt8, Sendable {
         case list = 0, create = 1, get = 2, pause = 3, resume = 4, update = 5, restart = 6, cancel = 7
@@ -1107,6 +1109,7 @@ public enum WatchActionRequest: Equatable, Sendable {
         case notice = 9
         case alarms = 10
         case timers = 11
+        case nativeTimers = 12
     }
 
     public enum MusicCommand: UInt8, Sendable, CaseIterable {
@@ -1145,6 +1148,10 @@ public enum WatchActionRequest: Equatable, Sendable {
     public func payload() throws(Invalid) -> [UInt8] {
         var w = WireWriter(initialCapacity: 64)
         switch self {
+        case .nativeTimers(let operation, let id, let seconds, let label):
+            var payload = try WatchActionRequest.timers(operation, id: id, seconds: seconds, label: label).payload()
+            payload[0] = Kind.nativeTimers.rawValue
+            return payload
         case .timers(let operation, let id, let seconds, let label):
             guard (0...86_400).contains(seconds),
                   operation.rawValue < 2 ? id == 0 : id != 0,
@@ -1242,15 +1249,16 @@ public enum WatchActionRequest: Equatable, Sendable {
         }
         guard r.remaining >= 1, let kind = Kind(rawValue: UInt8(r.u8())) else { return nil }
         switch kind {
-        case .timers:
+        case .timers, .nativeTimers:
             guard r.remaining >= 11, let operation = TimerOperation(rawValue: UInt8(r.u8())) else { return nil }
             let id = r.u32()
             let seconds = Int(r.u32())
             let hasLabel = r.u8()
             guard hasLabel <= 1, let label = string(), r.remaining == 0,
                   hasLabel == 1 || label.isEmpty else { return nil }
-            let request = WatchActionRequest.timers(operation, id: id, seconds: seconds,
-                                                    label: hasLabel == 1 ? label : nil)
+            let request: WatchActionRequest = kind == .nativeTimers
+                ? .nativeTimers(operation, id: id, seconds: seconds, label: hasLabel == 1 ? label : nil)
+                : .timers(operation, id: id, seconds: seconds, label: hasLabel == 1 ? label : nil)
             return (try? request.payload()) == nil ? nil : request
         case .timer:
             guard r.remaining >= 4 else { return nil }

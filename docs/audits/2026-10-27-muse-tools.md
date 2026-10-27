@@ -5,6 +5,29 @@ and permission path, the watch-action firmware, the BLE result path, and the app
 The official Core Devices app is reference only and is unchanged. This is a source/test audit;
 real Muse and watch behavior needs the updated app and firmware installed together.
 
+## Native Timer correction and follow-through (in progress)
+
+Roger clarified that timers must appear in **Timer by Pebble/Core Devices**, rather than a
+separate background store. The original four-slot timer implementation below was insufficient.
+The replacement uses the native app's eight durable timer records and normal wakeup alerts.
+The native app must be installed and closed while Muse manages it. Incompatible data is refused;
+list/read failures never become an empty list. Native labels are unsupported and explicitly refused.
+New callers require action kind 12 and never fall back to hidden countdowns on older firmware.
+Existing native preferences and unrelated records are preserved in an atomic storage rewrite.
+
+The callback's formerly discarded third argument was timeout, not invocation id. Invocation
+ids actually stopped at MuseLinkSession. Both incoming transports now carry them to the tool
+executor. Different ids allow intentional identical actions; a repeated id shares its pending
+or completed result. Minimal hashed receipts prevent replay after relaunch, and argument reuse
+under the same id is refused. Consent waits recheck question scope and revoked access. An open
+conversation's command registration refreshes when tool settings change.
+
+Deployed the first tested app cdc6c619 to G17 at 18:09:16+07. Recording and Muse reconnected.
+Charging-only post-install cost check passes; no new app crash logs. Backup/live database integrity
+passes with 1,498 conversations, 591 follow-ups, nine speaker corrections, and two people preserved;
+voice job processing advanced from 603 to 617. Native Timer replacement is not yet installed or
+physically verified. The remaining inventory below is still being implemented.
+
 ## Implemented in this change
 
 - Full watch countdown lifecycle through `watch.timers`: list, create, get, pause, resume,

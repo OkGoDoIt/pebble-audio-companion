@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Core Devices Timer app management: list",
+  "expect": "parse",
+  "fields": {
+    "action_id": 9,
+    "flags": 0,
+    "payload_hex": "0c0000000000000000000000",
+    "request_token": 83
+  },
+  "name": "watch_action_native_timers_list",
+  "size": 17
+}

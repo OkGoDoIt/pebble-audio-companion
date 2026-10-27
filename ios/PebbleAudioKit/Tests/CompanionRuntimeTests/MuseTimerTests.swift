@@ -10,13 +10,13 @@ struct MuseTimerTests {
         return (MuseTools(preferences: preferences, data: nil), TimerWatch(), preferences)
     }
 
-    @Test func timerLifecyclePreservesOmittedFieldsAndReturnsLiveStatus() async {
+    @Test func nativeTimerLifecycleReturnsLiveStatusAndKeepsPausedState() async {
         let (tools, watch, _) = fixture()
         await watch.reply("42,2,119001,600\nTea")
-        let updated = await tools.run(MuseTools.timersCommand, ["action": "update", "id": 42, "label": "Tea"], watch: watch)
+        let updated = await tools.run(MuseTools.timersCommand, ["action": "update", "id": 42, "seconds": 600], watch: watch)
         #expect(updated["payload"]?["remaining_seconds"]?.number == 120)
         #expect(updated["payload"]?["state"]?.string == "paused")
-        #expect(await watch.requests.last == .timers(.update, id: 42, label: "Tea"))
+        #expect(await watch.requests.last == .nativeTimers(.update, id: 42, seconds: 600))
         await watch.reply("42,1,100001,600\nTea")
         let status = await tools.run(MuseTools.timersCommand, ["action": "get", "id": 42], watch: watch)
         #expect(status["payload"]?["remaining_seconds"]?.number == 101)
@@ -47,6 +47,7 @@ struct MuseTimerTests {
             ["action": "create", "seconds": 0], ["action": "create", "seconds": .number(1.1)],
             ["action": "update", "id": 42], ["action": "resume", "id": 42, "seconds": 60],
             ["action": "create", "seconds": 60, "label": true],
+            ["action": "create", "seconds": 60, "label": "Tea"],
             ["action": "create", "seconds": 60, "label": .string(String(repeating: "é", count: 25))],
         ] {
             #expect(await tools.run(MuseTools.timersCommand, params, watch: watch)["ok"]?.bool == false)
@@ -57,7 +58,7 @@ struct MuseTimerTests {
     @Test func retrySharesInFlightWriteAndNewQuestionMayIntentionallyRepeat() async {
         let (tools, watch, _) = fixture()
         await watch.reply("42,1,60000,60\nTea")
-        let params: MuseJSON = ["action": "create", "seconds": 60, "label": "Tea"]
+        let params: MuseJSON = ["action": "create", "seconds": 60]
         async let first = tools.run(MuseTools.timersCommand, params, watch: watch)
         async let retry = tools.run(MuseTools.timersCommand, params, watch: watch)
         #expect(await first == retry)
@@ -85,22 +86,40 @@ struct MuseTimerTests {
 
     @Test func anotherTimerDoesNotEraseRetryProtectionAndAliasesShareIt() async {
         let (tools, watch, _) = fixture()
-        let tea: MuseJSON = ["action": "create", "seconds": 60, "label": "Tea"]
+        let tea: MuseJSON = ["action": "create", "seconds": 60]
         let unknown = await tools.run(MuseTools.timersCommand, tea, watch: watch)
         await watch.reply("42,1,90000,90\nPasta")
-        _ = await tools.run(MuseTools.timerCommand, ["seconds": 90, "label": "Pasta"], watch: watch)
+        _ = await tools.run(MuseTools.timerCommand, ["seconds": 90], watch: watch)
         #expect(await tools.run(MuseTools.timersCommand, tea, watch: watch) == unknown)
-        #expect(await tools.run(MuseTools.timersCommand, ["action": "create", "seconds": 90, "label": "Pasta"], watch: watch)["ok"]?.bool == true)
+        #expect(await tools.run(MuseTools.timersCommand, ["action": "create", "seconds": 90], watch: watch)["ok"]?.bool == true)
         #expect(await watch.requests.count == 2)
     }
 
-    @Test func onlyDefinitiveUnsupportedCreationUsesLegacyFallback() async {
+    @Test func invocationIDsAllowIntentionalRepeatsButSurviveReconnectAndRelaunch() async {
+        let (tools, watch, preferences) = fixture()
+        let params: MuseJSON = ["action": "create", "seconds": 60]
+        await watch.reply("42,1,60000,60\n")
+        let first = await tools.run(MuseTools.timersCommand, params, watch: watch, invocationID: "one")
+        #expect(await tools.run(MuseTools.timersCommand, params, watch: watch, invocationID: "one") == first)
+        await watch.reply("43,1,60000,60\n")
+        #expect(await tools.run(MuseTools.timersCommand, params, watch: watch, invocationID: "two")["payload"]?["id"]?.number == 43)
+        #expect(await watch.requests.count == 2)
+        let restored = MuseTools(preferences: preferences, data: nil)
+        #expect(await restored.run(MuseTools.timersCommand, params, watch: watch, invocationID: "one")["outcome_unknown"]?.bool == true)
+        #expect(await restored.run(MuseTools.timersCommand, ["action": "create", "seconds": 90], watch: watch, invocationID: "one")["ok"]?.bool == false)
+        #expect(await watch.requests.count == 2)
+        preferences.update { $0.watchActions.remove(.timer) }
+        #expect(await tools.run(MuseTools.timersCommand, params, watch: watch, invocationID: "one") == MuseTools.turnedOff)
+    }
+
+    @Test func unsupportedNativeTimersNeverCreateHiddenBackgroundTimers() async {
         let (tools, watch, _) = fixture()
         await watch.reply("", status: .unsupported)
         await watch.reply("")
         let result = await tools.run(MuseTools.timerCommand, ["seconds": 60], watch: watch)
-        #expect(result["payload"]?["managed"]?.bool == false)
-        #expect(await watch.requests.last == .timer(seconds: 60, label: ""))
+        #expect(result["ok"]?.bool == false)
+        #expect(await watch.requests.count == 1)
+        #expect(await watch.requests.last == .nativeTimers(.create, seconds: 60, label: ""))
     }
 }
 

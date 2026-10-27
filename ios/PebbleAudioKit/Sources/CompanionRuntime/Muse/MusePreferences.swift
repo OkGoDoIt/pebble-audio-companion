@@ -150,6 +150,16 @@ public final class MusePreferencesStore: @unchecked Sendable {
         }
     }
 
+    /// Only hashes and timestamps: no command arguments, calendar data, or transcript text.
+    /// Written before a change so relaunch never silently replays an uncertain invocation.
+    func invocationReceipts() -> [String: [String: String]] {
+        lock.withLock { defaults.dictionary(forKey: "muse.invocationReceipts") as? [String: [String: String]] ?? [:] }
+    }
+
+    func saveInvocationReceipts(_ receipts: [String: [String: String]]) {
+        lock.withLock { defaults.set(receipts, forKey: "muse.invocationReceipts") }
+    }
+
     private static func load(_ defaults: UserDefaults) -> MusePreferences {
         var value = MusePreferences()
         if defaults.object(forKey: Key.voiceLevel) != nil {

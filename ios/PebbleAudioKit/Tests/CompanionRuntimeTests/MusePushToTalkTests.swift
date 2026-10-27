@@ -419,10 +419,10 @@ struct MusePushToTalkTests {
     @Test func aTimerIsSetOnTheWatch() async throws {
         let fx = PushToTalkFixture()
         await fx.start()
-        let reply = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 90, "label": "Pasta"]) }
+        let reply = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 90]) }
         #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
         let action = try #require(fx.link.actions().first)
-        #expect(WatchActionRequest.parse(action.payload) == .timers(.create, seconds: 90, label: "Pasta"))
+        #expect(WatchActionRequest.parse(action.payload) == .nativeTimers(.create, seconds: 90, label: ""))
         fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, text: Array("42,1,90000,90\nPasta".utf8))))
         let result = await reply.value
         #expect(result["ok"]?.bool == true)
@@ -447,10 +447,10 @@ struct MusePushToTalkTests {
         // Muse retries a call whose reply it never got; the first timer is already running.
         let fx = PushToTalkFixture()
         await fx.start()
-        let first = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600, "label": "Pasta"]) }
+        let first = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600]) }
         _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\nPasta"))
         #expect(await first.value["ok"]?.bool == true)
-        let again = await fx.service.runCommand(MuseTools.timerCommand, ["label": "Pasta", "seconds": 600])
+        let again = await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600])
         #expect(again["ok"]?.bool == true)
         #expect(fx.link.actions().count == 1)
         // A different timer is set.
@@ -973,14 +973,14 @@ private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
     /// Calls the gadget's handler as Muse would at any time; nil before a link was opened.
     func call(_ command: String, _ params: MuseJSON) async -> MuseJSON? {
         let handler = lock.withLock { self.handler }
-        return await handler?(command, params, nil)
+        return await handler?(command, params, nil, UUID().uuidString)
     }
 
     /// Runs the scripted call through the gadget's handler, as Muse would mid-answer.
     fileprivate func callTool() async {
         let (call, handler) = lock.withLock { (_toolCall, self.handler) }
         guard let call, let handler else { return }
-        let result = await handler(call.0, call.1, nil)
+        let result = await handler(call.0, call.1, nil, UUID().uuidString)
         lock.withLock { _toolResults.append(result) }
     }
 

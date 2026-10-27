@@ -70,7 +70,7 @@ public actor MuseLinkSession {
     }
 
     /// Runs a `link.invoke`; returns `{"ok": true, "payload": …}` or `{"ok": false, "error": "…"}`.
-    public typealias CommandHandler = @Sendable (_ command: String, _ params: MuseJSON, _ timeoutMS: Int?) async -> MuseJSON
+    public typealias CommandHandler = @Sendable (_ command: String, _ params: MuseJSON, _ timeoutMS: Int?, _ invocationID: String) async -> MuseJSON
 
     public static let noisePath = "/v1/noise"
     static let appID = "musegadget"
@@ -555,7 +555,7 @@ public actor MuseLinkSession {
             note("invoke \(command.filter { !$0.isASCII || $0.isLetter || $0.isNumber || ".-_".contains($0) })")
             let handler = commandHandler
             tasks.append(Task {
-                let result = await handler?(command, params, timeoutMS) ?? ["ok": false, "error": "unsupported command"]
+                let result = await handler?(command, params, timeoutMS, id) ?? ["ok": false, "error": "unsupported command"]
                 self.sendInvokeResult(id: id, result: result)
             })
             return nil
@@ -615,7 +615,7 @@ public actor MuseLinkSession {
             return
         }
         tasks.append(Task {
-            let result = await handler(command, params, timeoutMS)
+            let result = await handler(command, params, timeoutMS, invokeID)
             self.sendClientResult(invokeID: invokeID, result: result)
         })
     }

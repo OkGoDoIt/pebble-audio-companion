@@ -753,6 +753,11 @@ def build_fixtures():
             "control_in", "parse",
             {"request_token": 0x53, "action_id": 9, "flags": 0, "payload_hex": payload.hex()},
             "Watch countdown management: " + name)
+        native_payload = bytes([12]) + payload[1:]
+        add("watch_action_native_timers_" + name, watch_action(0x53, 9, 0, native_payload),
+            "control_in", "parse",
+            {"request_token": 0x53, "action_id": 9, "flags": 0, "payload_hex": native_payload.hex()},
+            "Core Devices Timer app management: " + name)
     first, rest = CHOOSE_PAYLOAD[:180], CHOOSE_PAYLOAD[180:]
     add(
         "watch_action_choose_first",
