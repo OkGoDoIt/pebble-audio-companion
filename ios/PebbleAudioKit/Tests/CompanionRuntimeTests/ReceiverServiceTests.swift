@@ -116,6 +116,23 @@ import WireProtocol
         #expect(fixture.link.resyncCount == 0)
     }
 
+    @Test func focusAndMuseKeepIndependentQuietLinksWithoutStartingCapture() async throws {
+        let fixture = try RuntimeFixture(settings: RuntimeSettingsSnapshot(captureIntent: .off))
+        await fixture.receiver.setFocusQuietLink(true)
+        #expect(fixture.receiver.isRunning)
+        #expect(!fixture.receiver.isWatchEnableRequestArmed)
+        #expect(fixture.runtime.captureIntent == .off)
+        await fixture.receiver.setQuietLink(true)
+        await fixture.receiver.setFocusQuietLink(false)
+        #expect(fixture.receiver.isRunning)
+        await fixture.receiver.setFocusQuietLink(true)
+        await fixture.receiver.setQuietLink(false)
+        #expect(fixture.receiver.isRunning)
+        await fixture.receiver.setFocusQuietLink(false)
+        #expect(!fixture.receiver.isRunning)
+        #expect(fixture.runtime.captureIntent == .off)
+    }
+
     @Test func startIsIdempotent() async throws {
         let fixture = try RuntimeFixture()
         await fixture.receiver.start()

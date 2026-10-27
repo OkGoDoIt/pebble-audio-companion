@@ -1411,6 +1411,7 @@ final class AppComposition {
         let lifecycle = self.lifecycle
         Task { await lifecycle.handle(.didFinishLaunching) }
         today.start()
+        FocusQuietTimeController.shared.start(receiver: receiver)
         startHeartbeat()
 
         // iOS 27 surfaces and telemetry. Each lives in its own `AppComposition+<Feature>.swift`
@@ -1491,6 +1492,7 @@ final class AppComposition {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 guard self != nil, !Task.isCancelled else { return }
+                FocusQuietTimeController.shared.refreshFromBridge()
                 let audioAge = receiver.streamEvidence.value.lastAudioAtMs
                     .map { "\((clock.nowMs - $0) / 1000)s ago" } ?? "never"
                 // The watch's OWN state, not just ours. Reading an overnight log without it, the

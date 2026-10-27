@@ -545,11 +545,25 @@ public actor ReceiverService {
     /// with the watch paused, so a held button still reaches the phone. Nothing is recorded; the
     /// watch's mic runs only for the question. Recording on or paused needs no help: the link is
     /// up anyway.
-    private var quietLinkWanted = false
+    private var museQuietLinkWanted = false
+    private var focusQuietLinkWanted = false
+    private var quietLinkWanted: Bool { museQuietLinkWanted || focusQuietLinkWanted }
 
     public func setQuietLink(_ wanted: Bool) async {
-        guard wanted != quietLinkWanted else { return }
-        quietLinkWanted = wanted
+        let previouslyWanted = quietLinkWanted
+        museQuietLinkWanted = wanted
+        await updateQuietLink(previouslyWanted: previouslyWanted)
+    }
+
+    public func setFocusQuietLink(_ wanted: Bool) async {
+        let previouslyWanted = quietLinkWanted
+        focusQuietLinkWanted = wanted
+        await updateQuietLink(previouslyWanted: previouslyWanted)
+    }
+
+    private func updateQuietLink(previouslyWanted: Bool) async {
+        let wanted = quietLinkWanted
+        guard wanted != previouslyWanted else { return }
         guard intentBox.value == .off else { return }
         log.write("quiet link \(wanted ? "kept" : "dropped") with recording off")
         if wanted {
@@ -565,6 +579,7 @@ public actor ReceiverService {
             _ = await session.requestResume()
             return
         }
+        guard !quietLinkWanted else { return }
         stop()
         link.disconnect()
     }

@@ -181,6 +181,8 @@ import Testing
             return [
                 "request_token": String(m.requestToken),
             ]
+        case let m as PhoneFocusState:
+            return ["request_token": String(m.requestToken), "enabled": m.enabled ? "1" : "0"]
         case let m as PhoneMediaState:
             return [
                 "request_token": String(m.requestToken),

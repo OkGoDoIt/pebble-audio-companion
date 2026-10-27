@@ -3,6 +3,37 @@ import XCTest
 /// Explicit simulator smoke test; its separate scheme keeps model downloads out of unit tests.
 /// Exercises the real composition, model installer, persistence and production views.
 final class VoiceOnboardingUITests: XCTestCase {
+    @MainActor func testFocusQuietTimeOptInPersistsAndSetupIsReadable() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")
+        app.launchArguments = ["-onboarding.skip", "-route", "settings/watch"]
+        app.launch()
+        let follow = app.switches["Follow iPhone Focus"]
+        XCTAssertTrue(follow.waitForExistence(timeout: 20))
+        if follow.value as? String == "1" { follow.tap() }
+        XCTAssertEqual(follow.value as? String, "0")
+        var shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Focus setting off"; shot.lifetime = .keepAlways; add(shot)
+        follow.tap()
+        XCTAssertEqual(follow.value as? String, "1")
+        let setup = app.buttons["How to set up"]
+        XCTAssertTrue(setup.isHittable)
+        setup.tap()
+        XCTAssertTrue(app.staticTexts["1. Open Settings → Focus on your iPhone."].waitForExistence(timeout: 5))
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["3. Tap Add Filter → Pebble Audio, turn Quiet Time on, and tap Add."].isHittable)
+        shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Focus setup expanded"; shot.lifetime = .keepAlways; add(shot)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(follow.waitForExistence(timeout: 20))
+        XCTAssertEqual(follow.value as? String, "1")
+        shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Focus setting on after relaunch"; shot.lifetime = .keepAlways; add(shot)
+        follow.tap()
+        XCTAssertEqual(follow.value as? String, "0")
+    }
+
     @MainActor func testRejectedMusePairingOffersReconnect() throws {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")

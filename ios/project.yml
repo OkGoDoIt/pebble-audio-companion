@@ -35,6 +35,8 @@ targets:
         product: PebbleAudioKit
       - target: Widgets
         embed: true
+      - target: FocusFilter
+        embed: true
     # Stamps App/Generated/BuildInfo.swift with this build's actual wall-clock time and git
     # revision, immediately before Compile Sources. The committed file at that path is a
     # placeholder ("unknown") — XcodeGen enumerates source files as of `xcodegen generate` time,
@@ -104,6 +106,8 @@ targets:
           - "Info.plist"
           - "Widgets.entitlements"
       - path: Shared
+        excludes:
+          - "QuietTimeFocusFilter.swift"
       # Design tokens, the string catalog, and the route space are shared verbatim so the
       # widget can never drift into its own colors or its own vocabulary (U9).
       - path: App/DesignSystem/Tokens.swift
@@ -127,6 +131,28 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev.widgets
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.widgets
+
+  FocusFilter:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FocusFilter
+        excludes: [Info.plist, FocusFilter.entitlements]
+      - path: Shared/SharedAppGroup.swift
+      - path: Shared/FocusQuietTimeBridge.swift
+      - path: Shared/QuietTimeFocusFilter.swift
+    settings:
+      base:
+        INFOPLIST_FILE: FocusFilter/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FocusFilter/FocusFilter.entitlements
+        PRODUCT_NAME: Pebble Audio Focus
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.dev.focus
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.audiocompanion.app.focus
 
   # Logic / view-model / data-source tests for the App layer.
   #

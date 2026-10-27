@@ -1408,3 +1408,16 @@ public struct WatchActionResult: ControlOutMessage, Equatable {
         return w.toBytes()
     }
 }
+
+/// Independent, connection-scoped Quiet Time contribution. Requires capabilityPhoneFocus.
+public struct PhoneFocusState: ControlInMessage, Equatable {
+    public let requestToken: Int
+    public let enabled: Bool
+    public init(requestToken: Int, enabled: Bool) {
+        self.requestToken = requestToken
+        self.enabled = enabled
+    }
+    public func encode() -> [UInt8] {
+        [UInt8(MessageId.phoneFocusState), UInt8(requestToken), enabled ? 1 : 0]
+    }
+}

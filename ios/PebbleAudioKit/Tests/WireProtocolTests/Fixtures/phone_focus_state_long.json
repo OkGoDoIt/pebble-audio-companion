@@ -1,0 +1,8 @@
+{
+  "channel": "control_in",
+  "description": "Invalid phone Focus message",
+  "expect": "reject",
+  "fields": {},
+  "name": "phone_focus_state_long",
+  "size": 4
+}

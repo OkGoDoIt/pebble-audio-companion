@@ -1,0 +1,11 @@
+{
+  "channel": "control_in",
+  "description": "Connection-scoped phone Focus contribution",
+  "expect": "parse",
+  "fields": {
+    "enabled": 0,
+    "request_token": 27
+  },
+  "name": "phone_focus_state_0",
+  "size": 3
+}

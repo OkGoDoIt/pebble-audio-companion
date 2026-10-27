@@ -92,6 +92,11 @@ public enum AudioCompanionProtocol {
                     freeStorageHintKb: r.u32()
                 )
             }
+        case MessageId.phoneFocusState:
+            guard bytes.count == 3, bytes[2] <= 1 else {
+                return .malformed(reason: "Invalid PHONE_FOCUS_STATE")
+            }
+            return .decoded(PhoneFocusState(requestToken: Int(bytes[1]), enabled: bytes[2] == 1))
         case MessageId.momentSaved:
             return sized(bytes, 11) { r in
                 _ = r.u8()

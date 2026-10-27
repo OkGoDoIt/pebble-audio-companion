@@ -56,6 +56,7 @@ public enum ProtocolConstants {
     /// closed, options with the answer, picks, and turns the receiver begins (Section 4.4).
     public static let capabilityConversation: UInt32 = 1 << 5
     public static let capabilityDurableMoments: UInt32 = 1 << 6
+    public static let capabilityPhoneFocus: UInt32 = 1 << 7
 
     // Push-to-talk and watch actions (Sections 4.4, 4.5).
     public static let pttMaxSeconds: Int = 15
@@ -103,6 +104,7 @@ public enum MessageId {
     public static let assistantUpdate: Int = 0x0D
     public static let watchAction: Int = 0x0E
     public static let momentSaved: Int = 0x0F
+    public static let phoneFocusState: Int = 0x10
 
     // Watch -> phone control notifications (0x41-0x7F).
     public static let authResult: Int = 0x41

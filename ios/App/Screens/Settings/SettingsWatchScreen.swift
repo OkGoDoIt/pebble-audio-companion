@@ -13,11 +13,14 @@ struct SettingsWatchScreen: View {
     private enum FindState: Equatable { case idle, connecting, connected, notFound }
     @State private var findState: FindState = .idle
     @State private var confirmForget = false
+    @State private var showFocusHelp = false
+    private var focus: FocusQuietTimeController { .shared }
 
     var body: some View {
         SettingsScroll {
             deviceCard
             infoCard
+            focusCard
             ListCard {
                 TintActionRow(
                     title: Copy.Settings.Watch.reconnect,
@@ -60,6 +63,45 @@ struct SettingsWatchScreen: View {
     }
 
     // MARK: Cards
+
+    private var focusCard: some View {
+        Group {
+            SettingsSectionHeader(title: Copy.Focus.title)
+            ListCard {
+                Toggle(Copy.Focus.toggle, isOn: Binding(
+                    get: { focus.enabled }, set: { focus.setEnabled($0) }
+                ))
+                .font(AppFont.callout)
+                .tint(Tokens.tint)
+                if focus.enabled || focus.status == .syncing || focus.status == .retry {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(Copy.Focus.status(focus.status))
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.secondaryBody)
+                        if let detail = Copy.Focus.detail(focus.status) {
+                            Text(detail).font(AppFont.footnote).foregroundStyle(Tokens.meta)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                DisclosureGroup(Copy.Focus.setup, isExpanded: $showFocusHelp) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(Copy.Focus.steps.enumerated()), id: \.offset) { index, step in
+                            Text("\(index + 1). \(step)")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text(Copy.Focus.recording).foregroundStyle(Tokens.meta)
+                    }
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .padding(.top, 12)
+                }
+                .font(AppFont.callout)
+                .tint(Tokens.tint)
+            }
+            SettingsFooter(text: Copy.Focus.footer)
+        }
+    }
 
     private var deviceCard: some View {
         Card {

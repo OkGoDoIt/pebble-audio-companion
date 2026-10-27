@@ -144,6 +144,13 @@ object AudioCompanionProtocol {
                     ),
                 )
             }
+            MessageId.PHONE_FOCUS_STATE -> {
+                if (bytes.size != 3 || (bytes[2].toInt() and 0xFF) !in 0..1) {
+                    DecodeResult.Malformed("Invalid PHONE_FOCUS_STATE")
+                } else {
+                    DecodeResult.Decoded(PhoneFocusState(bytes[1].toInt() and 0xFF, bytes[2].toInt() == 1))
+                }
+            }
             MessageId.MOMENT_SAVED -> sized(bytes, 11) { r ->
                 r.u8()
                 MomentSaved(requestToken = r.u8(), markId = r.u8(), wallMs = r.u64())

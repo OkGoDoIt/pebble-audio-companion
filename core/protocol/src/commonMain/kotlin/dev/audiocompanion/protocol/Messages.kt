@@ -827,3 +827,10 @@ data class WatchTimers(
             .u8(if (label == null) 0 else 1).u8(count).bytes(encoded.copyOf(count)).toByteArray()
     }
 }
+
+/** Independent Quiet Time contribution, released on receiver disconnect. */
+data class PhoneFocusState(val requestToken: Int, val enabled: Boolean) : ControlInMessage {
+    override fun encode(): ByteArray = byteArrayOf(
+        MessageId.PHONE_FOCUS_STATE.toByte(), requestToken.toByte(), if (enabled) 1 else 0,
+    )
+}

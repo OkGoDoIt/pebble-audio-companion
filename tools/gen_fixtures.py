@@ -1033,6 +1033,15 @@ def build_fixtures():
         {"action_id": 6, "status": 1, "value": 0, "text": now_playing.decode("utf-8")},
         "Done, with text: what is playing (title, then artist)",
     )
+    for enabled in (0, 1):
+        add(f"phone_focus_state_{enabled}", bytes([0x10, 27, enabled]),
+            "control_in", "parse", {"request_token": 27, "enabled": enabled},
+            "Connection-scoped phone Focus contribution")
+    for name, payload in (("short", bytes([0x10, 27])),
+                          ("invalid", bytes([0x10, 27, 2])),
+                          ("long", bytes([0x10, 27, 1, 0]))):
+        add(f"phone_focus_state_{name}", payload, "control_in", "reject", {},
+            "Invalid phone Focus message")
     add(
         "moment_saved",
         struct.pack("<BBBQ", 0x0F, 9, 3, 1_788_193_751_778),
