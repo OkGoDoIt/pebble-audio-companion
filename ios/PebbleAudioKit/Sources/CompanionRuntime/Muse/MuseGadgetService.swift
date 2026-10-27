@@ -64,10 +64,12 @@ public actor MuseGadgetService {
     /// The name the Muse app lists this gadget under, nil until paired.
     public nonisolated let pairedName: StateSubject<String?>
     public nonisolated let hasSDKToken: StateSubject<Bool>
+    public nonisolated let reconnectRequired: StateSubject<Bool>
 
     private let link: any MuseWatchLink
     private let secrets: any MuseSecrets
     private let api: MuseDeviceAPI
+    private let credentials: MuseCredentialStore
     private let network: any MuseSetupNetwork
     private let log: @Sendable (String) -> Void
 
@@ -109,7 +111,10 @@ public actor MuseGadgetService {
         self.api = api
         self.network = network
         self.log = log
-        pairedName = StateSubject(secrets.credentials()?.identity.bleName)
+        let credentials = MuseCredentialStore(secrets: secrets, api: api, log: log)
+        self.credentials = credentials
+        pairedName = credentials.pairedName
+        reconnectRequired = credentials.reconnectRequired
         hasSDKToken = StateSubject(secrets.sdkToken() != nil)
     }
 
@@ -123,9 +128,11 @@ public actor MuseGadgetService {
 
     /// Drops the device tokens. The identity stays, so pairing again shows up in the Muse app as
     /// the same gadget.
-    public func forget() {
-        secrets.removeCredentials()
-        pairedName.value = nil
+    public func forget() async {
+        guard await credentials.forget() else {
+            log("Muse pairing: could not remove saved credentials")
+            return
+        }
         if !pairing.value.isActive { pairing.value = .idle }
     }
 
@@ -303,12 +310,12 @@ public actor MuseGadgetService {
 
     /// The Muse app provisioned the gadget and the tokens work.
     private func provisioned(_ credentials: MuseGadgetCredentials, attemptID: Int) async -> Bool {
-        guard secrets.save(credentials: credentials) else {
+        guard let current = attempt, current.id == attemptID else { return false }
+        guard await self.credentials.replace(with: credentials) else {
             log("Muse pairing: could not save the device tokens")
             return false
         }
-        pairedName.value = credentials.identity.bleName
-        guard let current = attempt, current.id == attemptID else { return true }
+        guard attempt === current else { return false }
         current.provisioned = true
         // auth_ok goes out after this returns. The Muse app usually hangs up on its own; if it
         // doesn't, close the window once the reply has had time to reach it.
@@ -361,11 +368,8 @@ public actor MuseGadgetService {
 
     /// Sends `message` to Muse as this gadget and returns its answer.
     public func ask(_ message: String, trace: (@Sendable (String) -> Void)? = nil) async throws -> MuseAsk.Answer {
-        guard let credentials = secrets.credentials() else { throw AskFailure.notPaired }
-        let secrets = self.secrets
-        return try await MuseAsk(api: api, sdkToken: secrets.sdkToken()).ask(
+        return try await MuseAsk(api: api).ask(
             message, credentials: credentials,
-            onCredentials: { _ = secrets.save(credentials: $0) },
             trace: trace)
     }
 }
@@ -380,11 +384,11 @@ extension MuseGadgetService: MuseVoiceConnector {
     public func open(
         chatID: String?, commands: MuseJSON, handler: @escaping MuseLinkSession.CommandHandler
     ) async throws(MuseQuestionFailure) -> any MuseVoiceConversation {
-        guard let credentials = secrets.credentials() else { throw .notSetUp }
-        let secrets = self.secrets
+        guard let saved = secrets.credentials(), isPaired else { throw .notSetUp }
+        let credentials = self.credentials
         let log = self.log
-        let ask = MuseAsk(api: api, sdkToken: secrets.sdkToken())
-        let identity = credentials.identity
+        let ask = MuseAsk(api: api)
+        let identity = saved.identity
         let device = (commands.object?.isEmpty ?? true)
             ? nil
             : MuseLinkSession.Device(
@@ -392,9 +396,8 @@ extension MuseGadgetService: MuseVoiceConnector {
                 commands: commands)
         func attempt(_ device: MuseLinkSession.Device?) async throws -> MuseLinkSession {
             try await ask.openSession(
-                credentials: secrets.credentials() ?? credentials, device: device,
+                credentials: credentials, device: device,
                 commandHandler: device == nil ? nil : handler,
-                onCredentials: { _ = secrets.save(credentials: $0) },
                 trace: { log("Muse voice: \($0)") })
         }
         do {
@@ -410,6 +413,9 @@ extension MuseGadgetService: MuseVoiceConnector {
             throw failure
         } catch MuseAsk.Failure.noVM {
             throw .notSetUp
+        } catch let failure as MuseCredentialStore.Failure {
+            log("Muse voice: credentials unavailable: \(failure)")
+            throw failure == .couldNotSave ? .unreachable : .notSetUp
         } catch let failure as MuseDeviceAPI.Failure {
             log("Muse voice: device API failed: \(failure)")
             if case .http(let status) = failure, [400, 401, 403].contains(status) { throw .notSetUp }

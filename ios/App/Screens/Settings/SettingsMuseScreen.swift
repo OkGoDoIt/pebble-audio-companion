@@ -32,6 +32,7 @@ struct SettingsMuseScreen: View {
         // Each follows one of the service's values while the screen is up, and ends with it.
         .task { await model.followPairing() }
         .task { await model.followPairedName() }
+        .task { await model.followReconnectRequired() }
         .task { await model.followToken() }
         .task { await model.followPreferences() }
         .task { await model.followLastQuestion() }
@@ -172,9 +173,9 @@ struct SettingsMuseScreen: View {
         }()
         return MuseCard(
             step: Copy.Muse.step(2, of: 2),
-            dot: failure == nil ? Tokens.neutralDot : Tokens.attention,
-            headline: failure?.title ?? Copy.Muse.pairStepTitle,
-            line: failure?.line ?? Copy.Muse.pairStepLine
+            dot: failure == nil && !model.reconnectRequired ? Tokens.neutralDot : Tokens.attention,
+            headline: failure?.title ?? (model.reconnectRequired ? Copy.Muse.reconnect : Copy.Muse.pairStepTitle),
+            line: failure?.line ?? (model.reconnectRequired ? Copy.Muse.reconnectLine : Copy.Muse.pairStepLine)
         ) {
             // What goes to Meta, said right where the person decides.
             VStack(alignment: .leading, spacing: 6) {
@@ -192,7 +193,7 @@ struct SettingsMuseScreen: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.ground))
-            Button(failure == nil ? Copy.Muse.pair : Copy.Muse.tryAgain, action: model.pair)
+            Button(failure != nil ? Copy.Muse.tryAgain : (model.reconnectRequired ? Copy.Muse.reconnect : Copy.Muse.pair), action: model.pair)
                 .buttonStyle(.inCardFilled)
                 .padding(.top, 2)
         }
@@ -886,12 +887,13 @@ struct MuseSettingsRow: View {
     var body: some View {
         SettingsPushRow(
             title: Copy.Muse.rowTitle,
-            value: model.isPaired ? Copy.Muse.rowPaired : Copy.Muse.rowNotSetUp,
+            value: model.reconnectRequired ? Copy.Muse.reconnect : (model.isPaired ? Copy.Muse.rowPaired : Copy.Muse.rowNotSetUp),
             valueColor: model.isPaired ? Tokens.good : Tokens.meta
         ) {
             SettingsMuseScreen()
         }
         .task { await model.followPairedName() }
+        .task { await model.followReconnectRequired() }
     }
 }
 
@@ -910,6 +912,7 @@ final class MuseScreenModel {
     private(set) var pairing: MuseGadgetService.PairingState = .idle
     private(set) var pairedName: String?
     private(set) var hasToken = false
+    private(set) var reconnectRequired = false
     /// When the watch's window closes, while one is open.
     private(set) var windowDeadline: Date?
     private(set) var ask: AskState = .idle
@@ -932,6 +935,7 @@ final class MuseScreenModel {
             switch args[index + 1] {
             case "notsetup": hasToken = false
             case "notpaired": break
+            case "reconnect": reconnectRequired = true
             case "starting": pairing = .starting
             case "confirm": pairing = .confirmOnWatch
             case "waiting": apply(.waitingForMuse(gadgetName: name, secondsLeft: 243))
@@ -978,6 +982,11 @@ final class MuseScreenModel {
     func followToken() async {
         guard let service else { return }
         for await has in service.hasSDKToken.stream() { hasToken = has }
+    }
+
+    func followReconnectRequired() async {
+        guard let service else { return }
+        for await value in service.reconnectRequired.stream() { reconnectRequired = value }
     }
 
     func followPreferences() async {

@@ -9,6 +9,8 @@ extension Copy {
         static let rowTitle = "Muse"
         static let rowPaired = "Paired"
         static let rowNotSetUp = "Not set up"
+        static let reconnect = "Reconnect Muse"
+        static let reconnectLine = "Muse no longer accepts this sign-in. Pair again to reconnect your watch."
 
         static func step(_ number: Int, of total: Int) -> String { "Step \(number) of \(total)" }
 

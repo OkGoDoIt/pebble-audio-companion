@@ -19,49 +19,43 @@ public struct MuseAsk: Sendable {
     }
 
     private let api: MuseDeviceAPI
-    private let sdkToken: String?
     private let userAgent: String
 
-    public init(api: MuseDeviceAPI = MuseDeviceAPI(), sdkToken: String?, userAgent: String = MuseDeviceAPI.defaultUserAgent) {
+    public init(api: MuseDeviceAPI = MuseDeviceAPI(), userAgent: String = MuseDeviceAPI.defaultUserAgent) {
         self.api = api
-        self.sdkToken = sdkToken
         self.userAgent = userAgent
     }
 
-    /// The credentials with a fresh access token when it's due (or `force`).
-    public func freshCredentials(_ credentials: MuseGadgetCredentials, force: Bool = false) async throws -> MuseGadgetCredentials {
-        guard force || credentials.isRefreshDue() else { return credentials }
-        let tokens = try await api.refreshDeviceToken(
-            refreshToken: credentials.refreshToken, nodeID: credentials.identity.nodeID,
-            sdkToken: sdkToken, apiRoot: credentials.apiRoot)
-        return credentials.rotated(to: tokens)
-    }
-
     /// - Parameters:
-    ///   - onCredentials: called whenever the tokens rotate; persist what it is given.
+    ///   - credentials: shared owner of token rotation and persistence.
     ///   - trace: every step as a line of text (never tokens).
     /// The first steps of every question: fresh tokens, a leased VM, and a link open to it. With
     /// `device`, the link is registered as that gadget so Muse can call its commands.
     public func openSession(
-        credentials: MuseGadgetCredentials,
+        credentials: any MuseCredentialProvider,
         device: MuseLinkSession.Device? = nil,
         commandHandler: MuseLinkSession.CommandHandler? = nil,
-        onCredentials: @escaping @Sendable (MuseGadgetCredentials) async -> Void,
         trace: (@Sendable (String) -> Void)? = nil
     ) async throws -> MuseLinkSession {
-        var current = try await freshCredentials(credentials)
-        if current != credentials { await onCredentials(current) }
+        var current = try await credentials.current()
+        try Task.checkCancellation()
 
         var vms: [MuseVM]
         do {
             vms = try await api.fetchVMs(accessToken: current.accessToken, apiRoot: current.apiRoot)
         } catch .http(401) {
             trace?("device token rejected; rotating")
-            current = try await freshCredentials(current, force: true)
-            await onCredentials(current)
-            vms = try await api.fetchVMs(accessToken: current.accessToken, apiRoot: current.apiRoot)
+            current = try await credentials.refresh(rejected: current)
+            do {
+                vms = try await api.fetchVMs(accessToken: current.accessToken, apiRoot: current.apiRoot)
+            } catch .http(401) {
+                trace?("VM lookup rejected refreshed credentials")
+                await credentials.rejected(current)
+                throw MuseDeviceAPI.Failure.http(401)
+            }
         }
         guard let vm = vms.first(where: \.isDefault) ?? vms.first else { throw Failure.noVM }
+        try Task.checkCancellation()
         trace?("VM \(vm.vmName.isEmpty ? vm.vmID : vm.vmName)")
 
         let session = try MuseLinkSession(
@@ -81,13 +75,12 @@ public struct MuseAsk: Sendable {
 
     public func ask(
         _ message: String,
-        credentials: MuseGadgetCredentials,
+        credentials: any MuseCredentialProvider,
         sessionID: String? = nil,
         timeout: Duration = .seconds(120),
-        onCredentials: @escaping @Sendable (MuseGadgetCredentials) async -> Void,
         trace: (@Sendable (String) -> Void)? = nil
     ) async throws -> Answer {
-        let session = try await openSession(credentials: credentials, onCredentials: onCredentials, trace: trace)
+        let session = try await openSession(credentials: credentials, trace: trace)
         do {
             let answer = try await follow(message, session: session, sessionID: sessionID, timeout: timeout, trace: trace)
             await session.close()

@@ -3,6 +3,29 @@ import XCTest
 /// Explicit simulator smoke test; its separate scheme keeps model downloads out of unit tests.
 /// Exercises the real composition, model installer, persistence and production views.
 final class VoiceOnboardingUITests: XCTestCase {
+    @MainActor func testRejectedMusePairingOffersReconnect() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")
+        app.launchArguments = ["-onboarding.skip", "-route", "settings", "-muse.preview", "reconnect"]
+        app.launch()
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Reconnect Muse")).firstMatch
+        for _ in 0..<4 {
+            if row.exists && row.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(row.isHittable)
+        row.tap()
+        let reconnect = app.buttons["Reconnect Muse"]
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 10))
+        XCTAssertTrue(reconnect.isEnabled && reconnect.isHittable)
+        XCTAssertTrue(app.staticTexts["Muse no longer accepts this sign-in. Pair again to reconnect your watch."].exists)
+        XCTAssertFalse(app.staticTexts["Paired with Muse"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Muse reconnect after rejected sign-in"
+        capture.lifetime = .keepAlways
+        add(capture)
+    }
+
     @MainActor func testOptionalSetupAndLocalModelInstallation() throws {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")
