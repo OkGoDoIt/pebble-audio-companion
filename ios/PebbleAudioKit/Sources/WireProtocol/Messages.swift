@@ -1072,6 +1072,11 @@ public struct WatchAction: ControlInMessage, Equatable {
 /// What a watch action asks the watch to do (the joined `WATCH_ACTION` payload).
 public enum WatchActionRequest: Equatable, Sendable {
     case timer(seconds: Int, label: String)
+    case timers(TimerOperation, id: UInt32 = 0, seconds: Int = 0, label: String? = nil)
+
+    public enum TimerOperation: UInt8, Sendable {
+        case list = 0, create = 1, get = 2, pause = 3, resume = 4, update = 5, restart = 6, cancel = 7
+    }
     case alarm(hour: Int, minute: Int, label: String)
     /// Kind 10. For update, 255 preserves an omitted field. Alarms have no stored labels.
     case alarms(AlarmOperation, id: Int = 0, hour: Int = 255, minute: Int = 255,
@@ -1101,6 +1106,7 @@ public enum WatchActionRequest: Equatable, Sendable {
         case health = 8
         case notice = 9
         case alarms = 10
+        case timers = 11
     }
 
     public enum MusicCommand: UInt8, Sendable, CaseIterable {
@@ -1139,6 +1145,19 @@ public enum WatchActionRequest: Equatable, Sendable {
     public func payload() throws(Invalid) -> [UInt8] {
         var w = WireWriter(initialCapacity: 64)
         switch self {
+        case .timers(let operation, let id, let seconds, let label):
+            guard (0...86_400).contains(seconds),
+                  operation.rawValue < 2 ? id == 0 : id != 0,
+                  operation != .create || seconds > 0,
+                  operation != .update || seconds > 0 || label != nil,
+                  operation == .create || operation == .update || (seconds == 0 && label == nil)
+            else { throw .outOfRange("timer fields") }
+            w.u8(Int(Kind.timers.rawValue))
+            w.u8(Int(operation.rawValue))
+            w.u32(id)
+            w.u32(UInt32(seconds))
+            w.u8(label == nil ? 0 : 1)
+            Self.string(&w, label ?? "", max: ProtocolConstants.watchActionLabelMaxBytes)
         case .timer(let seconds, let label):
             guard (1...86_400).contains(seconds) else { throw .outOfRange("timer seconds \(seconds)") }
             w.u8(Int(Kind.timer.rawValue))
@@ -1223,6 +1242,16 @@ public enum WatchActionRequest: Equatable, Sendable {
         }
         guard r.remaining >= 1, let kind = Kind(rawValue: UInt8(r.u8())) else { return nil }
         switch kind {
+        case .timers:
+            guard r.remaining >= 11, let operation = TimerOperation(rawValue: UInt8(r.u8())) else { return nil }
+            let id = r.u32()
+            let seconds = Int(r.u32())
+            let hasLabel = r.u8()
+            guard hasLabel <= 1, let label = string(), r.remaining == 0,
+                  hasLabel == 1 || label.isEmpty else { return nil }
+            let request = WatchActionRequest.timers(operation, id: id, seconds: seconds,
+                                                    label: hasLabel == 1 ? label : nil)
+            return (try? request.payload()) == nil ? nil : request
         case .timer:
             guard r.remaining >= 4 else { return nil }
             let seconds = Int(r.u32())

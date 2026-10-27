@@ -3,9 +3,20 @@ package dev.audiocompanion.protocol
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
 class WireTest {
+    @Test fun timerLifecycleContract() {
+        assertContentEquals(byteArrayOf(11, 1, 0, 0, 0, 0, 60, 0, 0, 0, 1, 3, 84, 101, 97),
+            WatchTimers(1, seconds = 60, label = "Tea").payload())
+        assertContentEquals(byteArrayOf(11, 3, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0, 0, 0),
+            WatchTimers(3, id = 0x12345678u).payload())
+        assertFailsWith<IllegalArgumentException> { WatchTimers(3).payload() }
+        assertFailsWith<IllegalArgumentException> { WatchTimers(5, id = 42u).payload() }
+        assertFailsWith<IllegalArgumentException> { WatchTimers(1, seconds = 86401).payload() }
+    }
+
     @Test
     fun smartAlarmWireContract() {
         assertContentEquals(byteArrayOf(10, 1, 0, 11, 18, 1, 1),

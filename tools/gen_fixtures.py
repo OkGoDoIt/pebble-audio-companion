@@ -744,6 +744,15 @@ def build_fixtures():
             "control_in", "parse",
             {"request_token": 0x52, "action_id": 8, "flags": 0, "payload_hex": payload.hex()},
             "Native regular/smart alarm management: " + name)
+    for operation, name in enumerate(["list", "create", "get", "pause", "resume", "update", "restart", "cancel"]):
+        label = "Pasta".encode() if operation == 1 else b""
+        payload = struct.pack("<BBIIBB", 11, operation, 0 if operation < 2 else 0x12345678,
+                              600 if operation == 1 else (120 if operation == 5 else 0),
+                              int(operation == 1), len(label)) + label
+        add("watch_action_timers_" + name, watch_action(0x53, 9, 0, payload),
+            "control_in", "parse",
+            {"request_token": 0x53, "action_id": 9, "flags": 0, "payload_hex": payload.hex()},
+            "Watch countdown management: " + name)
     first, rest = CHOOSE_PAYLOAD[:180], CHOOSE_PAYLOAD[180:]
     add(
         "watch_action_choose_first",

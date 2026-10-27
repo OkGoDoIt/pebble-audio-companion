@@ -3,6 +3,20 @@ import Testing
 
 /// Port of `core/protocol/src/commonTest/.../WireTest.kt`.
 @Suite struct WireTest {
+    @Test func timerLifecycleWireContract() throws {
+        let create = WatchActionRequest.timers(.create, seconds: 60, label: "Tea")
+        #expect(try create.payload() == [11, 1, 0, 0, 0, 0, 60, 0, 0, 0, 1, 3, 84, 101, 97])
+        for request in [create, .timers(.list), .timers(.get, id: 0x12345678),
+                        .timers(.pause, id: 42), .timers(.resume, id: 42), .timers(.update, id: 42, label: ""),
+                        .timers(.restart, id: 42), .timers(.cancel, id: 42)] {
+            #expect(WatchActionRequest.parse(try request.payload()) == request)
+        }
+        #expect(WatchActionRequest.parse(Array(try create.payload().dropLast())) == nil)
+        #expect(WatchActionRequest.parse(try create.payload() + [0]) == nil)
+        #expect(throws: WatchActionRequest.Invalid.self) { try WatchActionRequest.timers(.pause).payload() }
+        #expect(throws: WatchActionRequest.Invalid.self) { try WatchActionRequest.timers(.update, id: 42).payload() }
+    }
+
     @Test func smartAlarmWireContractRejectsMalformedRequests() throws {
         let create = WatchActionRequest.alarms(.create, hour: 11, minute: 18, smart: 1, enabled: 1)
         #expect(try create.payload() == [10, 1, 0, 11, 18, 1, 1])

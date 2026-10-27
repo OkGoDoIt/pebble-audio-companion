@@ -21,6 +21,32 @@ struct MuseRemindersTests {
         List(id: "L6", name: "Family (shared)", isDefault: false, canChange: false),
     ]
 
+    @Test func calendarAddAsksForChangesEvenAfterReadingWasAllowed() async {
+        let fx = RemindersFixture(access: .allowed)
+        fx.watch.answer(value: 0)
+        _ = await fx.tools.run(MuseTools.calendarCommand, ["action": "list"], watch: fx.watch)
+        fx.watch.answer(value: 2)
+        let add: MuseJSON = ["action": "add", "title": "Lunch", "start": "2026-10-27T12:00:00+07:00"]
+        let result = await fx.tools.run(MuseTools.calendarCommand, add, watch: fx.watch)
+        #expect(result == MuseTools.reply(.changeDeclined, .calendar))
+        #expect(fx.watch.questions() == [MuseTools.consentQuestion(.calendar), MuseTools.changeQuestion(.calendar)])
+        #expect(await fx.tools.run(MuseTools.calendarCommand, add, watch: fx.watch) == result)
+        #expect(fx.watch.questions().count == 2)
+    }
+
+    @Test func malformedCalendarDatesAreRejectedBeforePermissions() async {
+        let fx = RemindersFixture(access: .allowed)
+        for params: MuseJSON in [
+            ["action": "add", "title": "Lunch", "start": "tomorrow"],
+            ["action": "add", "title": "Lunch", "start": "2026-10-27", "end": "bad"],
+            ["action": "add", "title": "Lunch", "start": "2026-10-27", "end": "2026-10-26"],
+            ["action": "list", "from": "bad"],
+        ] {
+            #expect(await fx.tools.run(MuseTools.calendarCommand, params, watch: fx.watch)["ok"]?.bool == false)
+        }
+        #expect(fx.watch.questions().isEmpty)
+    }
+
     // MARK: - Which list a name means
 
     @Test func aListNameMatchesExactlyThenLooselyThenNever() {

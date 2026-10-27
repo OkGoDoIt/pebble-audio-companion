@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch countdown management: list",
+  "expect": "parse",
+  "fields": {
+    "action_id": 9,
+    "flags": 0,
+    "payload_hex": "0b0000000000000000000000",
+    "request_token": 83
+  },
+  "name": "watch_action_timers_list",
+  "size": 17
+}

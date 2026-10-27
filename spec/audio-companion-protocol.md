@@ -3,7 +3,7 @@
 Status: normative. This document is the single source of truth for the wire protocol between
 custom Pebble firmware (the Audio Companion GATT service) and the third-party audio companion
 app. The firmware tree carries a verbatim copy at
-`PebbleOS/src/fw/services/audio_companion/PROTOCOL.md`; the version stamps must match.
+`PebbleOS/fw/services/audio_companion/PROTOCOL.md`; the version stamps must match.
 
 Protocol version: **1**
 Spec revision: 2026-06-11
@@ -360,6 +360,35 @@ Joined payload: `u8 kind`, then (strings are `u8 length` + UTF-8):
   and can take a few seconds.
 - `9 Notice`: `str text` (≤ 120). A short message from the receiver itself (not the assistant),
   shown on the watch until dismissed or for 15 s.
+- `10 Alarms`: `u8 operation` (0 list, 1 create, 2 update, 3 delete), `u8 id` (0–9),
+  `u8 hour`, `u8 minute`, `u8 smart`, `u8 enabled`. Hour/minute use 0–23 / 0–59;
+  smart/enabled use 0/1. A field of 255 preserves it on update. Create requires time,
+  smart and enabled=1, creates a one-time alarm and returns its id in result `value`.
+  Update/delete require an existing id; update preserves recurrence, sound and vibration.
+  List ignores fields and returns all alarms, one fixed-width `iHHMMsekDD\n` record each:
+  id, hour, minute, smart, enabled, native kind (0 daily, 1 weekends, 2 weekdays,
+  3 once, 4 custom), two hex digits of scheduled days (Sunday bit0). Ten records fit
+  in 110 bytes. Empty text means no alarms. Smart wake uses the native fixed 30-minute
+  window BEFORE the given time. Labels are not stored. Older firmware returns Unsupported;
+  the phone may fall back to kind 2 only for regular one-time creation.
+
+
+- `11 Timers`: `u8 operation` (0 list, 1 create, 2 get, 3 pause, 4 resume, 5 update,
+  6 restart, 7 cancel), `u32 id`, `u32 seconds`, `u8 label_present`, `str label` (48 bytes).
+  List/create require id=0; others require a nonzero id returned by the watch. Create requires
+  seconds 1–86400. Update uses seconds=0 to preserve remaining time and duration; otherwise
+  it sets both remaining time and restart duration, preserving paused state. label_present=0
+  preserves the label (and requires an empty label); 1 replaces it, including clearing it.
+  Update needs at least one changed field. Other operations require seconds=0 and no label.
+  List returns up to four decimal ids separated by newlines. Get/create/pause/resume/update/
+  restart return `id,state,remaining_ms,duration_seconds\nlabel`: state 1 running, 2 paused,
+  3 finished. Cancel returns no text. Read failures must never be interpreted as an empty list.
+  Resume does not restart a finished timer; restart explicitly resets it to its duration.
+  Four live or paused timers fit; finished records can be reused by create. IDs are random,
+  not slot numbers. Kind 1 timers use the same store and appear in kind 11 lists. Timers keep
+  running after receiver disconnect but are volatile across watch reboot. No flash writes or
+  polling timers are added. Only a definitive Unsupported permits a kind 1 creation fallback.
+
 
 `WATCH_ACTION_RESULT` (`0x4A`, watch → phone): `u8 msg_id`, `u8 action_id`, `u8 status`,
 `u8 value`, then optionally `u8 text_length` (1–160) and that much UTF-8. `status` 1 done (timer
@@ -428,22 +457,14 @@ One-byte `msg_id` (`0x80–0x9F`) plus packed struct per notification.
 | 18 | 2 | `frame_duration_ms` (20) |
 | 20 | 8 | `start_time_ms` — watch wall clock at stream birth, UTC ms |
 | 28 | 8 | `start_monotonic_ms` — watch monotonic ms at stream birth |
-| 36 | 4 | `flags` — bit0 = RESUME |
+| 36 | 4 | `flags` — bit0 = RESUME (see below) |
 
-`flags` bit0 (`RESUME`): re-announces an ongoing stream to a freshly (re)attached receiver.
-Same `stream_id`, codec parameters, and stream-birth timestamps (resent verbatim); sequence
-numbering continues. Receivers reattach on the stable identity (`stream_id` + codec parameters) —
-never on the timestamps — and continue the interrupted or still-open segment instead of opening a
-new one.
-
-Contiguity after a RESUME: a receiver that already holds audio for the stream continues from the
-last sequence it stored, and records as lost every sequence between that and the first frame it
-receives that no `STREAM_GAP` accounts for. The watch depends on this: when its spool recycles a
-chunk it reports a gap only for frames it had not yet sent, so frames sent into a link that was
-already failing are otherwise lost without a record. Frames re-sent by the rewind below that point
-are already stored and are not stored again. A receiver that holds nothing of the stream adopts
-the first frame's sequence as its base; a `STREAM_GAP` received before that frame never raises the
-base above it.
+`flags` bit0 (`RESUME`): this `STREAM_START` re-announces an ongoing stream to a freshly
+(re)attached receiver rather than beginning a new one. The `stream_id`, codec parameters, and
+both start timestamps are the stream-birth values, resent verbatim; sequence numbering continues
+(the receiver adopts the first frame's sequence as its contiguity base instead of assuming 0),
+and the spool rewinds to the last checkpoint so un-checkpointed frames are re-sent. Receivers
+key reattachment off the stable identity (`stream_id` + codec parameters), not the timestamps.
 
 `STREAM_DATA` (`0x81`) header (20 bytes), followed by `frame_count` frame entries:
 
@@ -508,7 +529,10 @@ Sequence semantics: `sequence` increments per encoded frame within a stream, sta
 5. After `AUTH_RESULT(ok)` the session is authorized for the lifetime of the BLE connection.
    The phone subscribes to Data; the watch streams per policy.
 5. Any disconnect ends the session; reconnect repeats the handshake (silent when the hash
-   matches).
+   matches). On a bonded reconnect the persisted CCCD subscriptions can be restored before the
+   phone re-sends `AUTH_REQUEST`; the session is not ready — and nothing streams — until the
+   re-auth completes. If the stream stayed active across the disconnect (brief-disconnect
+   bridge), the re-announce after re-auth carries the RESUME flag and the same `stream_id`.
 6. Revocation: watch Settings ("Forget Receiver") or `AUTH_REVOKE` → stored identity wiped,
    `REVOKED` pushed, streaming stops, service returns to idle.
 

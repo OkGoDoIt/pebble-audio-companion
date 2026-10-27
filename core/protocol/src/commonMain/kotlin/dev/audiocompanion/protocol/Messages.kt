@@ -808,3 +808,21 @@ data class WatchAlarms(
         return byteArrayOf(10, operation.toByte(), id.toByte(), hour.toByte(), minute.toByte(), smart.toByte(), enabled.toByte())
     }
 }
+
+/** Countdown lifecycle (WATCH_ACTION kind 11). IDs come from the watch, never from a slot. */
+data class WatchTimers(
+    val operation: Int, val id: UInt = 0u, val seconds: Int = 0, val label: String? = null,
+) {
+    fun payload(): ByteArray {
+        require(operation in 0..7 && seconds in 0..86400)
+        require(if (operation < 2) id == 0u else id != 0u)
+        require(operation != 1 || seconds > 0)
+        require(operation != 5 || seconds > 0 || label != null)
+        require(operation == 1 || operation == 5 || (seconds == 0 && label == null))
+        val encoded = (label ?: "").encodeToByteArray()
+        var count = minOf(encoded.size, 48)
+        while (count > 0 && count < encoded.size && (encoded[count].toInt() and 0xC0) == 0x80) count--
+        return WireWriter(12 + count).u8(11).u8(operation).u32(id).u32(seconds.toUInt())
+            .u8(if (label == null) 0 else 1).u8(count).bytes(encoded.copyOf(count)).toByteArray()
+    }
+}

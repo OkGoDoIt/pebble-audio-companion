@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch countdown management: update",
+  "expect": "parse",
+  "fields": {
+    "action_id": 9,
+    "flags": 0,
+    "payload_hex": "0b0578563412780000000000",
+    "request_token": 83
+  },
+  "name": "watch_action_timers_update",
+  "size": 17
+}

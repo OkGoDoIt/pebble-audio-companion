@@ -12,7 +12,7 @@ public protocol MuseDataProvider: Sendable {
     /// An answer to `question` from the person's own AI, reading their recordings. Nil when no AI
     /// is set up or it couldn't answer.
     func answerFromRecordings(_ question: String) async -> String?
-    /// What happened on `day`, or in the seven days ending on it. Nil when there is nothing.
+    /// What happened on `day`, or in its calendar week. Nil when there is nothing.
     func recap(day: Date, week: Bool) async -> String?
 
     // Reminders the app keeps itself (`docs/reminders.md`): the reminders tool's "Pebble Audio"
@@ -151,6 +151,8 @@ actor MuseTools {
     /// Not Now on a change: no more changes, and no more asking, for this question.
     private var changesDeclined: [MuseSource: Date] = [:]
     /// Calls that change something, and how they went, for a repeat that comes soon after.
+    private var inFlightChanges: [String: Task<MuseJSON, Never>] = [:]
+    private var questionGeneration = 0
     private var recentChanges: [(key: String, at: Date, result: MuseJSON)] = []
     /// A call that changes something, repeated within this, gets the first one's result: Muse
     /// retries a call whose reply it never got, and the timer may already be running.
@@ -172,6 +174,7 @@ actor MuseTools {
     // MARK: - Names
 
     static let timerCommand = "watch.set_timer"
+    static let timersCommand = "watch.timers"
     static let alarmCommand = "watch.set_alarm"
     static let alarmsCommand = "watch.alarms"
     static let musicCommand = "watch.music"
@@ -208,10 +211,22 @@ actor MuseTools {
         let actions = prefs.watchActions
         if actions.contains(.timer) {
             c[timerCommand] = [
-                "description": "Start a countdown timer on the user's Pebble watch. When it ends, the watch buzzes and shows its label.",
+                "description": "Start a countdown timer on the user's Pebble watch. Returns its id and current state. Use watch.timers to list, check, pause, resume, change, restart or cancel timers. Maximum four live timers; timers do not survive a watch reboot.",
                 "required": ["seconds": param("integer", "How long, in seconds, from 1 to 86400.")],
                 "optional": ["label": param("string", "A word or two shown when it ends, like \"Pasta\".")],
-                "timeout_ms": 15_000,
+                "timeout_ms": 30_000,
+            ]
+        }
+        if actions.contains(.timer) {
+            c[timersCommand] = [
+                "description": "Manage Pebble watch countdowns. List first to get ids and labels; ask which timer if ambiguous. get reads live time remaining. update preserves omitted fields: seconds sets time remaining from now (and the restart duration), preserving paused state; label renames. restart starts the original or updated duration again. cancel removes a timer. Finished timers remain readable/restartable until their slot is reused. At most four running/paused timers; all are lost on watch reboot. Never create a replacement to edit a timer. After an unconfirmed change, read status before retrying.",
+                "required": ["action": param("string", "list, create, get, pause, resume, update, restart or cancel.")],
+                "optional": [
+                    "id": param("integer", "Timer id from list/create; required except for list/create."),
+                    "seconds": param("integer", "Required for create; optional for update: 1-86400 seconds remaining."),
+                    "label": param("string", "With create/update: label, up to 48 UTF-8 bytes; empty clears it."),
+                ],
+                "timeout_ms": 60_000,
             ]
         }
         if actions.contains(.alarm) {
@@ -270,7 +285,7 @@ actor MuseTools {
         }
         if actions.contains(.recording), hasData {
             c[recordingCommand] = [
-                "description": "Control the user's Pebble Audio recording: pause it (for a while or until resumed), resume it, or mark this moment so they can find it later.",
+                "description": "Request a pause or resume of Pebble Audio recording, or save a marked moment. Pause/resume changes the app's intent; it does not confirm watch capture. A mark can be saved without audio and is not a reminder.",
                 "required": ["action": param("string", "One of: pause, resume, mark.")],
                 "optional": [
                     "minutes": param("integer", "With pause: how long. Leave out to pause until resumed."),
@@ -331,7 +346,7 @@ actor MuseTools {
                     "from": param("string", "With search: start of the range, \(date). The last 24 hours if not given."),
                     "to": param("string", "With search: end of the range, \(date). Now if not given."),
                     "date": param("string", "With recap: the day, \(date). Today if not given."),
-                    "period": param("string", "With recap: day or week; day if not given."),
+                    "period": param("string", "With recap: day or the calendar week containing date; day if not given."),
                 ],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
@@ -352,26 +367,45 @@ actor MuseTools {
 
     /// A new question from the watch: what was allowed once is asked about again.
     func questionBegan() {
+        questionGeneration += 1
+        recentChanges.removeAll()
         allowedOnce.removeAll()
         changesAllowedOnce.removeAll()
         changesDeclined.removeAll()
     }
 
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
+        guard Self.commands(for: preferences.current.value, hasData: data != nil)[command] != nil else {
+            return await perform(command, params, watch: watch)
+        }
         let key = Self.changeKey(command, params)
         let now = clock()
+        let generation = questionGeneration
         recentChanges.removeAll { now.timeIntervalSince($0.at) > Self.repeatWindow }
         if let key, let earlier = recentChanges.last(where: { $0.key == key }) {
-            log("\(command) repeated within \(Int(Self.repeatWindow / 60)) minutes; answering with the first one's result")
             return earlier.result
         }
-        let result = await perform(command, params, watch: watch)
-        if let key, result["ok"]?.bool == true {
-            // An intervening alarm edit/delete invalidates the old result for that state.
+        let flightKey = key.map { "\(generation) \($0)" }
+        if let flightKey, let pending = inFlightChanges[flightKey] { return await pending.value }
+        let task = Task { await self.perform(command, params, watch: watch) }
+        if let flightKey { inFlightChanges[flightKey] = task }
+        let result = await task.value
+        if let flightKey { inFlightChanges[flightKey] = nil }
+        if let key, generation == questionGeneration,
+           result["ok"]?.bool == true || result["outcome_unknown"]?.bool == true {
             if command == Self.alarmCommand || command == Self.alarmsCommand {
                 recentChanges.removeAll { $0.key.hasPrefix(Self.alarmCommand + " ") || $0.key.hasPrefix(Self.alarmsCommand + " ") }
             }
-            recentChanges.append((key, now, result))
+            if command == Self.timersCommand, params["action"]?.string != "create",
+               let changedID = Self.int(params["id"]) {
+                // Editing one timer must not forget another timer's creation (including an
+                // unconfirmed creation). Otherwise a later retry could start it twice.
+                recentChanges.removeAll {
+                    $0.key.hasPrefix(Self.timersCommand + " ") &&
+                    Self.int($0.result["payload"]?["id"]) == changedID
+                }
+            }
+            recentChanges.append((key, clock(), result))
         }
         return result
     }
@@ -380,9 +414,17 @@ actor MuseTools {
     /// reminder, a follow-up decided, a calendar event): its command and parameters. Nil for a
     /// call that only reads.
     static func changeKey(_ command: String, _ params: MuseJSON) -> String? {
+        if command == timerCommand || (command == timersCommand && params["action"]?.string == "create") {
+            var canonical = params.object ?? [:]
+            canonical["action"] = "create"
+            canonical["label"] = params["label"] ?? ""
+            return timersCommand + " " + MuseJSON.object(canonical).compactString()
+        }
         switch command {
-        case timerCommand, alarmCommand:
+        case alarmCommand:
             break
+        case timersCommand:
+            guard !["list", "get"].contains(params["action"]?.string ?? "") else { return nil }
         case alarmsCommand:
             guard params["action"]?.string != "list" else { return nil }
         case remindersCommand:
@@ -410,8 +452,11 @@ actor MuseTools {
             guard let seconds = Self.int(params["seconds"]), (1...86_400).contains(seconds) else {
                 return Self.error("seconds must be between 1 and 86400")
             }
-            let result = await watch.runWatchAction(.timer(seconds: seconds, label: params["label"]?.string ?? ""), wait: .seconds(10))
-            return Self.outcome(result) { _ in ["set": true, "seconds": .number(Double(seconds))] }
+            return await timers(["action": "create", "seconds": .number(Double(seconds)),
+                                 "label": params["label"] ?? ""], watch: watch)
+        case Self.timersCommand:
+            guard prefs.watchActions.contains(.timer) else { return Self.turnedOff }
+            return await timers(params, watch: watch)
         case Self.alarmCommand:
             guard prefs.watchActions.contains(.alarm) else { return Self.turnedOff }
             guard let hour = Self.int(params["hour"]), (0...23).contains(hour),
@@ -428,7 +473,7 @@ actor MuseTools {
                 }
             }
             guard result != nil else {
-                return Self.error("The watch did not confirm this alarm. It may already exist; list alarms before trying again.")
+                return Self.unconfirmed("alarm", read: "watch.alarms list")
             }
             return Self.outcome(result) { result in
                 ["set": true, "id": .number(Double(result.value)), "smart": .bool(smart),
@@ -454,7 +499,10 @@ actor MuseTools {
             guard prefs.watchActions.contains(.quietTime) else { return Self.turnedOff }
             let state = params["state"]?.string?.lowercased()
             guard state == "on" || state == "off" else { return Self.error("state must be on or off") }
-            let minutes = max(0, min(Self.int(params["minutes"]) ?? 0, 24 * 60))
+            guard params["minutes"] == nil || Self.int(params["minutes"]).map({ (0...1440).contains($0) }) == true else {
+                return Self.error("minutes must be an integer from 0 to 1440")
+            }
+            let minutes = Self.int(params["minutes"]) ?? 0
             let result = await watch.runWatchAction(.quietTime(on: state == "on", minutes: minutes), wait: .seconds(10))
             return Self.outcome(result) { _ in ["quiet_time": .string(state ?? "on")] }
         case Self.openAppCommand:
@@ -467,7 +515,10 @@ actor MuseTools {
             return Self.outcome(result) { result in ["opened": .string(result.textString ?? name)] }
         case Self.findCommand:
             guard prefs.watchActions.contains(.findWatch) else { return Self.turnedOff }
-            let seconds = min(max(Self.int(params["seconds"]) ?? 10, 1), ProtocolConstants.watchActionFindMaxSeconds)
+            guard params["seconds"] == nil || Self.int(params["seconds"]).map({ (1...30).contains($0) }) == true else {
+                return Self.error("seconds must be an integer from 1 to 30")
+            }
+            let seconds = Self.int(params["seconds"]) ?? 10
             let result = await watch.runWatchAction(.findWatch(seconds: seconds), wait: .seconds(10))
             return Self.outcome(result) { _ in ["buzzing_seconds": .number(Double(seconds))] }
         case Self.recordingCommand:
@@ -477,7 +528,11 @@ actor MuseTools {
             if let refusal = await permission(.health, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
             return await health(params, watch: watch)
         case Self.calendarCommand:
-            if let refusal = await phoneAccess(.calendar, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
+            let action = params["action"]?.string?.lowercased() ?? "list"
+            guard ["list", "add"].contains(action) else { return Self.error("action must be list or add") }
+            if let error = Self.calendarParameterError(params, action: action) { return Self.error(error) }
+            if let refusal = await phoneAccess(.calendar, prefs: prefs, watch: watch, deadline: deadline,
+                                               change: action == "add") { return refusal }
             return calendar(params)
         case Self.remindersCommand:
             return await reminders(params, prefs: prefs, watch: watch, deadline: deadline)
@@ -491,6 +546,83 @@ actor MuseTools {
         default:
             return Self.error("unsupported command")
         }
+    }
+
+    private func timers(_ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
+        let names = ["list", "create", "get", "pause", "resume", "update", "restart", "cancel"]
+        guard let name = params["action"]?.string, let index = names.firstIndex(of: name),
+              let operation = WatchActionRequest.TimerOperation(rawValue: UInt8(index)) else {
+            return Self.error("action must be list, create, get, pause, resume, update, restart or cancel")
+        }
+        let id = Self.int(params["id"]).flatMap(UInt32.init(exactly:)) ?? 0
+        guard index < 2 ? params["id"] == nil : id != 0 else { return Self.error("Use the timer id returned by list/create.") }
+        guard params["label"] == nil || params["label"]?.string != nil else { return Self.error("label must be text") }
+        let label = params["label"]?.string
+        guard label.map({ $0.utf8.count <= ProtocolConstants.watchActionLabelMaxBytes && !$0.contains("\0") }) ?? true else {
+            return Self.error("label must fit in 48 UTF-8 bytes and contain no null characters")
+        }
+        let seconds = Self.int(params["seconds"]) ?? 0
+        guard params["seconds"] == nil || (1...86400).contains(seconds) else {
+            return Self.error("seconds must be an integer from 1 to 86400")
+        }
+        let request = WatchActionRequest.timers(operation, id: id, seconds: seconds, label: label)
+        guard (try? request.payload()) != nil else { return Self.error("Invalid fields for this timer action.") }
+        var result = await watch.runWatchAction(request, wait: .seconds(10))
+        if operation == .create, result?.status == .unsupported {
+            // Only a definitive Unsupported permits fallback; never retry an ambiguous write.
+            result = await watch.runWatchAction(.timer(seconds: seconds, label: label ?? ""), wait: .seconds(10))
+            guard let result else { return Self.unconfirmed("timer", read: "watch.timers list after updating firmware") }
+            return Self.outcome(result) { _ in
+                ["set": true, "seconds": .number(Double(seconds)), "managed": false,
+                 "note": "Timer started on older firmware. Update the watch for status, edits and cancellation."]
+            }
+        }
+        guard let result else {
+            return operation == .get || operation == .list ? Self.error("The watch did not answer; timer state is unknown.")
+                : Self.unconfirmed("timer", read: "watch.timers list/get")
+        }
+        guard result.status == .done else {
+            if result.status == .failed, let message = result.textString, !message.isEmpty { return Self.error(message) }
+            return Self.outcome(result) { _ in [:] }
+        }
+        if operation == .cancel { return ["ok": true, "payload": ["id": .number(Double(id)), "cancelled": true]] }
+        if operation == .list {
+            let fields = (result.textString ?? "").split(separator: "\n")
+            let ids = fields.compactMap { UInt32($0) }
+            guard fields.count == ids.count, ids.count <= 4, !ids.contains(0), Set(ids).count == ids.count else {
+                return Self.error("The watch returned an invalid timer list.")
+            }
+            var rows: [MuseJSON] = []
+            for timerID in ids {
+                let detail = await watch.runWatchAction(.timers(.get, id: timerID), wait: .seconds(10))
+                guard detail?.status == .done, let row = Self.timerJSON(detail?.textString),
+                      row["id"]?.number == Double(timerID) else {
+                    return Self.error("Timer list changed or could not be fully read; list again before changing a timer.")
+                }
+                rows.append(row)
+            }
+            return ["ok": true, "payload": ["timers": .array(rows), "max_live_timers": 4, "survives_watch_restart": false]]
+        }
+        guard let row = Self.timerJSON(result.textString), operation == .create || row["id"]?.number == Double(id) else {
+            return operation == .get ? Self.error("The watch returned invalid timer status.")
+                : Self.unconfirmed("timer", read: "watch.timers list/get")
+        }
+        return ["ok": true, "payload": row]
+    }
+
+    private static func timerJSON(_ text: String?) -> MuseJSON? {
+        guard let text else { return nil }
+        let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        let fields = parts[0].split(separator: ",", omittingEmptySubsequences: false)
+        guard fields.count == 4, let id = UInt32(fields[0]), id != 0,
+              let state = Int(fields[1]), (1...3).contains(state),
+              let ms = Int(fields[2]), (0...86_400_000).contains(ms),
+              let duration = Int(fields[3]), (1...86400).contains(duration) else { return nil }
+        return ["id": .number(Double(id)), "label": .string(String(parts[1])),
+                "state": .string(["running", "paused", "finished"][state - 1]),
+                "remaining_seconds": .number(Double((ms + 999) / 1000)),
+                "duration_seconds": .number(Double(duration)), "survives_watch_restart": false]
     }
 
     private func alarms(_ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
@@ -624,6 +756,7 @@ actor MuseTools {
     static func changeQuestion(_ source: MuseSource) -> String {
         switch source {
         case .followUps: return "Let Muse turn your follow-ups into reminders or skip them? What it reads goes to Meta."
+        case .calendar: return "Let Muse add events to your calendar? What it reads goes to Meta."
         default: return "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
         }
     }
@@ -767,7 +900,10 @@ actor MuseTools {
         guard let (metric, unit, scale) = Self.healthMetric(params["metric"]?.string) else {
             return Self.error("metric must be steps, distance, active_minutes, calories, sleep or heart_rate")
         }
-        let days = min(max(Self.int(params["days"]) ?? 1, 1), ProtocolConstants.watchActionHealthMaxDays)
+        guard params["days"] == nil || Self.int(params["days"]).map({ (1...7).contains($0) }) == true else {
+            return Self.error("days must be an integer from 1 to 7")
+        }
+        let days = Self.int(params["days"]) ?? 1
         if metric == .heartRate { return await heartRate(days: days, watch: watch) }
         let result = await watch.runWatchAction(.health(metric, days: days), wait: .seconds(10))
         guard result?.status == .done, let text = result?.textString else {
@@ -828,6 +964,21 @@ actor MuseTools {
             return Self.error("no_heart_rate_data: The watch has no heart rate readings for that time.")
         }
         return ["ok": true, "payload": .object(payload)]
+    }
+
+    private static func calendarParameterError(_ params: MuseJSON, action: String) -> String? {
+        for key in action == "add" ? ["start", "end"] : ["from", "to"] where params[key] != nil {
+            guard let text = params[key]?.string, date(text) != nil else { return "Invalid \(key) date." }
+        }
+        if action == "add" {
+            guard let title = params["title"]?.string, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let start = date(params["start"]?.string) else { return "add needs a title and a start" }
+            if let end = date(params["end"]?.string), end.date <= start.date { return "end must be after start" }
+        } else if let from = date(params["from"]?.string), let to = date(params["to"]?.string),
+                  to.date < from.date || (to.hasTime && to.date == from.date) {
+            return "to must be after from"
+        }
+        return nil
     }
 
     private func calendar(_ params: MuseJSON) -> MuseJSON {
@@ -1150,9 +1301,13 @@ actor MuseTools {
     private func conversations(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
         switch params["action"]?.string?.lowercased() {
         case "search"?, nil:
+            for key in ["from", "to"] where params[key] != nil {
+                guard Self.date(params[key]?.string) != nil else { return Self.error("Invalid \(key) date.") }
+            }
             let now = clock()
             let from = Self.date(params["from"]?.string)?.date ?? now.addingTimeInterval(-24 * 60 * 60)
             let to = Self.date(params["to"]?.string).map { $0.hasTime ? $0.date : Calendar.current.date(byAdding: .day, value: 1, to: $0.date) ?? $0.date } ?? now
+            guard to > from else { return Self.error("to must be after from") }
             let query = params["query"]?.string?.trimmingCharacters(in: .whitespaces)
             let found = await data.conversations(
                 from: from, to: to, query: query?.isEmpty == false ? query : nil, characters: Self.conversationCharacters)
@@ -1167,6 +1322,10 @@ actor MuseTools {
             }
             return ["ok": true, "payload": ["answer": .string(answer)]]
         case "recap"?:
+            guard params["date"] == nil || Self.date(params["date"]?.string) != nil else { return Self.error("Invalid recap date.") }
+            guard params["period"] == nil || ["day", "week"].contains(params["period"]?.string?.lowercased() ?? "") else {
+                return Self.error("period must be day or week")
+            }
             let day = Self.date(params["date"]?.string)?.date ?? clock()
             let week = params["period"]?.string?.lowercased() == "week"
             guard let recap = await data.recap(day: day, week: week) else {
@@ -1256,12 +1415,19 @@ actor MuseTools {
     private func recording(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
         switch params["action"]?.string?.lowercased() {
         case "pause"?:
-            let minutes = max(0, Self.int(params["minutes"]) ?? 0)
+            guard params["minutes"] == nil || Self.int(params["minutes"]).map({ (0...1440).contains($0) }) == true else {
+                return Self.error("minutes must be an integer from 0 to 1440")
+            }
+            let minutes = Self.int(params["minutes"]) ?? 0
             return await data.pauseRecording(minutes: minutes)
-                ? ["ok": true, "payload": ["paused_minutes": .number(Double(minutes))]]
+                ? ["ok": true, "payload": ["pause_requested": true, "paused_minutes": .number(Double(minutes)),
+                    "note": "Pause requested in the app; the watch must be connected to apply it."]]
                 : Self.error("Recording isn't on.")
         case "resume"?:
-            return await data.resumeRecording() ? ["ok": true, "payload": ["recording": true]] : Self.error("Recording couldn't be resumed.")
+            return await data.resumeRecording()
+                ? ["ok": true, "payload": ["resume_requested": true,
+                    "note": "Recording is enabled in the app. Actual capture depends on the watch connection and its recording state."]]
+                : Self.error("Recording couldn't be resumed.")
         case "mark"?:
             return await data.markMoment(params["label"]?.string) ? ["ok": true, "payload": ["marked": true]] : Self.error("This moment couldn't be marked.")
         default:
@@ -1272,6 +1438,11 @@ actor MuseTools {
     // MARK: - Helpers
 
     static let turnedOff: MuseJSON = ["ok": false, "error": "The user has turned this off."]
+
+    static func unconfirmed(_ what: String, read: String) -> MuseJSON {
+        ["ok": false, "outcome_unknown": true,
+         "error": .string("The watch did not confirm this \(what). It may have changed; use \(read) to check before retrying. Do not assume failure or create a replacement.")]
+    }
 
     static func error(_ message: String) -> MuseJSON { ["ok": false, "error": .string(message)] }
 

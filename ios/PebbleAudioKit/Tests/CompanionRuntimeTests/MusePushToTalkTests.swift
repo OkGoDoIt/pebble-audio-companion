@@ -422,11 +422,11 @@ struct MusePushToTalkTests {
         let reply = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 90, "label": "Pasta"]) }
         #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
         let action = try #require(fx.link.actions().first)
-        #expect(WatchActionRequest.parse(action.payload) == .timer(seconds: 90, label: "Pasta"))
-        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue)))
+        #expect(WatchActionRequest.parse(action.payload) == .timers(.create, seconds: 90, label: "Pasta"))
+        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, text: Array("42,1,90000,90\nPasta".utf8))))
         let result = await reply.value
         #expect(result["ok"]?.bool == true)
-        #expect(result["payload"]?["seconds"]?.number == 90)
+        #expect(result["payload"]?["duration_seconds"]?.number == 90)
     }
 
     @Test func anActionTurnedOffIsRefusedWithoutTouchingTheWatch() async {
@@ -440,7 +440,7 @@ struct MusePushToTalkTests {
         let offered = MuseTools.commands(
             for: MusePreferences(watchActions: [.timer], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true)
-        #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand])
+        #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand, MuseTools.timersCommand])
     }
 
     @Test func aTimerRepeatedSoonAfterIsNotSetTwice() async throws {
@@ -448,14 +448,14 @@ struct MusePushToTalkTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let first = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600, "label": "Pasta"]) }
-        _ = try #require(await fx.answerNextAction(status: .done))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\nPasta"))
         #expect(await first.value["ok"]?.bool == true)
         let again = await fx.service.runCommand(MuseTools.timerCommand, ["label": "Pasta", "seconds": 600])
         #expect(again["ok"]?.bool == true)
         #expect(fx.link.actions().count == 1)
         // A different timer is set.
         let other = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 300]) }
-        _ = try #require(await fx.answerNextAction(status: .done))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\nPasta"))
         #expect(await other.value["ok"]?.bool == true)
         #expect(fx.link.actions().count == 2)
     }
@@ -506,7 +506,7 @@ struct MuseConversationTests {
         try fx.ask(turn: 3, seconds: 1)
         #expect(await fx.waitUntil { fx.link.updates().contains { $0.kind == .done } })
         let call = Task { await fx.muse.call(MuseTools.timerCommand, ["seconds": 60]) }
-        _ = try #require(await fx.answerNextAction(status: .done))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,60000,60\n"))
         #expect(await call.value?["ok"]?.bool == true)
     }
 
@@ -1279,9 +1279,18 @@ struct MuseToolsTests {
         #expect(MuseTools.date("tomorrow") == nil)
     }
 
+    @Test func reversedConversationRangeIsAnErrorBeforeTheProvider() async {
+        let fx = PushToTalkFixture()
+        fx.preferences.update { $0.dataAccess[.conversations] = .allowed }
+        await fx.start()
+        let result = await fx.service.runCommand(MuseTools.conversationsCommand,
+            ["action": "search", "from": "2026-10-28", "to": "2026-10-26"])
+        #expect(result["ok"]?.bool == false)
+    }
+
     @Test func everyCommandIsOfferedOnlyWhileItsSwitchAllows() {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
-        #expect(all.count == 13)
+        #expect(all.count == 14)
         let none = MuseTools.commands(
             for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]

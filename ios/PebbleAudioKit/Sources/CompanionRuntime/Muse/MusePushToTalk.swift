@@ -1190,6 +1190,7 @@ public actor MusePushToTalk: MuseWatchSide {
     static func describe(_ request: WatchActionRequest) -> String {
         switch request {
         case .timer: return "timer"
+        case .timers: return "timers"
         case .alarm: return "alarm"
         case .alarms: return "alarms"
         case .choose(_, let options, _): return "choice of \(options.count)"
