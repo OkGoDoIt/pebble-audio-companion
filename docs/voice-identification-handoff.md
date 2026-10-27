@@ -22,20 +22,16 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
-- 18:04 +07 install of `b7770fc7` = `666b450a` + cherry-picks of `620867b5`, `17a0049a`, `575f3037`, built
-  in the scratch worktree **without** `940cc75a` (the recording-times commit, which Roger has not approved
-  then). Its launch logged no "preferences sent" and no re-mark (archive fix confirmed). The
-  recording-times session installs main HEAD (with `940cc75a`, at Roger's request) right after; its
-  ten-minute cost report covers both. Every install gets `./scripts/phone-cost-report.sh --minutes 11`
-  plus a systemCrashLogs diff; the next-morning report is still due.
-- The 17:25 install (`666b450a`) passed but with 4–17 CPU-s/min backgrounded. That was the archive
-  sync re-uploading the whole library after every launch (pre-existing since 10-22, fixed in `575f3037`,
-  see below), not the voice work. The state saved at 17:34 already names transcript-export-6, so this
-  install should neither send the preferences nor re-export. Proof: no "preferences sent" or
-  "conversations re-marked" line after the launch.
-- Ask Roger to retry a watch sample (Quiet room); if it still fails, pull the open segment + sidecar
-  (`devicectl device copy from … segments/<id>.meta.json|.spxlog`) and check the lag.
-- Server (archive) runs `b04ab212`, healthy; no server change since.
+- On G17: `f69a8623` (installed 2026-10-27 18:32 +07): background recognition while charging, voice
+  key after-first-unlock, queue cap removed, recent-first claims, faster pace, Play Longer / Open
+  Conversation on clips, quotes from paragraph text. Its ten-minute check never ran: G17 left the Mac
+  at 18:44 and did not return overnight (waiter gave up 06:44 10-28).
+- NOT on G17: `6edbfc14` (profile screen samples) and the other agent's Muse/Focus commits up to
+  `c90ffbd7`. Main tip installs on the next reconnect (waiter `scratchpad/deploy-then-check.sh`,
+  deploying `scratchpad/bg` = main).
+- Measured before the queue fix (18:20 DB): 512 pending jobs (the cap), 53 done, 5 recognized,
+  506 unmatched crops; background slices ~0.3 s per 20 s of audio; no deviceLocked after the key move.
+- Overnight cost report 10-26→27 passed (+2.5 %/h, charging). Server (archive) runs `b04ab212`.
 
 ## Done since the plan below was written
 
@@ -115,23 +111,15 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 
 ## In flight
 
-**Background recognition while charging — built, committed `c51ab541` on main, NOT yet on the phone.**
-Roger chose it 2026-10-26 18:20 after the finding below. G17 went off the Mac at 18:26; a waiter
-(`scratchpad/deploy-when-back.sh`) deploys with `--replace` when it reconnects. After the install:
-- run `./scripts/phone-cost-report.sh --minutes 11` and diff systemCrashLogs;
-- read the "voice recognition: 10 background slices, N windows, M ms busy" lines (slice cost; pace is
-  `max(30 s, 10 × busy)`);
-- count link drops ("rebuilding the link", "watchUnreachable", "link disconnected") against the
-  heartbeat's `cpu=+Ns`;
-- check that "voice profile access failed: deviceLocked" stops after the first unlock (key moved to
-  after-first-unlock);
-- pull the DB and see `voice_jobs` cursors move and `voice_auto_attributions` appear.
-If the pace costs too much or links drop, raise the gap (`VoiceBackgroundPace.gapPerBusyMs`).
-
-The finding (18:15): recognition had named nothing on G17. The backup DB at 17:58 had 0 automatic
-attributions, with 4 of 6 `recent` jobs stuck a few seconds in. Recognition was foreground-only
-(`guard foreground`), the phone runs headless behind the lock screen, and the voice key was
-`WhenUnlockedThisDeviceOnly`.
+**Verify `f69a8623` + `6edbfc14` on the phone** once G17 is back and main is installed:
+- `./scripts/phone-cost-report.sh --minutes 11`, a systemCrashLogs diff, and the next-morning report;
+- "voice recognition: 10 background slices, N windows, M ms busy" lines (pace is
+  `max(3 s, 10 × busy)`, 30 s when idle) against link drops ("rebuilding the link",
+  "watchUnreachable", "link disconnected") and the heartbeat's `cpu=+Ns`;
+- no `VoiceIdentityError` in the log; `voice_jobs` with `recent:` run ids finishing ahead of the
+  history plan; `voice_auto_attributions` growing;
+- on the phone: Play Longer and Open Conversation on a real clip and on a conversation sample.
+If the pace costs too much or links drop, raise `VoiceBackgroundPace.gapPerBusyMs`.
 
 Later from the plan: quality weighting of exemplars (needs labelled real watch audio to measure; the
 public corpus is read speech through Speex), propagation feedback ("Found Dana in N places"),
