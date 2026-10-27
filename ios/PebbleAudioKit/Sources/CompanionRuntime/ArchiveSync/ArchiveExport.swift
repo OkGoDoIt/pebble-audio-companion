@@ -25,7 +25,8 @@ public enum ArchiveExport {
     /// without provider labels. Explicit unnamed/partial corrections block legacy fallback.
     /// 4: acoustic identity uses word alignment; 5: stable source anchors permit names-only
     /// patches without replacing a longer server transcript after phone retention.
-    public static let transcriptExportVersion = "transcript-export-6"
+    /// 7: zero-duration subwords and separately timed punctuation retain manual names.
+    public static let transcriptExportVersion = "transcript-export-7"
 
     /// A stretch of a segment's stored audio withheld from the models (the music/TV mask), on
     /// the segment's media clock, and what it was judged to hold when that is known.
