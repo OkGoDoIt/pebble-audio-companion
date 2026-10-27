@@ -758,6 +758,28 @@ def build_fixtures():
             "control_in", "parse",
             {"request_token": 0x53, "action_id": 9, "flags": 0, "payload_hex": native_payload.hex()},
             "Core Devices Timer app management: " + name)
+    for name, fields in {
+        "list": [0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255],
+        "create": [1, 0, 6, 45, 1, 0, 4, 0x22, 1, 0, 2],
+        "get": [4, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255],
+        "update": [2, 3, 255, 50, 255, 255, 255, 255, 255, 255, 255],
+        "delete": [3, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255],
+    }.items():
+        payload = bytes([13] + fields)
+        add("watch_action_alarms_full_" + name, watch_action(0x54, 10, 0, payload),
+            "control_in", "parse",
+            {"request_token": 0x54, "action_id": 10, "flags": 0, "payload_hex": payload.hex()},
+            "Native alarms with recurrence and sound: " + name)
+    for name, payload in {
+        "inspect_status": bytes([14, 0]), "inspect_quiet": bytes([14, 1]),
+        "inspect_music": bytes([14, 2]),
+        "apps_list": bytes([15, 0, 2, 0]) + bytes(16),
+        "apps_open": bytes([15, 1, 0, 0]) + bytes.fromhex("c64aae42b8224d6d995bbc7c38e843f4"),
+        "find_start": bytes([16, 10]), "find_stop": bytes([16, 0]),
+    }.items():
+        add("watch_action_" + name, watch_action(0x55, 11, 0, payload), "control_in", "parse",
+            {"request_token": 0x55, "action_id": 11, "flags": 0, "payload_hex": payload.hex()},
+            "Watch status and lifecycle extension: " + name)
     first, rest = CHOOSE_PAYLOAD[:180], CHOOSE_PAYLOAD[180:]
     add(
         "watch_action_choose_first",

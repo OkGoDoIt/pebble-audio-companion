@@ -798,14 +798,24 @@ class WatchActionResult(
 data class WatchAlarms(
     val operation: Int, val id: Int = 0, val hour: Int = 255, val minute: Int = 255,
     val smart: Int = 255, val enabled: Int = 255,
+    val full: Boolean = false, val recurrence: Int = 255, val days: Int = 255,
+    val sound: Int = 255, val vibrate: Int = 255, val tone: Int = 255,
 ) {
     fun payload(): ByteArray {
-        require(operation in 0..3 && id in 0..9)
+        require(operation in 0..(if (full) 4 else 3) && id in 0..9)
         require(hour in 0..23 || hour == 255)
         require(minute in 0..59 || minute == 255)
         require(smart in listOf(0, 1, 255) && enabled in listOf(0, 1, 255))
-        require(operation != 1 || (hour != 255 && minute != 255 && smart != 255 && enabled == 1))
-        return byteArrayOf(10, operation.toByte(), id.toByte(), hour.toByte(), minute.toByte(), smart.toByte(), enabled.toByte())
+        require(operation != 1 || (hour != 255 && minute != 255 && smart != 255 && (enabled == 1 || (full && enabled == 0))))
+        val base = byteArrayOf(if (full) 13 else 10, operation.toByte(), id.toByte(), hour.toByte(), minute.toByte(), smart.toByte(), enabled.toByte())
+        if (!full) return base
+        require(recurrence in 0..4 || recurrence == 255)
+        require(days in 1..127 || days == 255)
+        require(recurrence != 4 || days != 255)
+        require(days == 255 || recurrence == 4)
+        require(sound in listOf(0, 1, 255) && vibrate in listOf(0, 1, 255))
+        require(tone in 0..3 || tone == 255)
+        return base + byteArrayOf(recurrence.toByte(), days.toByte(), sound.toByte(), vibrate.toByte(), tone.toByte())
     }
 }
 
@@ -833,4 +843,29 @@ data class PhoneFocusState(val requestToken: Int, val enabled: Boolean) : Contro
     override fun encode(): ByteArray = byteArrayOf(
         MessageId.PHONE_FOCUS_STATE.toByte(), requestToken.toByte(), if (enabled) 1 else 0,
     )
+}
+
+/** Watch status (0), Quiet Time (1), and media metadata (2). */
+data class WatchInspection(val section: Int) {
+    fun payload(): ByteArray {
+        require(section in 0..2)
+        return byteArrayOf(14, section.toByte())
+    }
+}
+
+/** Installed-app pagination or launch with its canonical 16 UUID bytes. */
+class WatchApps(val offset: Int = 0, val launchUUID: ByteArray? = null) {
+    fun payload(): ByteArray {
+        require(offset in 0..65535 && (launchUUID == null || (launchUUID.size == 16 && offset == 0)))
+        return WireWriter(20).u8(15).u8(if (launchUUID == null) 0 else 1).u16(offset)
+            .bytes(launchUUID ?: ByteArray(16)).toByteArray()
+    }
+}
+
+/** Zero stops only Muse's find pulses. */
+data class WatchFindControl(val seconds: Int) {
+    fun payload(): ByteArray {
+        require(seconds in 0..30)
+        return byteArrayOf(16, seconds.toByte())
+    }
 }

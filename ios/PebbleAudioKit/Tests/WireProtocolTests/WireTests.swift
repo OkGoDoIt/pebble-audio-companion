@@ -3,6 +3,22 @@ import Testing
 
 /// Port of `core/protocol/src/commonTest/.../WireTest.kt`.
 @Suite struct WireTest {
+    @Test func fullWatchManagementContract() throws {
+        let alarm = WatchActionRequest.alarmsFull(.create, hour: 6, minute: 45, smart: 1,
+            enabled: 0, recurrence: 4, days: 0x22, sound: 1, vibrate: 0, tone: 2)
+        #expect(try alarm.payload() == [13, 1, 0, 6, 45, 1, 0, 4, 0x22, 1, 0, 2])
+        let launch = WatchActionRequest.apps(launchID: "c64aae42-b822-4d6d-995b-bc7c38e843f4")
+        #expect(try launch.payload() == [15, 1, 0, 0, 0xc6, 0x4a, 0xae, 0x42, 0xb8, 0x22,
+                                        0x4d, 0x6d, 0x99, 0x5b, 0xbc, 0x7c, 0x38, 0xe8, 0x43, 0xf4])
+        for request in [alarm, launch, .nativeTimers(.create, seconds: 60), .inspect(0), .inspect(1),
+                        .inspect(2), .apps(offset: 2), .findControl(seconds: 0), .alarmsFull(.get, id: 3)] {
+            #expect(WatchActionRequest.parse(try request.payload()) == request)
+            #expect(WatchActionRequest.parse(try request.payload() + [0]) == nil)
+        }
+        #expect(throws: WatchActionRequest.Invalid.self) { try WatchActionRequest.alarmsFull(.update, recurrence: 4).payload() }
+        #expect(throws: WatchActionRequest.Invalid.self) { try WatchActionRequest.findControl(seconds: 31).payload() }
+    }
+
     @Test func timerLifecycleWireContract() throws {
         let create = WatchActionRequest.timers(.create, seconds: 60, label: "Tea")
         #expect(try create.payload() == [11, 1, 0, 0, 0, 0, 60, 0, 0, 0, 1, 3, 84, 101, 97])

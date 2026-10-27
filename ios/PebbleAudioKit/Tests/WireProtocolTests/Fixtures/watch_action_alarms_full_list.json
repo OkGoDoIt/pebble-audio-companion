@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Native alarms with recurrence and sound: list",
+  "expect": "parse",
+  "fields": {
+    "action_id": 10,
+    "flags": 0,
+    "payload_hex": "0d0000ffffffffffffffffff",
+    "request_token": 84
+  },
+  "name": "watch_action_alarms_full_list",
+  "size": 17
+}

@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch status and lifecycle extension: find_start",
+  "expect": "parse",
+  "fields": {
+    "action_id": 11,
+    "flags": 0,
+    "payload_hex": "100a",
+    "request_token": 85
+  },
+  "name": "watch_action_find_start",
+  "size": 7
+}

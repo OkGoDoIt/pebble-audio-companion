@@ -1,3 +1,5 @@
+import Foundation
+
 /// Wire messages, spec Sections 3-5. All multi-byte integers are little-endian; structs are
 /// packed. Enum-typed fields are stored as the raw wire byte (`*Raw`) with a nullable decoded
 /// accessor so unknown future values survive a decode/encode round trip.
@@ -1084,11 +1086,21 @@ public enum WatchActionRequest: Equatable, Sendable {
     case alarms(AlarmOperation, id: Int = 0, hour: Int = 255, minute: Int = 255,
                 smart: Int = 255, enabled: Int = 255)
 
+    /// Kind 13 includes recurrence, sound, vibration, and a verified resulting snapshot.
+    case alarmsFull(AlarmOperation, id: Int = 0, hour: Int = 255, minute: Int = 255,
+                    smart: Int = 255, enabled: Int = 255, recurrence: Int = 255,
+                    days: Int = 255, sound: Int = 255, vibrate: Int = 255, tone: Int = 255)
+
     public enum AlarmOperation: UInt8, Sendable {
-        case list = 0, create = 1, update = 2, delete = 3
+        case list = 0, create = 1, update = 2, delete = 3, get = 4
     }
     case choose(question: String, options: [String], timeoutSeconds: Int)
     case music(MusicCommand)
+    /// Status 0, Quiet Time 1, music 2.
+    case inspect(Int)
+    case apps(launchID: String? = nil, offset: Int = 0)
+    /// Zero stops only Muse's find vibration.
+    case findControl(seconds: Int)
     /// `minutes` 0: until turned off.
     case quietTime(on: Bool, minutes: Int)
     case launchApp(name: String)
@@ -1110,6 +1122,10 @@ public enum WatchActionRequest: Equatable, Sendable {
         case alarms = 10
         case timers = 11
         case nativeTimers = 12
+        case alarmsFull = 13
+        case inspect = 14
+        case apps = 15
+        case findControl = 16
     }
 
     public enum MusicCommand: UInt8, Sendable, CaseIterable {
@@ -1178,8 +1194,24 @@ public enum WatchActionRequest: Equatable, Sendable {
             w.u8(hour)
             w.u8(minute)
             Self.string(&w, label, max: ProtocolConstants.watchActionLabelMaxBytes)
+        case .alarmsFull(let operation, let id, let hour, let minute, let smart, let enabled,
+                         let recurrence, let days, let sound, let vibrate, let tone):
+            guard (0...4).contains(recurrence) || recurrence == 255,
+                  (1...127).contains(days) || days == 255,
+                  [0, 1, 255].contains(sound), [0, 1, 255].contains(vibrate),
+                  (0...3).contains(tone) || tone == 255,
+                  recurrence != 4 || days != 255, days == 255 || recurrence == 4,
+                  operation != .create || [0, 1].contains(enabled)
+            else { throw .outOfRange("alarm options") }
+            var bytes = try WatchActionRequest.alarms(operation == .get ? .list : operation,
+                id: id, hour: hour, minute: minute, smart: smart,
+                enabled: operation == .create ? 1 : enabled).payload()
+            bytes[0] = Kind.alarmsFull.rawValue
+            bytes[1] = operation.rawValue
+            bytes[6] = UInt8(enabled)
+            return bytes + [recurrence, days, sound, vibrate, tone].map(UInt8.init)
         case .alarms(let operation, let id, let hour, let minute, let smart, let enabled):
-            guard (0...9).contains(id), (0...23).contains(hour) || hour == 255,
+            guard operation != .get, (0...9).contains(id), (0...23).contains(hour) || hour == 255,
                   (0...59).contains(minute) || minute == 255,
                   [0, 1, 255].contains(smart), [0, 1, 255].contains(enabled),
                   operation != .create || (hour != 255 && minute != 255 && smart != 255 && enabled == 1)
@@ -1197,6 +1229,21 @@ public enum WatchActionRequest: Equatable, Sendable {
             for option in options {
                 Self.string(&w, option, max: ProtocolConstants.watchActionOptionMaxBytes)
             }
+        case .inspect(let section):
+            guard (0...2).contains(section) else { throw .outOfRange("inspection section") }
+            w.bytes([Kind.inspect.rawValue, UInt8(section)])
+        case .apps(let launchID, let offset):
+            guard (0...65535).contains(offset) else { throw .outOfRange("app offset") }
+            w.bytes([Kind.apps.rawValue, launchID == nil ? 0 : 1])
+            w.u16(offset)
+            if let launchID {
+                guard let uuid = UUID(uuidString: launchID), offset == 0 else { throw .outOfRange("app id") }
+                var raw = uuid.uuid
+                w.bytes(withUnsafeBytes(of: &raw) { Array($0) })
+            } else { w.bytes(Array(repeating: 0, count: 16)) }
+        case .findControl(let seconds):
+            guard (0...30).contains(seconds) else { throw .outOfRange("find duration") }
+            w.bytes([Kind.findControl.rawValue, UInt8(seconds)])
         case .music(let command):
             w.u8(Int(Kind.music.rawValue))
             w.u8(Int(command.rawValue))
@@ -1271,6 +1318,12 @@ public enum WatchActionRequest: Equatable, Sendable {
             let minute = r.u8()
             guard let label = string() else { return nil }
             return .alarm(hour: hour, minute: minute, label: label)
+        case .alarmsFull:
+            guard r.remaining == 11, let operation = AlarmOperation(rawValue: UInt8(r.u8())) else { return nil }
+            let request = WatchActionRequest.alarmsFull(operation, id: r.u8(), hour: r.u8(), minute: r.u8(),
+                smart: r.u8(), enabled: r.u8(), recurrence: r.u8(), days: r.u8(), sound: r.u8(),
+                vibrate: r.u8(), tone: r.u8())
+            return (try? request.payload()) == nil ? nil : request
         case .alarms:
             guard r.remaining == 6, let operation = AlarmOperation(rawValue: UInt8(r.u8())) else { return nil }
             let request = WatchActionRequest.alarms(operation, id: r.u8(), hour: r.u8(), minute: r.u8(),
@@ -1287,6 +1340,30 @@ public enum WatchActionRequest: Equatable, Sendable {
                 options.append(option)
             }
             return .choose(question: question, options: options, timeoutSeconds: timeout)
+        case .inspect:
+            guard r.remaining == 1 else { return nil }
+            let request = WatchActionRequest.inspect(r.u8())
+            return (try? request.payload()) == nil ? nil : request
+        case .apps:
+            guard r.remaining == 19 else { return nil }
+            let operation = r.u8(), offset = r.u16()
+            let bytes = (0..<16).map { _ in UInt8(r.u8()) }
+            guard operation <= 1 else { return nil }
+            let raw = bytes.map { String(format: "%02x", $0) }.joined()
+            let groups = [8, 4, 4, 4, 12]
+            var index = raw.startIndex
+            let uuid = groups.map { count -> String in
+                let end = raw.index(index, offsetBy: count)
+                defer { index = end }
+                return String(raw[index..<end])
+            }.joined(separator: "-")
+            if operation == 0 && bytes.contains(where: { $0 != 0 }) { return nil }
+            let request = WatchActionRequest.apps(launchID: operation == 1 ? uuid : nil, offset: offset)
+            return (try? request.payload()) == nil ? nil : request
+        case .findControl:
+            guard r.remaining == 1 else { return nil }
+            let request = WatchActionRequest.findControl(seconds: r.u8())
+            return (try? request.payload()) == nil ? nil : request
         case .music:
             guard r.remaining >= 1, let command = MusicCommand(rawValue: UInt8(r.u8())) else { return nil }
             return .music(command)

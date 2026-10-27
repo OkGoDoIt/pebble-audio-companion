@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch status and lifecycle extension: apps_open",
+  "expect": "parse",
+  "fields": {
+    "action_id": 11,
+    "flags": 0,
+    "payload_hex": "0f010000c64aae42b8224d6d995bbc7c38e843f4",
+    "request_token": 85
+  },
+  "name": "watch_action_apps_open",
+  "size": 25
+}

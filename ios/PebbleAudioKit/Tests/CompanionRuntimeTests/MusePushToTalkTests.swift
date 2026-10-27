@@ -80,17 +80,17 @@ struct MusePushToTalkTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let create = Task { await fx.service.runCommand(MuseTools.alarmCommand, ["hour": 11, "minute": 18, "smart": true]) }
-        let action = try #require(await fx.answerNextAction(status: .done, value: 3))
-        #expect(WatchActionRequest.parse(action.payload) == .alarms(.create, hour: 11, minute: 18, smart: 1, enabled: 1))
+        let action = try #require(await fx.answerNextAction(status: .done, value: 3, text: "3111811300010\n"))
+        #expect(WatchActionRequest.parse(action.payload) == .alarmsFull(.create, hour: 11, minute: 18, smart: 1, enabled: 1))
         #expect(await create.value["payload"]?["smart"]?.bool == true)
         #expect(await create.value["payload"]?["id"]?.number == 3)
         let update = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "update", "id": 3, "minute": 30]) }
-        let changed = try #require(await fx.answerNextAction(status: .done))
-        #expect(WatchActionRequest.parse(changed.payload) == .alarms(.update, id: 3, minute: 30))
+        let changed = try #require(await fx.answerNextAction(status: .done, value: 3, text: "3113011300010\n"))
+        #expect(WatchActionRequest.parse(changed.payload) == .alarmsFull(.update, id: 3, minute: 30))
         #expect(await update.value["ok"]?.bool == true)
         let delete = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "delete", "id": 3]) }
         let deleted = try #require(await fx.answerNextAction(status: .done))
-        #expect(WatchActionRequest.parse(deleted.payload) == .alarms(.delete, id: 3))
+        #expect(WatchActionRequest.parse(deleted.payload) == .alarmsFull(.delete, id: 3))
         #expect(await delete.value["ok"]?.bool == true)
     }
 
@@ -98,7 +98,7 @@ struct MusePushToTalkTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let list = Task { await fx.service.runCommand(MuseTools.alarmsCommand, ["action": "list"]) }
-        _ = try #require(await fx.answerNextAction(status: .done, text: "0073011300\n118450047F\n"))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "0073011300010\n118450047F010\n"))
         let rows = await list.value["payload"]?["alarms"]?.array
         #expect(rows?.count == 2)
         #expect(rows?[0]["smart"]?.bool == true)
@@ -423,7 +423,7 @@ struct MusePushToTalkTests {
         #expect(await fx.waitUntil { !fx.link.actions().isEmpty })
         let action = try #require(fx.link.actions().first)
         #expect(WatchActionRequest.parse(action.payload) == .nativeTimers(.create, seconds: 90, label: ""))
-        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, text: Array("42,1,90000,90\nPasta".utf8))))
+        fx.link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, text: Array("42,1,90000,90\n".utf8))))
         let result = await reply.value
         #expect(result["ok"]?.bool == true)
         #expect(result["payload"]?["duration_seconds"]?.number == 90)
@@ -440,7 +440,7 @@ struct MusePushToTalkTests {
         let offered = MuseTools.commands(
             for: MusePreferences(watchActions: [.timer], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true)
-        #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand, MuseTools.timersCommand])
+        #expect(offered.object?.keys.sorted() == [MuseTools.timerCommand, MuseTools.statusCommand, MuseTools.timersCommand])
     }
 
     @Test func aTimerRepeatedSoonAfterIsNotSetTwice() async throws {
@@ -448,14 +448,14 @@ struct MusePushToTalkTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let first = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600]) }
-        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\nPasta"))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\n"))
         #expect(await first.value["ok"]?.bool == true)
         let again = await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 600])
         #expect(again["ok"]?.bool == true)
         #expect(fx.link.actions().count == 1)
         // A different timer is set.
         let other = Task { await fx.service.runCommand(MuseTools.timerCommand, ["seconds": 300]) }
-        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\nPasta"))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "42,1,600000,600\n"))
         #expect(await other.value["ok"]?.bool == true)
         #expect(fx.link.actions().count == 2)
     }
@@ -858,7 +858,7 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
             return (reply, action)
         }
         if let action {
-            push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, value: 2)))
+            push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: WatchActionStatus.done.rawValue, value: 2, text: Array("2073011300010\n".utf8))))
             try? await Task.sleep(for: .milliseconds(50))
         }
         return reply
@@ -1235,8 +1235,8 @@ struct MuseToolsTests {
         let fx = PushToTalkFixture()
         await fx.start()
         let reply = Task { await fx.service.runCommand(MuseTools.musicCommand, ["action": "now_playing"]) }
-        let action = try #require(await fx.answerNextAction(status: .done, text: "Clair de lune\nDebussy"))
-        #expect(WatchActionRequest.parse(action.payload) == .music(.nowPlaying))
+        let action = try #require(await fx.answerNextAction(status: .done, text: "1,1,60\nClair de lune\nDebussy"))
+        #expect(WatchActionRequest.parse(action.payload) == .inspect(2))
         let result = await reply.value
         #expect(result["payload"]?["title"]?.string == "Clair de lune")
         #expect(result["payload"]?["artist"]?.string == "Debussy")
@@ -1290,7 +1290,7 @@ struct MuseToolsTests {
 
     @Test func everyCommandIsOfferedOnlyWhileItsSwitchAllows() {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
-        #expect(all.count == 14)
+        #expect(all.count == 15)
         let none = MuseTools.commands(
             for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]

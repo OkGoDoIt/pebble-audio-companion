@@ -1,117 +1,74 @@
 # Muse tool access audit — 2026-10-27
 
-Scope: every command registered by the native iOS companion (`MuseTools.commands`), its execution
-and permission path, the watch-action firmware, the BLE result path, and the app data providers.
-The official Core Devices app is reference only and is unchanged. This is a source/test audit;
-real Muse and watch behavior needs the updated app and firmware installed together.
+Scope: all tools registered by native iOS `MuseTools`, their consent/execution paths, watch
+firmware actions, BLE results, and app data providers. The official Core Devices phone app is
+unchanged. This is a source/test audit; prepared firmware is not physical-watch verification.
 
-## Native Timer correction and follow-through (in progress)
+## Completed implementation
 
-Roger clarified that timers must appear in **Timer by Pebble/Core Devices**, rather than a
-separate background store. The original four-slot timer implementation below was insufficient.
-The replacement uses the native app's eight durable timer records and normal wakeup alerts.
-The native app must be installed and closed while Muse manages it. Incompatible data is refused;
-list/read failures never become an empty list. Native labels are unsupported and explicitly refused.
-New callers require action kind 12 and never fall back to hidden countdowns on older firmware.
-Existing native preferences and unrelated records are preserved in an atomic storage rewrite.
+- **Actual native timers.** Muse uses Timer by Pebble/Core Devices, UUID
+  `c64aae42-b822-4d6d-995b-bc7c38e843f4`: eight durable countdown records and the app's normal
+  wakeup alerts. List/create/get/pause/resume/update/restart/cancel. No private background
+  countdown fallback on older firmware. The native app must be installed and closed; its
+  version-1 41-byte saved format is checked before access. Labels are unsupported and refused.
+  IDs refresh after native UI edits. Atomic settings transactions preserve unrelated preferences,
+  retain old data on failure, and recover complete writes after interrupted commit. Byte-by-byte
+  power-loss tests cover the commit boundary. This replaces the initial four-slot implementation.
+- **Alarms.** Native one-time, everyday, weekday, weekend, and custom-day regular/smart alarms;
+  get/list/create/update/delete, enable/disable, sound, vibration, and tone. Omitted fields remain
+  unchanged. New action kind 13 prevents old firmware silently ignoring options. Results read
+  back the saved alarm; malformed/duplicate snapshots fail as a whole.
+- **Watch status.** Fresh reachability, capability revision, local time/offset/timezone, and actual
+  capture state when recording control is allowed. Watch failures distinguish unsupported,
+  unavailable, not found, full, ambiguous, busy, incompatible data, and unconfirmed writes.
+- **Music.** Report player state and volume only when supported, alongside title/artist. Command
+  dispatch is separate from observed playback. Toggle-only players require a known state; an
+  already-satisfied play/pause is a no-op. Metadata age is explicitly unavailable.
+- **Quiet Time.** Read effective state, active manual/schedule/calendar/phone Focus sources, and
+  temporary expiry. Expiry is invalidated by any later manual choice, even another On. Failure
+  to arm expiry leaves the manual setting unchanged. The expiry itself is volatile across reboot.
+- **Apps.** Page through installed app names and UUIDs; launch by UUID or unambiguous name. A
+  tied best name match is refused. Success says launch requested, not startup confirmed.
+- **Find watch.** Start and stop. Stop only cancels the MuseFind vibration owner, preserving alarm
+  and notification vibrations. Zero duration cannot underflow the pulse count.
+- **Invocation identity.** Both Muse transports pass invocation ids into tools. Same-id retries
+  share results; distinct ids allow intentional identical actions. Minimal hashed receipts prevent
+  duplicate writes across relaunch/reconnect, and argument reuse under one id is refused. The
+  callback's old third argument was timeout; the invocation id had stopped at MuseLinkSession.
+- **Permissions and validation.** Recheck question scope and revoked access after consent waits;
+  refresh command registration when settings change. Calendar creation uses write consent.
+  Invalid dates/ranges/numeric fields are refused, including reversed conversation ranges.
+  Pause/resume describe requested intent until actual capture is observed.
 
-The callback's formerly discarded third argument was timeout, not invocation id. Invocation
-ids actually stopped at MuseLinkSession. Both incoming transports now carry them to the tool
-executor. Different ids allow intentional identical actions; a repeated id shares its pending
-or completed result. Minimal hashed receipts prevent replay after relaunch, and argument reuse
-under the same id is refused. Consent waits recheck question scope and revoked access. An open
-conversation's command registration refreshes when tool settings change.
+## Phone-side work still in progress
 
-Deployed the first tested app cdc6c619 to G17 at 18:09:16+07. Recording and Muse reconnected.
-Charging-only post-install cost check passes; no new app crash logs. Backup/live database integrity
-passes with 1,498 conversations, 591 follow-ups, nine speaker corrections, and two people preserved;
-voice job processing advanced from 603 to 617. Native Timer replacement is not yet installed or
-physically verified. The remaining inventory below is still being implemented.
+1. Recording status and confirmation, paused-until/connection/blocked reason; saved moment id,
+   list/get/note edit/delete, and context links.
+2. Health source timezone, freshness, missing-day coverage, and distinct unsupported/no-data
+   outcomes. Firmware heart-rate day boundaries now follow local midnights across DST.
+3. Calendar ids/calendars, get/edit/delete with explicit recurring-event scope, calendar selection,
+   all-day dates, location/timezone, recurrence, and pagination. Update disclosure/consent and tests.
+4. Reminder pagination, stable list/account selection, priority, and recurrence. Keep app-home
+   day-only/no-notes limitations explicit instead of silently dropping unsupported fields.
+5. Conversation ids/detail/deep links, paginated excerpts, exact time scope and truncation/coverage.
+   Continue reading conversation pieces, never whole segments.
+6. Follow-up pagination, edits while accepting into a chosen reminder list, and undo/reopen.
+   Suggestions remain separate from commitments and existing reminders.
 
-## Implemented in this change
+## Validation and deployment evidence
 
-- Full watch countdown lifecycle through `watch.timers`: list, create, get, pause, resume,
-  update, restart, cancel. `watch.set_timer` uses the same implementation. A result includes the
-  watch-issued id, label, running/paused/finished state, time remaining and restart duration.
-  Updating a label preserves time; updating seconds sets time remaining and restart duration,
-  preserving paused state. No slot numbers are exposed as stable ids.
-- Four live/paused timers; finished records remain available until reused. Old kind-1 timers
-  are in the same store. Timers run without the phone, but do not survive a watch reboot.
-  Paused timers do not consume a running timer callback. No polling or flash writes added.
-- Timer callbacks cannot ring a cancelled/replaced record. Rescheduling fails rather than
-  waiting for a callback holding the same lock. A finished timer requires explicit restart.
-- Concurrent identical writes share one result. Timer creation aliases share a duplicate key.
-  Duplicate history is cleared for a new user question, so an intentional second timer works.
-  Revoking a tool beats cached success. Timer edits invalidate earlier cached timer outcomes.
-- An unconfirmed timer write returns `outcome_unknown`; repeating it in the same question does
-  not issue another write. Read timer state to resolve it. Older firmware fallback occurs only
-  after definitive Unsupported, only for creation, and explicitly says management is unavailable.
-- Calendar additions now use the change-consent path rather than read consent. Reading once
-  cannot silently authorize writing. The prompt asks specifically about adding calendar events.
-- Invalid calendar dates/ranges and reversed conversation ranges fail explicitly. The latter
-  previously reached a provider that constructs a Swift Range and could trap on reversed bounds.
-  Recap dates/periods and health/find/Quiet Time/recording numeric limits no longer silently default
-  or clamp malformed supplied values.
-- Recording pause/resume results describe the requested capture intent. The provider enqueues a
-  watch update; returning `recording: true` previously claimed actual capture before confirmation.
-- Mirrored C/Swift/Kotlin timer wire contract and eight generated golden fixtures. Restored the
-  previously missing alarm-management contract in the app's protocol document from the firmware copy.
+The initial clean companion cdc6c619 was installed on G17 at 18:09:16+07, with recording and Muse
+reconnected. The ten-minute cost check passed while charging; it does not establish battery use.
+No new app crash was found. Backup/live database integrity and retained counts matched (1,498
+conversations, 591 follow-ups, nine speaker corrections, two people); processing jobs advanced.
 
-## Complete inventory and remaining gaps
+Native timer and PFS/wakeup work passed 14 host suites. The next watch-control extension passed
+six focused host suites, 121 Muse runtime tests, 14 wire tests, golden fixtures, and Kotlin protocol
+and transport tests. 150 protocol fixtures match across C, Swift, and Kotlin. Target builds and
+physical verification remain separate gates.
 
-| Tool | What it can do after this change | What should be added or corrected next |
-|---|---|---|
-| `watch.set_timer`, `watch.timers` | Full countdown lifecycle, status and labels | Optional durable timers across reboot; wearer-facing list/control screen; distinguish unavailable management before a call through capability discovery. Keep reboot persistence explicit until implemented. |
-| `watch.set_alarm`, `watch.alarms` | Create regular/smart one-time alarms; list, edit time/mode/enabled, delete; preserve recurrence | Create/edit repeat days; expose sound/vibration controls if native platform supports them; return verified resulting alarm after update. Existing list decoder drops malformed rows and defaults bad numeric fields to zero: make it reject the whole malformed snapshot. |
-| `watch.music` | Play/pause/next/previous, volume steps, title/artist | Actual playback state, volume where available, distinguish command dispatched from confirmed playback. Rapid repeated next/volume commands need invocation-id duplicate handling, not argument-only caching. |
-| `watch.quiet_time` | On/off, optional temporary duration | Read actual effective state, scheduled/manual causes and expiry; avoid timer-based expiry undoing a later manual wearer change. |
-| `watch.open_app` | Open by best name match | List installed apps and stable ids; refuse ties instead of choosing the first equally ranked name. Report launch requested until the app actually opens. |
-| `watch.find` | Buzz/light for 1–30 seconds | Stop finding early; precise unavailable/unsupported/queued result. |
-| `recording` | Request pause/resume; persist a marked moment with optional note | Read actual capture state, paused-until, connection and reason blocked; return a saved moment id; list/get/rename/delete moments and link their context. Confirm actual capture after a requested transition. |
-| `health.read` | Steps, distance, active minutes/calories, sleep, latest and daily heart rate | Include source timezone and freshness/missing-day coverage. Latest heart rate is not a history. Surface unsupported/disconnected separately from no data. Preserve current read permission. |
-| `calendar` | List up to 40 events and add to the default calendar | Stable event/calendar ids; get/edit/delete with recurring-event scope; choose a calendar; all-day semantics, location/timezone and recurrence. Pagination/truncation marker. These expand the documented add-only contract and need matching disclosure/consent and tests. |
-| `reminders` | Lists, read, create, edit/complete/reopen/move, delete; Apple and app home | Pagination beyond 60 (currently reports not_shown but offers no next page); list ids/account disambiguation for identical names; priority/recurrence. App-home reminders are day-only and lack notes: preserve the current explicit refusal, don't promise Apple feature parity. |
-| `conversations` | Search bounded transcript excerpts, ask own AI, day/calendar-week recap | Stable conversation ids, get detail and deep link, pagination/coverage/truncation and exact matched time scope. Provider uses conversation pieces correctly. Query matches and source attribution should remain distinguishable from full-library coverage. |
-| `followups` | Read 40 suggestions, accept into reminder or skip | Pagination; edit title/due/list while accepting; undo/reopen. Match the app's editable suggestion cards. A suggestion remains distinct from an existing reminder. |
-
-## Recommended order
-
-1. **Status and result honesty.** Add a small capability/status read covering connected watch,
-   supported action revisions, local time/timezone, actual capture and Quiet Time. Don't expose
-   secrets/device identifiers or extra health data. Use structured result codes for unsupported,
-   disconnected, not found, full, permission denied and unconfirmed. Fix malformed alarm lists
-   and ambiguous app matches before broadening those write tools.
-2. **Finish existing management surfaces.** Recurring alarms, calendar get/edit/delete and calendar
-   selection, follow-up edits at acceptance, reminder pagination/list identity. Each write should
-   preserve omitted fields and return the resulting entity. Recurring-calendar deletes must name
-   the instance/series scope.
-3. **Make saved information retrievable.** Marked-moment lifecycle, conversation ids/detail links,
-   page cursors and explicit coverage. A successful mark should immediately be addressable by id.
-4. **Harden execution identity.** Carry Muse's invocation id (currently discarded by the connector
-   callback) through dispatch, and track definitive/unknown outcomes independently of tool params.
-   This allows intentional repeated commands within one question without allowing transport retries
-   to duplicate them. Persist only the minimum required journal; don't replay uncertain writes on
-   reconnect/relaunch. Re-check permission and question scope after long consent waits. Verify tool
-   registration refresh after settings change on an already-open conversation.
-5. **Optional watch-native improvements.** Timer list/control UI and reboot recovery, stop-find,
-   richer player controls. These need watch UX and hardware validation, not just another tool schema.
-
-## Verification and release boundary
-
-Tests exercise timer creation/status, pause-time freezing, label-only edits, changed durations,
-capacity with paused timers, disconnect survival, expiry/restart, stale ids and cancelled alerts;
-app tests exercise request validation, complete list decoding, unknown outcomes, duplicate writes,
-new questions, disabled tools, older firmware, calendar consent and invalid dates.
-
-Final validation: 173 focused Swift tests plus the golden-fixture round-trip test; 12 Kotlin
-protocol and 30 transport tests; all 125 generated fixtures; ten focused firmware suites; six
-analytics heartbeat guards. All passed. The final unsigned iOS Release device build passed with
-one known existing Sendable warning in SettingsRemindersScreen. Both PT2 firmware slots built as
-`v4.41.0-671-g696dced85` and were mirrored to the usual Desktop/iCloud filenames. App source commit
-`9a4c70db`; firmware commits `29c6f27e1` and `696dced85`. Nothing was installed or flashed.
-Detailed evidence is recorded in the workspace implementation progress log.
-No source-level pass establishes physical watch behavior, phone battery cost, or deployment.
-Install matching app and watch firmware, then ask Muse to create two labelled timers, list them,
-pause one, change its label/duration, resume, cancel the other, let one ring, and restart it.
-Repeat across a BLE disconnect; verify an intentional repeated timer request and an older-firmware
-failure. After any phone install, run the documented ten-minute and next-morning cost gates.
+The coordinated Focus chat owns the current committed firmware package build and phone install
+attempt. App 5b5f28e3 contains Focus plus ab98002b native timer/invocation changes; a new Focus
+App Group provisioning profile requires an Xcode account. Firmware target-build corrections
+are dabfb63bc (redundant uint8 bound) and 869094768 (real worker metadata API), after cc3cb79f5.
+The newer watch controls are not in that earlier deployment candidate.

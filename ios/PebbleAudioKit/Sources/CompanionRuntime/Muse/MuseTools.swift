@@ -178,6 +178,7 @@ actor MuseTools {
 
     // MARK: - Names
 
+    static let statusCommand = "watch.status"
     static let timerCommand = "watch.set_timer"
     static let timersCommand = "watch.timers"
     static let alarmCommand = "watch.set_alarm"
@@ -235,29 +236,25 @@ actor MuseTools {
             ]
         }
         if actions.contains(.alarm) {
-            c[alarmCommand] = [
-                "description": "Create a regular or smart one-time alarm on the Pebble watch, in watch local time. A smart alarm may wake the user up to 30 minutes BEFORE this time, and rings at this time at the latest. The window is fixed. Alarms have no stored labels. Use watch.alarms to list, change or delete existing alarms; do not create a replacement when asked to change one.",
-                "required": [
-                    "hour": param("integer", "Hour, 0 to 23."),
-                    "minute": param("integer", "Minute, 0 to 59."),
-                ],
-                "optional": ["smart": param("boolean", "true for smart wake, false for an exact alarm; false if omitted.")],
-                "timeout_ms": 15_000,
+            let fields: MuseJSON = [
+                "id": param("integer", "Existing alarm id from list; required for get, update, and delete."),
+                "hour": param("integer", "Local hour, 0-23. Required for create."),
+                "minute": param("integer", "Minute, 0-59. Required for create."),
+                "smart": param("boolean", "Smart wake uses a fixed 30-minute window before this time."),
+                "enabled": param("boolean", "Enable or disable this alarm."),
+                "repeat": param("string", "once, everyday, weekdays, weekends, or custom."),
+                "days": param("array", "Custom repeat weekdays as full names, such as [monday, friday]."),
+                "sound": param("boolean", "Play the alarm tone on watch hardware with a speaker."),
+                "vibrate": param("boolean", "Vibrate when the alarm rings."),
+                "tone": param("integer", "Native alarm tone, 0-3. Omit to preserve it."),
             ]
-        }
-        if actions.contains(.alarm) {
-            c[alarmsCommand] = [
-                "description": "List, update or delete the watch's regular and smart alarms. Always list first to get an existing alarm's id; ask which one if ambiguous. Update preserves omitted fields, recurrence, sound and vibration. Smart wake uses a fixed 30-minute window before the alarm time. Alarms have no labels.",
-                "required": ["action": param("string", "list, update or delete.")],
-                "optional": [
-                    "id": param("integer", "With update/delete: the id returned by list, 0-9."),
-                    "hour": param("integer", "With update: new local hour, 0-23."),
-                    "minute": param("integer", "With update: new minute, 0-59."),
-                    "smart": param("boolean", "With update: true for smart wake; false for exact time."),
-                    "enabled": param("boolean", "With update: enable or disable the alarm."),
-                ],
-                "timeout_ms": 15_000,
-            ]
+            c[alarmsCommand] = ["description": "Manage native watch alarms. List first and ask which alarm if ambiguous. Create, get, update, and delete regular or smart alarms, with repeat days, sound, and vibration. Updates preserve omitted fields. Results contain the verified saved alarm. Requires current firmware.",
+                "required": ["action": param("string", "list, create, get, update, or delete.")],
+                "optional": fields, "timeout_ms": 15_000]
+            c[alarmCommand] = ["description": "Create a native watch alarm. Same fields and behavior as watch.alarms create; requires current firmware.",
+                "required": ["hour": param("integer", "0-23"), "minute": param("integer", "0-59")],
+                "optional": .object((fields.object ?? [:]).filter { !["id", "hour", "minute"].contains($0.key) }),
+                "timeout_ms": 15_000]
         }
         if actions.contains(.music) {
             c[musicCommand] = [
@@ -365,6 +362,26 @@ actor MuseTools {
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
         }
+        if !actions.isEmpty {
+            c[statusCommand] = ["description": "Read a fresh watch status: connection reachability, tool capabilities, watch time, and timezone. Actual capture state is included only when recording control is allowed.", "timeout_ms": 15_000]
+        }
+        if actions.contains(.quietTime) {
+            c[quietTimeCommand] = ["description": "Read Quiet Time or turn its manual setting on/off. Status reports effective state and active manual, schedule, calendar, and phone Focus contributions. Temporary expiry never overrides a later manual choice.",
+                "required": ["state": param("string", "status, on, or off.")],
+                "optional": ["minutes": param("integer", "With on: 1-1440 minutes; omit to leave on.")], "timeout_ms": 25_000]
+        }
+        if actions.contains(.launchApp) {
+            c[openAppCommand] = ["description": "List installed watch apps or request opening one by its id or name. Names must match unambiguously. A successful result means launch was requested. Continue list with next_offset until complete; refresh after installation changes.",
+                "optional": ["action": param("string", "list or open (default)."),
+                    "id": param("string", "App UUID from list, for open."),
+                    "name": param("string", "App name, when no id was given."),
+                    "offset": param("integer", "With list: next_offset from the previous page, or zero.")], "timeout_ms": 15_000]
+        }
+        if actions.contains(.findWatch) {
+            c[findCommand] = ["description": "Start find-watch vibration/light, or stop only Muse's find pulses. Stopping does not cancel an alarm or notification vibration.",
+                "optional": ["action": param("string", "start (default) or stop."),
+                    "seconds": param("integer", "With start: 1-30, default 10.")], "timeout_ms": 15_000]
+        }
         return .object(c)
     }
 
@@ -450,7 +467,7 @@ actor MuseTools {
         if changeKey(command, params) != nil { return true }
         switch command {
         case musicCommand: return params["action"]?.string != "now_playing"
-        case quietTimeCommand, openAppCommand, findCommand: return params["action"]?.string != "status" && params["action"]?.string != "list"
+        case quietTimeCommand, openAppCommand, findCommand: return params["state"]?.string != "status" && params["action"]?.string != "status" && params["action"]?.string != "list"
         case recordingCommand: return params["action"]?.string != "status"
         case remindersCommand: return MuseReminders.Action(params["action"]?.string)?.changes == true
         case calendarCommand: return ["edit", "update", "delete"].contains(params["action"]?.string ?? "")
@@ -474,7 +491,7 @@ actor MuseTools {
         case timersCommand:
             guard !["list", "get"].contains(params["action"]?.string ?? "") else { return nil }
         case alarmsCommand:
-            guard params["action"]?.string != "list" else { return nil }
+            guard !["list", "get"].contains(params["action"]?.string ?? "") else { return nil }
         case remindersCommand:
             // An edit sets fields, so doing it twice is harmless, and a later edit may undo an
             // earlier one: only adds and deletes are answered from the first call.
@@ -495,6 +512,13 @@ actor MuseTools {
         // The person may need time to answer; past this, the call ends as not answered.
         let deadline = ContinuousClock.now + holdLimit
         switch command {
+        case Self.statusCommand:
+            guard !prefs.watchActions.isEmpty else { return Self.turnedOff }
+            let result = await inspection(0, watch: watch)
+            if prefs.watchActions.contains(.recording) { return result }
+            var fields = result["payload"]?.object ?? [:]
+            fields["capture_state"] = nil
+            return result["ok"]?.bool == true ? ["ok": true, "payload": .object(fields)] : result
         case Self.timerCommand:
             guard prefs.watchActions.contains(.timer) else { return Self.turnedOff }
             guard let seconds = Self.int(params["seconds"]), (1...86_400).contains(seconds) else {
@@ -507,68 +531,83 @@ actor MuseTools {
             return await timers(params, watch: watch)
         case Self.alarmCommand:
             guard prefs.watchActions.contains(.alarm) else { return Self.turnedOff }
-            guard let hour = Self.int(params["hour"]), (0...23).contains(hour),
-                let minute = Self.int(params["minute"]), (0...59).contains(minute)
-            else { return Self.error("hour must be 0-23 and minute 0-59") }
-            guard params["smart"] == nil || params["smart"]?.bool != nil else { return Self.error("smart must be a boolean") }
-            let smart = params["smart"]?.bool ?? false
-            var result = await watch.runWatchAction(.alarms(.create, hour: hour, minute: minute,
-                                                           smart: smart ? 1 : 0, enabled: 1), wait: .seconds(10))
-            if result?.status == .unsupported, !smart {
-                result = await watch.runWatchAction(.alarm(hour: hour, minute: minute, label: ""), wait: .seconds(10))
-                return Self.outcome(result) { _ in
-                    ["set": true, "smart": false, "time": .string(String(format: "%02d:%02d", hour, minute))]
-                }
-            }
-            guard result != nil else {
-                return Self.unconfirmed("alarm", read: "watch.alarms list")
-            }
-            return Self.outcome(result) { result in
-                ["set": true, "id": .number(Double(result.value)), "smart": .bool(smart),
-                 "time": .string(String(format: "%02d:%02d", hour, minute)),
-                 "wake_window_minutes": .number(smart ? 30 : 0)]
-            }
+            var fields = params.object ?? [:]
+            fields["action"] = "create"
+            return await alarms(.object(fields), watch: watch)
         case Self.alarmsCommand:
             guard prefs.watchActions.contains(.alarm) else { return Self.turnedOff }
             return await alarms(params, watch: watch)
         case Self.musicCommand:
             guard prefs.watchActions.contains(.music) else { return Self.turnedOff }
             guard let action = Self.musicAction(params["action"]?.string) else {
-                return Self.error("action must be play, pause, next, previous, volume_up, volume_down or now_playing")
+                return Self.error("action must be play, pause, next, previous, volume_up, volume_down, or now_playing")
             }
-            let result = await watch.runWatchAction(.music(action), wait: .seconds(10))
-            if result?.status == .failed { return Self.error("No music player is connected to the watch.") }
-            return Self.outcome(result) { result in
-                guard let text = result.textString else { return ["done": true] }
-                let parts = text.components(separatedBy: "\n")
-                return ["done": true, "title": .string(parts.first ?? ""), "artist": .string(parts.count > 1 ? parts[1] : "")]
+            if action == .nowPlaying { return await inspection(2, watch: watch) }
+            guard let result = await watch.runWatchAction(.music(action), wait: .seconds(10)) else {
+                return Self.unconfirmed("music command", read: "watch.music now_playing")
             }
+            guard result.status == .done else { return Self.outcome(result) { _ in .null } }
+            let observed = await inspection(2, watch: watch)
+            var fields = observed["payload"]?.object ?? [:]
+            fields["command_dispatched"] = true
+            fields["playback_matches_request"] = action == .play ? .bool(fields["state"]?.string == "playing") :
+                action == .pause ? .bool(fields["state"]?.string == "paused") : .null
+            fields["metadata_read_succeeded"] = .bool(observed["ok"]?.bool == true)
+            return ["ok": true, "payload": .object(fields)]
         case Self.quietTimeCommand:
             guard prefs.watchActions.contains(.quietTime) else { return Self.turnedOff }
-            let state = params["state"]?.string?.lowercased()
-            guard state == "on" || state == "off" else { return Self.error("state must be on or off") }
-            guard params["minutes"] == nil || Self.int(params["minutes"]).map({ (0...1440).contains($0) }) == true else {
-                return Self.error("minutes must be an integer from 0 to 1440")
+            let state = params["state"]?.string?.lowercased() ?? params["action"]?.string?.lowercased()
+            if state == "status" { return await inspection(1, watch: watch) }
+            guard state == "on" || state == "off" else { return Self.error("state must be status, on, or off") }
+            guard params["minutes"] == nil || (state == "on" && Self.int(params["minutes"]).map({ (1...1440).contains($0) }) == true) else {
+                return Self.error("minutes is valid only with on, as an integer from 1 to 1440")
             }
-            let minutes = Self.int(params["minutes"]) ?? 0
-            let result = await watch.runWatchAction(.quietTime(on: state == "on", minutes: minutes), wait: .seconds(10))
-            return Self.outcome(result) { _ in ["quiet_time": .string(state ?? "on")] }
+            let result = await watch.runWatchAction(.quietTime(on: state == "on", minutes: Self.int(params["minutes"]) ?? 0), wait: .seconds(10))
+            guard let result else { return Self.unconfirmed("Quiet Time change", read: "watch.quiet_time status") }
+            guard result.status == .done else { return Self.outcome(result) { _ in .null } }
+            let status = await inspection(1, watch: watch)
+            return status["ok"]?.bool == true ? status :
+                ["ok": true, "payload": ["manual_setting_applied": .string(state!), "effective_state_confirmed": false]]
         case Self.openAppCommand:
             guard prefs.watchActions.contains(.launchApp) else { return Self.turnedOff }
-            guard let name = params["name"]?.string?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
-                return Self.error("name is needed")
+            if params["action"]?.string == "list" {
+                guard params["offset"] == nil || Self.int(params["offset"]).map({ (0...65535).contains($0) }) == true else { return Self.error("Invalid offset") }
+                let offset = Self.int(params["offset"]) ?? 0
+                let result = await watch.runWatchAction(.apps(offset: offset), wait: .seconds(10))
+                guard result?.status == .done else { return Self.outcome(result) { _ in .null } }
+                var apps: [MuseJSON] = []
+                for row in (result?.textString ?? "").split(separator: "\n") {
+                    let fields = row.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard fields.count == 2, let uuid = UUID(uuidString: String(fields[0]).trimmingCharacters(in: CharacterSet(charactersIn: "{}"))) else {
+                        return Self.error("invalid_response: Watch app list is malformed.")
+                    }
+                    apps.append(["id": .string(uuid.uuidString.lowercased()), "name": .string(String(fields[1]))])
+                }
+                return ["ok": true, "payload": ["apps": .array(apps), "complete": .bool(apps.isEmpty),
+                    "next_offset": apps.isEmpty ? .null : .number(Double(offset + apps.count))]]
             }
-            let result = await watch.runWatchAction(.launchApp(name: name), wait: .seconds(10))
-            if result?.status == .failed { return Self.error("No app on the watch is called \(name).") }
-            return Self.outcome(result) { result in ["opened": .string(result.textString ?? name)] }
+            guard params["action"] == nil || params["action"]?.string == "open" else { return Self.error("action must be list or open") }
+            let request: WatchActionRequest
+            if let id = params["id"]?.string {
+                guard UUID(uuidString: id) != nil, params["name"] == nil else { return Self.error("Use one valid app id or name") }
+                request = .apps(launchID: id)
+            } else {
+                guard let name = params["name"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return Self.error("name or id is needed") }
+                request = .launchApp(name: name)
+            }
+            let result = await watch.runWatchAction(request, wait: .seconds(10))
+            guard let result else { return Self.unconfirmed("app launch", read: "the watch screen") }
+            return Self.outcome(result) { ["launch_requested": true, "name": .string($0.textString ?? "")] }
         case Self.findCommand:
             guard prefs.watchActions.contains(.findWatch) else { return Self.turnedOff }
-            guard params["seconds"] == nil || Self.int(params["seconds"]).map({ (1...30).contains($0) }) == true else {
-                return Self.error("seconds must be an integer from 1 to 30")
+            let action = params["action"]?.string ?? "start"
+            guard ["start", "stop"].contains(action), params["seconds"] == nil || (action == "start" && Self.int(params["seconds"]).map({ (1...30).contains($0) }) == true) else {
+                return Self.error("Use start with 1-30 seconds, or stop without seconds")
             }
-            let seconds = Self.int(params["seconds"]) ?? 10
-            let result = await watch.runWatchAction(.findWatch(seconds: seconds), wait: .seconds(10))
-            return Self.outcome(result) { _ in ["buzzing_seconds": .number(Double(seconds))] }
+            let seconds = action == "stop" ? 0 : Self.int(params["seconds"]) ?? 10
+            let result = await watch.runWatchAction(.findControl(seconds: seconds), wait: .seconds(10))
+            guard let result else { return Self.unconfirmed("find command", read: "the watch") }
+            return Self.outcome(result) { _ in ["request_accepted": true, "action": .string(action), "seconds": .number(Double(seconds))] }
         case Self.recordingCommand:
             guard prefs.watchActions.contains(.recording), let data else { return Self.turnedOff }
             return await recording(params, data: data)
@@ -594,6 +633,45 @@ actor MuseTools {
         default:
             return Self.error("unsupported command")
         }
+    }
+
+    private func inspection(_ section: Int, watch: any MuseWatchSide) async -> MuseJSON {
+        let result = await watch.runWatchAction(.inspect(section), wait: .seconds(10))
+        guard result?.status == .done, let text = result?.textString else {
+            return Self.outcome(result) { _ in .null }
+        }
+        let lines = text.components(separatedBy: "\n")
+        let rawFields = lines[0].split(separator: ",", omittingEmptySubsequences: false)
+        let fields = rawFields.compactMap { Int($0) }
+        guard fields.count == rawFields.count else { return Self.error("invalid_response: Watch status contains invalid fields.") }
+        var payload: [String: MuseJSON] = ["observed_at": .string(Self.isoFormatter.string(from: clock()))]
+        switch section {
+        case 0:
+            guard fields.count == 4, fields[0] == 1, (0...8).contains(fields[3]), lines.count == 2 else { return Self.error("invalid_response: Watch status is malformed.") }
+            payload["connected"] = true
+            payload["watch_time"] = .string(Self.isoFormatter.string(from: Date(timeIntervalSince1970: Double(fields[1]))))
+            payload["utc_offset_seconds"] = .number(Double(fields[2]))
+            payload["timezone_abbreviation"] = .string(lines[1])
+            payload["capture_state"] = .string(["disabled", "idle", "authorized_idle", "streaming", "microphone_busy", "paused_by_policy", "low_battery", "error", "power_save"][fields[3]])
+            payload["capabilities"] = ["native_timers": true, "full_alarms": true, "quiet_time_status": true,
+                "app_list_and_ids": true, "find_stop": true, "music_status": true]
+        case 1:
+            guard fields.count == 2, (0...63).contains(fields[0]), fields[1] >= 0 else { return Self.error("invalid_response: Quiet Time status is malformed.") }
+            for (index, key) in ["active", "manual", "scheduled", "calendar", "phone_focus", "manual_override"].enumerated() {
+                payload[key] = .bool(fields[0] & (1 << index) != 0)
+            }
+            payload["temporary_until"] = fields[1] == 0 ? .null : .string(Self.isoFormatter.string(from: Date(timeIntervalSince1970: Double(fields[1]))))
+        case 2:
+            guard fields.count == 3, lines.count >= 3, [0, 1].contains(fields[0]), (-1...100).contains(fields[2]) else { return Self.error("invalid_response: Music status is malformed.") }
+            payload["has_metadata"] = .bool(fields[0] == 1)
+            payload["state"] = .string([1: "playing", 2: "paused", 3: "forwarding", 4: "rewinding"][fields[1]] ?? "unknown")
+            payload["volume_percent"] = fields[2] < 0 ? .null : .number(Double(fields[2]))
+            payload["title"] = lines[1].isEmpty ? .null : .string(lines[1])
+            payload["artist"] = lines[2].isEmpty ? .null : .string(lines[2])
+            payload["freshness"] = "Latest metadata reported by the phone player; its measurement time is unavailable."
+        default: return Self.error("unsupported")
+        }
+        return ["ok": true, "payload": .object(payload)]
     }
 
     private func timers(_ params: MuseJSON, watch: any MuseWatchSide) async -> MuseJSON {
@@ -656,7 +734,7 @@ actor MuseTools {
     private static func timerJSON(_ text: String?) -> MuseJSON? {
         guard let text else { return nil }
         let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2 else { return nil }
+        guard parts.count == 2, parts[1].isEmpty else { return nil }
         let fields = parts[0].split(separator: ",", omittingEmptySubsequences: false)
         guard fields.count == 4, let id = UInt32(fields[0]), id != 0,
               let state = Int(fields[1]), (1...3).contains(state),
@@ -673,45 +751,115 @@ actor MuseTools {
         let operation: WatchActionRequest.AlarmOperation
         switch params["action"]?.string {
         case "list": operation = .list
+        case "create": operation = .create
+        case "get": operation = .get
         case "update": operation = .update
         case "delete": operation = .delete
-        default: return Self.error("action must be list, update or delete")
+        default: return Self.error("action must be list, create, get, update, or delete")
         }
+        let creating = operation == .create
         let id = Self.int(params["id"]) ?? -1
-        guard operation == .list || (0...9).contains(id) else { return Self.error("List the alarms first, then use an id from 0 to 9.") }
-        for (key, range) in [("hour", 0...23), ("minute", 0...59)] where params[key] != nil {
+        guard operation == .list || creating || (0...9).contains(id) else {
+            return Self.error("List alarms first, then use an id from 0 to 9.")
+        }
+        for (key, range) in [("hour", 0...23), ("minute", 0...59), ("tone", 0...3)] where params[key] != nil {
             guard let value = Self.int(params[key]), range.contains(value) else { return Self.error("Invalid \(key)") }
         }
-        for key in ["smart", "enabled"] where params[key] != nil {
+        for key in ["smart", "enabled", "sound", "vibrate"] where params[key] != nil {
             guard params[key]?.bool != nil else { return Self.error("\(key) must be a boolean") }
         }
-        if operation == .update, ["hour", "minute", "smart", "enabled"].allSatisfy({ params[$0] == nil }) {
+        if creating && (params["hour"] == nil || params["minute"] == nil) {
+            return Self.error("create needs hour and minute")
+        }
+        let kinds = ["everyday", "weekends", "weekdays", "once", "custom"]
+        var kind = 255, days = 255
+        if let repeatValue = params["repeat"] {
+            guard let name = repeatValue.string, let index = kinds.firstIndex(of: name) else {
+                return Self.error("repeat must be once, everyday, weekdays, weekends, or custom")
+            }
+            kind = index
+        }
+        if let dayValue = params["days"] {
+            let names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+            guard let array = dayValue.array, !array.isEmpty else { return Self.error("days must be a nonempty weekday array") }
+            days = 0
+            for day in array {
+                guard let name = day.string?.lowercased(), let index = names.firstIndex(of: name) else {
+                    return Self.error("Use full weekday names in days")
+                }
+                days |= 1 << index
+            }
+            guard kind == 255 || kind == 4 else { return Self.error("days requires custom repeat") }
+            kind = 4
+        }
+        if kind == 4 && days == 255 { return Self.error("custom repeat needs days") }
+        let fields = ["hour", "minute", "smart", "enabled", "repeat", "days", "sound", "vibrate", "tone"]
+        if operation == .update && fields.allSatisfy({ params[$0] == nil }) {
             return Self.error("Specify at least one field to change.")
         }
-        let request = WatchActionRequest.alarms(operation, id: operation == .list ? 0 : id,
-            hour: Self.int(params["hour"]) ?? 255, minute: Self.int(params["minute"]) ?? 255,
-            smart: params["smart"]?.bool.map { $0 ? 1 : 0 } ?? 255,
-            enabled: params["enabled"]?.bool.map { $0 ? 1 : 0 } ?? 255)
-        let result = await watch.runWatchAction(request, wait: .seconds(10))
-        return Self.outcome(result) { result in
-            if operation != .list { return ["id": .number(Double(id)), "action": params["action"] ?? .null] }
-            // Fixed-width records fit all ten alarms in the 160-byte result: iHHMMsekDD.
-            let rows: [MuseJSON] = (result.textString ?? "").split(separator: "\n").compactMap { row in
-                let bytes = Array(row.utf8)
-                guard bytes.count == 10 else { return nil }
-                func number(_ range: Range<Int>, radix: Int = 10) -> Int {
-                    Int(String(decoding: bytes[range], as: UTF8.self), radix: radix) ?? 0
-                }
-                let kinds = ["everyday", "weekends", "weekdays", "once", "custom"]
-                let kind = number(7..<8)
-                return ["id": .number(Double(number(0..<1))),
-                        "hour": .number(Double(number(1..<3))), "minute": .number(Double(number(3..<5))),
-                        "smart": .bool(number(5..<6) == 1), "enabled": .bool(number(6..<7) == 1),
-                        "repeat": .string(kinds.indices.contains(kind) ? kinds[kind] : "unknown"),
-                        "days_sunday_bit0": .number(Double(number(8..<10, radix: 16)))]
-            }
-            return ["alarms": .array(rows), "smart_wake_window_minutes": 30]
+        func flag(_ name: String, default value: Int = 255) -> Int {
+            params[name]?.bool.map { $0 ? 1 : 0 } ?? value
         }
+        let request = WatchActionRequest.alarmsFull(operation, id: id < 0 ? 0 : id,
+            hour: Self.int(params["hour"]) ?? 255, minute: Self.int(params["minute"]) ?? 255,
+            smart: flag("smart", default: creating ? 0 : 255),
+            enabled: flag("enabled", default: creating ? 1 : 255), recurrence: kind, days: days,
+            sound: flag("sound"), vibrate: flag("vibrate"), tone: Self.int(params["tone"]) ?? 255)
+        let result = await watch.runWatchAction(request, wait: .seconds(10))
+        guard let result else {
+            return operation == .list || operation == .get
+                ? Self.error("watch_unavailable: Alarm status could not be read.")
+                : Self.unconfirmed("alarm", read: "watch.alarms list/get")
+        }
+        guard result.status == .done else { return Self.outcome(result) { _ in .null } }
+        if operation == .delete { return ["ok": true, "payload": ["deleted_id": .number(Double(id))]] }
+        guard let rows = Self.alarmRows(result.textString ?? "", full: true),
+              operation == .list || rows.count == 1,
+              operation == .list || rows.first?["id"]?.number == Double(creating ? result.value : id)
+        else {
+            return operation == .list || operation == .get ? Self.error("invalid_response: Alarm snapshot is malformed.")
+                : Self.unconfirmed("alarm", read: "watch.alarms list/get")
+        }
+        if operation == .list {
+            return ["ok": true, "payload": ["alarms": .array(rows), "smart_wake_window_minutes": 30]]
+        }
+        return ["ok": true, "payload": rows[0]]
+    }
+
+    /// Reject a malformed or duplicate row instead of silently reporting a partial alarm list.
+    static func alarmRows(_ text: String, full: Bool) -> [MuseJSON]? {
+        var rows: [MuseJSON] = [], ids = Set<Int>()
+        for row in text.split(separator: "\n") {
+            let bytes = Array(row.utf8)
+            guard bytes.count == (full ? 13 : 10) else { return nil }
+            func number(_ range: Range<Int>, radix: Int = 10) -> Int? {
+                Int(String(decoding: bytes[range], as: UTF8.self), radix: radix)
+            }
+            guard let id = number(0..<1), (0...9).contains(id), ids.insert(id).inserted,
+                  let hour = number(1..<3), (0...23).contains(hour),
+                  let minute = number(3..<5), (0...59).contains(minute),
+                  let smart = number(5..<6), (0...1).contains(smart),
+                  let enabled = number(6..<7), (0...1).contains(enabled),
+                  let kind = number(7..<8), (0...4).contains(kind),
+                  let mask = number(8..<10, radix: 16), (0...127).contains(mask),
+                  kind != 4 || mask != 0 else { return nil }
+            let names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+            var item: [String: MuseJSON] = ["id": .number(Double(id)), "hour": .number(Double(hour)),
+                "minute": .number(Double(minute)), "smart": .bool(smart == 1), "enabled": .bool(enabled == 1),
+                "repeat": .string(["everyday", "weekends", "weekdays", "once", "custom"][kind]),
+                "days_sunday_bit0": .number(Double(mask)),
+                "days": .array(names.enumerated().filter { mask & (1 << $0.offset) != 0 }.map { .string($0.element) }),
+                "wake_window_minutes": .number(smart == 1 ? 30 : 0)]
+            if full {
+                guard let sound = number(10..<11), (0...1).contains(sound),
+                      let vibrate = number(11..<12), (0...1).contains(vibrate),
+                      let tone = number(12..<13), (0...3).contains(tone) else { return nil }
+                item["sound"] = .bool(sound == 1); item["vibrate"] = .bool(vibrate == 1)
+                item["tone"] = .number(Double(tone))
+            }
+            rows.append(.object(item))
+        }
+        return rows
     }
 
     // MARK: - iOS's own permission
@@ -1521,11 +1669,15 @@ actor MuseTools {
     }
 
     static func outcome(_ result: WatchActionResult?, _ payload: (WatchActionResult) -> MuseJSON) -> MuseJSON {
-        guard let result else { return error("The watch didn't answer.") }
+        guard let result else { return ["ok": false, "code": "watch_unavailable", "error": "The watch did not answer; connection or execution may be unavailable."] }
         switch result.status {
         case .done?: return ["ok": true, "payload": payload(result)]
-        case .unsupported?: return error("The watch can't do this; its software may need updating.")
-        default: return error("The watch couldn't do this.")
+        case .unsupported?: return ["ok": false, "code": "unsupported", "error": "The watch needs updated firmware for this action."]
+        default:
+            let message = result.textString ?? "The watch could not complete this action."
+            let prefix = message.split(separator: ":", maxSplits: 1).first.map(String.init) ?? "failed"
+            let known = ["not_found", "not_installed", "full", "busy", "incompatible_data", "storage_error", "state_unknown", "ambiguous", "finished", "unsupported_label"]
+            return ["ok": false, "code": .string(known.contains(prefix) ? prefix : "failed"), "error": .string(message)]
         }
     }
 

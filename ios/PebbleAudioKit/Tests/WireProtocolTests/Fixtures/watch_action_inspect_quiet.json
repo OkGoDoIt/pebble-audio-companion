@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch status and lifecycle extension: inspect_quiet",
+  "expect": "parse",
+  "fields": {
+    "action_id": 11,
+    "flags": 0,
+    "payload_hex": "0e01",
+    "request_token": 85
+  },
+  "name": "watch_action_inspect_quiet",
+  "size": 7
+}

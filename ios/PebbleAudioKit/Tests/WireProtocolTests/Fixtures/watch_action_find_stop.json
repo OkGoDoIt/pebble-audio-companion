@@ -1,0 +1,13 @@
+{
+  "channel": "control_in",
+  "description": "Watch status and lifecycle extension: find_stop",
+  "expect": "parse",
+  "fields": {
+    "action_id": 11,
+    "flags": 0,
+    "payload_hex": "1000",
+    "request_token": 85
+  },
+  "name": "watch_action_find_stop",
+  "size": 7
+}
