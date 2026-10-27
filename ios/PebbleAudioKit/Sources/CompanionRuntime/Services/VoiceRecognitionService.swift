@@ -734,8 +734,10 @@ public actor VoiceRecognitionService {
     /// A stored crop's audio, for listening to before naming it.
     public func clipPCM(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws -> Data {
         let source = try await load(segmentId)
+        // Within the clip's own continuous run: a sample's crops can sit either side of a gap.
+        let range = source.contextRange(startMediaMs: startMediaMs, endMediaMs: endMediaMs, paddingMs: 0)
         return try await Task.detached(priority: .userInitiated) {
-            try source.pcm(startMediaMs: startMediaMs, endMediaMs: min(endMediaMs, startMediaMs + 30_000))
+            try source.pcm(startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
         }.value
     }
 

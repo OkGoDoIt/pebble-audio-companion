@@ -32,6 +32,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
                         $0.personId == profile.person.id && $0.recipeID == LocalSpeakerDiarizer.recipeID
                     }.count)
             }, notice: status.lastMessage)
+        display.people = await Self.placeClips(display.people, service: service, transcripts: composition.transcripts)
         display.pendingRecordings = status.pendingRecordings
         // This screen is on screen: the foreground rule (a charger, not too hot, no Low Power).
         if case .hold(let reason) = BackgroundWorkPolicy.decideVoiceRecognition(
@@ -57,6 +58,26 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
                 discovering: plan.state == "active" && !plan.discoveryComplete, stopped: plan.state != "active")
         }
         return display
+    }
+
+    /// When each conversation sample was heard and what was said, read off its recording.
+    private static func placeClips(_ people: [VoicePersonDisplay], service: VoiceRecognitionService,
+                                   transcripts: FileTranscriptStore) async -> [VoicePersonDisplay] {
+        await Task.detached(priority: .userInitiated) {
+            people.map { person in
+                var person = person
+                person.examples = person.examples.map { example in
+                    guard var clip = example.clip else { return example }
+                    var example = example
+                    clip.heardAt = service.wallMs(segmentId: clip.segmentId, mediaMs: clip.startMs)
+                        .map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+                    clip.quote = UnknownVoiceDisplay.quote(transcripts.load(clip.segmentId), from: clip.startMs, to: clip.endMs)
+                    example.clip = clip
+                    return example
+                }
+                return person
+            }
+        }.value
     }
 
     func updates() -> AsyncStream<Void> {

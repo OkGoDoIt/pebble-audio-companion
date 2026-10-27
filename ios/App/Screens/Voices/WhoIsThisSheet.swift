@@ -193,12 +193,9 @@ struct WhoIsThisSheet: View {
 
     /// Leaves the question for the conversation, at the moment the clip was heard.
     private func show(_ clip: UnknownVoiceClip) {
-        guard let heardAt = clip.heardAt else { return }
         model.stop()
         Task {
-            guard let route = await Route.moment(atWallMs: Int64(heardAt.timeIntervalSince1970 * 1_000)) else {
-                model.couldNotOpen(); return
-            }
+            guard let route = await UnknownVoiceClip.route(clip) else { model.couldNotOpen(); return }
             dismiss()
             router?.navigate(to: route)
         }
@@ -231,6 +228,15 @@ struct WhoIsThisSheet: View {
     }
 }
 
+extension UnknownVoiceClip {
+    /// The conversation at the moment this clip was heard.
+    @MainActor static func route(_ clip: UnknownVoiceClip) async -> Route? {
+        guard let heardAt = clip.heardAt else { return nil }
+        return await Route.moment(atWallMs: Int64(heardAt.timeIntervalSince1970 * 1_000))
+    }
+}
+
+/// Plays voice clips (a clip, or a clip with the audio around it), one at a time.
 @MainActor @Observable
 final class WhoIsThisModel {
     private(set) var people: [Person] = []

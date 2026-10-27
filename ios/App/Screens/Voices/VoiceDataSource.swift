@@ -64,6 +64,9 @@ struct VoiceExampleDisplay: Equatable, Identifiable {
     var exampleIDs: [String] = []
     var kind: VoiceSampleKind? = nil
     var microphone: VoiceSampleMicrophone = .watch
+    /// Where a sample taken from a conversation was heard, to play it and open it there. Nil for
+    /// setup samples, whose audio isn't kept.
+    var clip: UnknownVoiceClip? = nil
 
     /// One explicit confirmation is one visible sample, even when the model extracts
     /// several embeddings or channel variants. Count overlapping evidence only once.
@@ -82,7 +85,13 @@ struct VoiceExampleDisplay: Equatable, Identifiable {
                 createdAt: Date(timeIntervalSince1970: Double(group.map(\.createdAtMs).min() ?? 0) / 1_000),
                 source: Self.label(kind: kind, segmentId: group.first?.segmentId ?? ""),
                 exampleIDs: group.map(\.id).sorted(), kind: kind,
-                microphone: VoiceSampleMicrophone.of(segmentId: group.first?.segmentId ?? ""))
+                microphone: VoiceSampleMicrophone.of(segmentId: group.first?.segmentId ?? ""),
+                clip: ordered.first.flatMap { first in
+                    VoiceSampleMicrophone.isGuided(segmentId: first.segmentId) ? nil
+                        : UnknownVoiceClip(id: confirmation, segmentId: first.segmentId, startMs: first.startMediaMs,
+                                           endMs: ordered.filter { $0.segmentId == first.segmentId }.map(\.endMediaMs).max()
+                                               ?? first.endMediaMs)
+                })
         }.sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt > $1.createdAt }
     }
 

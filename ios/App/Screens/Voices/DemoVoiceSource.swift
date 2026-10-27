@@ -40,8 +40,14 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
 
     func snapshot() async throws -> VoiceSettingsDisplay {
         func profile(_ person: Person, _ count: Int) -> VoicePersonDisplay {
-            VoicePersonDisplay(person: person, examples: (0..<count).map {
-                VoiceExampleDisplay(id: "\(person.id)-\($0)", durationSeconds: 20, createdAt: Date(), source: "Watch sample")
+            VoicePersonDisplay(person: person, examples: (0..<count).map { index in
+                // Half from conversations (playable, with what was said), half from setup.
+                VoiceExampleDisplay(id: "\(person.id)-\(index)", durationSeconds: index.isMultiple(of: 2) ? 4 : 20,
+                    createdAt: Date(), source: index.isMultiple(of: 2) ? "From a conversation" : "Watch sample",
+                    clip: index.isMultiple(of: 2) ? UnknownVoiceClip(id: "\(person.id)-clip-\(index)", segmentId: "demo",
+                        startMs: 0, endMs: 4_000, heardAt: Date().addingTimeInterval(-Double(index + 1) * 26_000),
+                        quote: ["“Can you send me the slides before the call?”", "“We’ll take the ferry if it’s not windy.”",
+                                "“I think the second option is cheaper.”", "“Let’s meet at the café at ten.”"][index / 2 % 4]) : nil)
             })
         }
         var display = VoiceSettingsDisplay(enabled: true, modelsReady: true, currentUser: people[0],

@@ -181,7 +181,9 @@ struct VoiceProfileScreen: View {
     @State private var adding = false
     @State private var forgetting = false
     @State private var deletingExample: VoiceExampleDisplay?
+    @State private var player = WhoIsThisModel()
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router: AppRouter?
     private var profile: VoicePersonDisplay? { model.display.people.first { $0.id == personId } }
 
     var body: some View {
@@ -200,23 +202,10 @@ struct VoiceProfileScreen: View {
                 SettingsFooter(text: Copy.Voices.sampleDetail)
                 SettingsSectionHeader(title: Copy.Voices.samples)
                 ListCard {
-                    ForEach(profile.examples) { example in
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(example.source).font(AppFont.callout).foregroundStyle(Tokens.label)
-                                Text("\(Int(example.durationSeconds)) sec · \(example.createdAt.formatted(date: .abbreviated, time: .omitted))")
-                                    .font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                            }
-                            Spacer()
-                            Button { deletingExample = example } label: {
-                                Image(systemName: "minus.circle").foregroundStyle(Tokens.destructive)
-                                    .frame(width: 44, height: 44)
-                            }.accessibilityLabel(Copy.Voices.removeSample)
-                        }
-                    }
+                    ForEach(profile.examples) { example in sampleRow(example) }
                     TintActionRow(title: Copy.Voices.addSample) { adding = true }
                 }.disabled(model.working)
-                if let error = model.errorMessage { VoiceMessageCard(text: error) }
+                if let error = model.errorMessage ?? player.errorMessage { VoiceMessageCard(text: error) }
                 Button(Copy.Voices.forget, role: .destructive) { forgetting = true }
                     .font(AppFont.callout).padding(.top, 12).frame(maxWidth: .infinity, minHeight: 44)
                 SettingsFooter(text: Copy.Voices.forgetDetail)
@@ -226,6 +215,7 @@ struct VoiceProfileScreen: View {
         }
         .navigationTitle(profile?.person.name ?? Copy.Voices.title)
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { player.stop() }
         .sheet(isPresented: $adding, onDismiss: { Task { await model.refresh() } }) {
             if let profile { VoiceSetupScreen(person: profile.person) }
         }
@@ -242,6 +232,59 @@ struct VoiceProfileScreen: View {
             } message: { _ in
                 Text("Removes this sample and automatic matches for this voice. Names you chose yourself stay.")
             }
+    }
+
+    /// A sample from a conversation reads like where it was heard: when, what was said, a play
+    /// button, and the way back to it. A setup sample keeps its situation and length.
+    private func sampleRow(_ example: VoiceExampleDisplay) -> some View {
+        HStack(spacing: 12) {
+            if let clip = example.clip {
+                Button { if player.playing == clip.id { player.stop() } else { player.toggle(clip) } } label: {
+                    Image(systemName: player.playing == clip.id ? "stop.fill" : "play.fill")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.onTint)
+                        .frame(width: 36, height: 36).background(Circle().fill(Tokens.tint))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(player.playing == clip.id ? "Stop" : "Play sample")
+            } else {
+                // Setup samples keep no audio: the microphone it came through, in the play slot.
+                Image(systemName: example.microphone == .phone ? "iphone" : "applewatch")
+                    .font(.system(size: 16, weight: .medium)).foregroundStyle(Tokens.tint)
+                    .frame(width: 36, height: 36).background(Circle().fill(Tokens.tintFill12))
+                    .frame(width: 44, height: 44).accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(example.clip?.heardAt.map(WhoIsThisSheet.when) ?? example.source)
+                    .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                Text(example.clip?.quote ?? "\(Int(example.durationSeconds)) sec · \(example.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                    .font(AppFont.footnote).foregroundStyle(Tokens.meta).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            Menu {
+                if let clip = example.clip {
+                    Button(player.playing == clip.id && player.playingLonger ? "Stop" : "Play Longer",
+                           systemImage: "waveform") { player.toggle(clip, longer: true) }
+                    if clip.heardAt != nil {
+                        Button("Open Conversation", systemImage: "text.bubble") { open(clip) }
+                    }
+                    Divider()
+                }
+                Button("Remove Sample", systemImage: "trash", role: .destructive) { deletingExample = example }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundStyle(Tokens.tint)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("More for this sample")
+        }
+    }
+
+    private func open(_ clip: UnknownVoiceClip) {
+        player.stop()
+        Task {
+            guard let route = await UnknownVoiceClip.route(clip) else { player.couldNotOpen(); return }
+            router?.navigate(to: route)
+        }
     }
 }
 
