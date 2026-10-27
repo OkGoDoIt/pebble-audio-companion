@@ -85,6 +85,15 @@ struct MuseRemindersTests {
         #expect(fx.eventKit.all().count == 75)
     }
 
+    @Test func capitalizedCalendarCreateKeepsInvocationRetryProtection() async {
+        let fx = RemindersFixture(access: .allowed)
+        fx.preferences.update { $0.dataAccess[.calendar] = .allowed }
+        let params: MuseJSON = ["action": "ADD", "title": "Call", "start": "2026-10-29T14:00:00+07:00"]
+        _ = await fx.tools.run(MuseTools.calendarCommand, params, watch: fx.watch, invocationID: "calendar-create")
+        _ = await fx.tools.run(MuseTools.calendarCommand, params, watch: fx.watch, invocationID: "calendar-create")
+        #expect(fx.eventKit.calendarWriteCount == 1)
+    }
+
     @Test func oldCalendarReadAndAddGrantDoesNotAuthorizeDeletingEvents() async throws {
         let fx = RemindersFixture(access: .allowed)
         fx.preferences.update { $0.dataAccess[.calendar] = .allowed }
@@ -666,6 +675,8 @@ private final class FakeReminderStore: MuseEventKitAccess, @unchecked Sendable {
     private let lists: [MuseEventKitSource.ReminderList]
     private var items: [MuseEventKitSource.Reminder] = []
     private var nextID = 1
+    private var calendarWrites = 0
+    var calendarWriteCount: Int { lock.withLock { calendarWrites } }
 
     private let authorized: Bool
     private let refused: Bool
@@ -683,6 +694,7 @@ private final class FakeReminderStore: MuseEventKitAccess, @unchecked Sendable {
 
     func events(from start: Date, to end: Date, limit: Int) -> [MuseEventKitSource.Event] { [] }
     func addEvent(title: String, start: Date, end: Date?, notes: String?) throws -> MuseEventKitSource.Event {
+        lock.withLock { calendarWrites += 1 }
         throw MuseEventKitSource.Failure.notAllowed
     }
 

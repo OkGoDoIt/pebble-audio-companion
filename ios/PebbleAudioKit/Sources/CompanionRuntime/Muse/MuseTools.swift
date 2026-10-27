@@ -548,7 +548,7 @@ actor MuseTools {
         case momentsCommand: return ["edit", "delete"].contains(params["action"]?.string ?? "")
         case remindersCommand: return MuseReminders.Action(params["action"]?.string)?.changes == true
         case followUpsCommand: return [.edit, .reopen].contains(FollowUpAction(params["action"]?.string))
-        case calendarCommand: return ["edit", "update", "delete"].contains(params["action"]?.string ?? "")
+        case calendarCommand: return ["edit", "update", "delete"].contains(params["action"]?.string?.lowercased() ?? "")
         default: return false
         }
     }
@@ -578,7 +578,7 @@ actor MuseTools {
             // Answered from the first call: a repeat would find it decided already.
             guard let action = FollowUpAction(params["action"]?.string), action == .remind || action == .skip else { return nil }
         case calendarCommand:
-            guard let action = params["action"]?.string, ["add", "create", "complete"].contains(action) else { return nil }
+            guard let action = params["action"]?.string?.lowercased(), ["add", "create", "complete"].contains(action) else { return nil }
         default:
             return nil
         }
