@@ -59,6 +59,10 @@ import Testing
     }
     func dismissUnknownVoice(id: String) async throws { dismissedUnknown.append(id) }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { Data(count: 64_000) }
+    var contextRequests: [String] = []
+    func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
+        contextRequests.append(segmentId); return Data(count: 320_000)
+    }
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async { learnedRechecks.append(personId) }
     func enrollPassage(personId: String, turn: TranscriptTurn) async throws -> VoiceEnrollmentOutcome {
         enrollmentPeople.append(personId)

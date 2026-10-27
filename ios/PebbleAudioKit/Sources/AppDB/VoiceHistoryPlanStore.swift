@@ -81,13 +81,6 @@ public struct VoiceHistoryPlanStore: Sendable {
         }
     }
 
-    public func pendingCapacity(limit: Int = 512) async throws -> Int {
-        try await db.reader.read { d in
-            let count = try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM voice_jobs WHERE state IN ('pending','running')") ?? 0
-            return max(0, min(512, limit) - count)
-        }
-    }
-
     public func advance(runID: String, startMs: Int64, segmentId: String,
                         queued: Bool, complete: Bool = false) async throws {
         try await db.writer.write { d in

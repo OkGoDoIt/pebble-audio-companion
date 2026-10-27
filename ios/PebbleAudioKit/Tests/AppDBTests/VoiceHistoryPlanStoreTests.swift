@@ -35,7 +35,7 @@ import Testing
         #expect(try await voice.configuration().enabledAtMs == 200)
     }
 
-    @Test func boundedQueueCapacityReturnsAsJobsFinishWithoutDiscardingHistoryScope() async throws {
+    @Test func finishingJobsKeepsTheHistoryScope() async throws {
         let db = try AppDatabase.inMemory()
         let voice = VoiceIdentityStore(db: db), plans = VoiceHistoryPlanStore(db: db)
         try await voice.setMode(.local)
@@ -46,11 +46,9 @@ import Testing
                 startMediaMs: 0, endMediaMs: 2_000, recipeID: "recipe")
             try await plans.advance(runID: "history", startMs: Int64(index), segmentId: "s\(index)", queued: true)
         }
-        #expect(try await plans.pendingCapacity(limit: 2) == 0)
         let job = try #require(try await voice.claimNextJob())
         #expect(try await voice.advanceJob(id: job.id, expectedCursorMediaMs: 0,
             nextCursorMediaMs: 2_000, attributions: []))
-        #expect(try await plans.pendingCapacity(limit: 2) == 1)
         let plan = try #require(try await plans.plans().first)
         #expect(plan.toMs == 99_000 && !plan.discoveryComplete)
     }

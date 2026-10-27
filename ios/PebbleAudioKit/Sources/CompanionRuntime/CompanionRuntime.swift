@@ -747,7 +747,7 @@ public actor CompanionRuntime {
                 env.settings.backgroundCatchUp, foreground.devicePower, foreground: foreground.value
             ).isRun
         }
-        return PipelineSteps(
+        var steps = PipelineSteps(
             isForeground: { foreground.value },
             isCatchUpActive: { foreground.catchUpActive },
             // The pass only ever releases on its way into the background: the soft release, so
@@ -883,6 +883,8 @@ public actor CompanionRuntime {
                 return throttled
             }
         )
+        steps.voiceSliceDueInMs = { voicePace.msUntilDue(nowMs: clock.nowMs) }
+        return steps
     }
 }
 

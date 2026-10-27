@@ -120,11 +120,14 @@ public enum BackgroundWorkPolicy {
 }
 
 /// Spaces backgrounded voice slices so recognition never holds the CPU for long: a slice that
-/// took `t` waits `max(30 s, 10 t)` before the next, which keeps it near a tenth of one core.
+/// took `t` waits `max(3 s, 10 t)` before the next, which keeps it near a tenth of one core.
 /// Charger-time CPU has starved the Bluetooth keepalive before (16–25 CPU-s/min, 2026-09-10).
-/// A pass that found nothing to do waits the 30 s too. Every tenth slice yields a log line.
+/// On G17 a two-window slice measured 0.2–0.5 s (2026-10-27), so a 30 s floor checked 20 s of
+/// audio per 30 s and a week's queue would have taken days. A pass that found nothing waits
+/// `idleGapMs`. Every tenth slice yields a log line.
 public final class VoiceBackgroundPace: @unchecked Sendable {
-    public static let minimumGapMs: Int64 = 30_000
+    public static let minimumGapMs: Int64 = 3_000
+    public static let idleGapMs: Int64 = 30_000
     public static let gapPerBusyMs: Int64 = 10
     private let lock = NSLock()
     private var nextAtMs: Int64 = 0
@@ -136,11 +139,14 @@ public final class VoiceBackgroundPace: @unchecked Sendable {
 
     public func isDue(nowMs: Int64) -> Bool { lock.withLock { nowMs >= nextAtMs } }
 
+    /// How long until the next slice may run, for the pass's own sleep.
+    public func msUntilDue(nowMs: Int64) -> Int64 { lock.withLock { max(0, nextAtMs - nowMs) } }
+
     /// Records a backgrounded voice pass. Returns a summary every tenth slice that did work.
     public func record(windows: Int, busyMs: Int64, nowMs: Int64) -> String? {
         lock.withLock {
+            guard windows > 0 else { nextAtMs = nowMs + Self.idleGapMs; return nil }
             nextAtMs = nowMs + max(Self.minimumGapMs, busyMs * Self.gapPerBusyMs)
-            guard windows > 0 else { return nil }
             slices += 1
             self.busyMs += busyMs
             self.windows += windows

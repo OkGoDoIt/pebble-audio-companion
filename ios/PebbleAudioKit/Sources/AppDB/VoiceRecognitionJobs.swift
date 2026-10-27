@@ -24,8 +24,6 @@ extension VoiceIdentityStore {
                     source.generation, config.generation, config.corpusRevision]) { return Self.job(row) }
             if let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE runID = ? AND segmentId = ? AND startMediaMs = ? AND endMediaMs = ?",
                                          arguments: [runID, segmentId, startMediaMs, endMediaMs]) { return Self.job(row) }
-            let count = try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM voice_jobs WHERE state IN ('pending','running')") ?? 0
-            guard count < 512 else { throw VoiceIdentityError.capacityExceeded }
             if explicitRerun {
                 try Self.clearSuppressions(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
                 try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?",
@@ -45,7 +43,11 @@ extension VoiceIdentityStore {
     public func claimNextJob(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws -> VoiceRecognitionJob? {
         try await db.writer.write { d in
             try Self.cancelStaleJobs(d)
-            guard let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE state = 'pending' ORDER BY updatedAtMs, id LIMIT 1") else { return nil }
+            // New recordings before a history run: the conversations just had are the ones being read.
+            guard let row = try Row.fetchOne(d, sql: """
+                SELECT * FROM voice_jobs WHERE state = 'pending'
+                ORDER BY (runID LIKE 'recent:%') DESC, updatedAtMs, id LIMIT 1
+                """) else { return nil }
             var job = Self.job(row)
             try d.execute(sql: "UPDATE voice_jobs SET state = 'running', updatedAtMs = ? WHERE id = ?", arguments: [nowMs, job.id])
             job.state = .running; job.updatedAtMs = nowMs

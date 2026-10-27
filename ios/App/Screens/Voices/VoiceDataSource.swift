@@ -176,6 +176,8 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func dismissUnknownVoice(id: String) async throws
     /// A clip's audio (16 kHz mono PCM) for listening before naming.
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data?
+    /// The clip with several seconds of audio either side.
+    func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data?
     func cancelEnrollment() async
     func recognizeHistory(days: Int?) async throws
     func cancelRun(id: String) async throws

@@ -255,6 +255,9 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(throws: VoiceEnrollmentError.interruptedAudio) {
             try source.pcm(startMediaMs: 2_000, endMediaMs: 4_000)
         }
+        // "Play Longer" widens a clip only within its own side of the gap, so it always plays.
+        #expect(source.contextRange(startMediaMs: 3_500, endMediaMs: 4_000, paddingMs: 6_000) == 3_000..<6_000)
+        #expect(source.contextRange(startMediaMs: 1_000, endMediaMs: 2_000, paddingMs: 500) == 500..<2_500)
     }
 
     @Test func silencedDeletedFramesAreExcludedFromEnrollmentWindows() throws {
@@ -273,17 +276,33 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
     }
 
     /// Backgrounded on a charger the voice step is asked (it applies its own rule and pace),
-    /// and a slice it ran does not bring the next pass forward to the 1 s cadence.
-    @Test func aBackgroundedVoiceSliceKeepsTheIdleCadence() async throws {
+    /// and the pass comes back when the pace allows the next slice: not the 1 s cadence, and
+    /// not the 30 s idle wait that held recognition to 20 s of audio per 30 s on G17.
+    @Test func aBackgroundedVoiceSliceSetsTheNextWake() async throws {
         let calls = CallRecorder()
         var steps = PipelineSteps()
         steps.isForeground = { false }
         steps.backgroundWorkDecision = { .run }
         steps.regroup = { false }
         steps.recognizeVoices = { calls.record("voice"); return true }
+        steps.voiceSliceDueInMs = { 3_000 }
         let sleep = try await PipelinePass(steps: steps, clock: TestClock()).run()
         #expect(calls.calls == ["voice"])
-        #expect(sleep == PipelinePacing.idleMs)
+        #expect(sleep == 3_000)
+    }
+
+    /// The conversations just had are checked before a history run's backlog.
+    @Test func newRecordingsAreCheckedBeforeAHistoryRun() async throws {
+        let db = try AppDatabase.inMemory()
+        let store = VoiceIdentityStore(db: db)
+        try await store.setMode(.local)
+        for id in ["old", "new"] { _ = try await store.prepareSource(segmentId: id, revision: id) }
+        try await store.enqueueJob(runID: "history-run", segmentId: "old", startMediaMs: 0,
+            endMediaMs: 2_000, recipeID: "test-recipe", nowMs: 1)
+        try await store.enqueueJob(runID: "recent:new:1:1:new", segmentId: "new", startMediaMs: 0,
+            endMediaMs: 2_000, recipeID: "test-recipe", nowMs: 2)
+        #expect(try await store.claimNextJob()?.segmentId == "new")
+        #expect(try await store.claimNextJob()?.segmentId == "old")
     }
 }
 

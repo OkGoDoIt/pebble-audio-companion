@@ -74,6 +74,7 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
     }
     func dismissUnknownVoice(id: String) async throws { unknown.removeAll { $0.id == id } }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { nil }
+    func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { nil }
     func cancelEnrollment() async {}
     func recognizeHistory(days: Int?) async throws {}
     func cancelRun(id: String) async throws {}

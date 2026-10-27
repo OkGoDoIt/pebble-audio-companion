@@ -113,6 +113,17 @@ public struct VoiceRunSummary: Equatable, Sendable {
     public var pending, running, done, failed, cancelled: Int
     public var completedMediaMs, totalMediaMs, updatedAtMs: Int64
 }
-public enum VoiceIdentityError: Error, Equatable, Sendable {
+public enum VoiceIdentityError: Error, Equatable, Sendable, LocalizedError {
     case invalidRecord, sourceDeleted, sourceInvalidated, missingSource, disabled, capacityExceeded
+
+    /// Never the type name and a number: these can reach People & voices as its notice.
+    public var errorDescription: String? {
+        switch self {
+        case .invalidRecord: "This voice information couldn’t be saved."
+        case .sourceDeleted, .missingSource: "That recording is no longer on this phone."
+        case .sourceInvalidated: "That recording changed. Try again."
+        case .disabled: "Voice recognition is off."
+        case .capacityExceeded: "Too many recordings are waiting to be checked."
+        }
+    }
 }

@@ -91,14 +91,14 @@ import Testing
         #expect(voice(.never, plugged: true, foreground: true) == .run)
     }
 
-    // A tenth of one core at most, and never more often than every 30 s, so the Bluetooth
+    // A tenth of one core at most, and never more often than every 3 s, so the Bluetooth
     // keepalive is not starved the way charger-time passes once starved it.
     @Test func backgroundVoiceSlicesAreSpacedByWhatTheyCost() {
         let pace = VoiceBackgroundPace()
         #expect(pace.isDue(nowMs: 0))
-        #expect(pace.record(windows: 2, busyMs: 1_000, nowMs: 1_000) == nil)
-        #expect(!pace.isDue(nowMs: 30_999))
-        #expect(pace.isDue(nowMs: 31_000))
+        #expect(pace.record(windows: 2, busyMs: 300, nowMs: 1_000) == nil)
+        #expect(!pace.isDue(nowMs: 3_999) && pace.msUntilDue(nowMs: 3_000) == 1_000)
+        #expect(pace.isDue(nowMs: 4_000))
         _ = pace.record(windows: 2, busyMs: 6_000, nowMs: 40_000)
         #expect(!pace.isDue(nowMs: 99_999))
         #expect(pace.isDue(nowMs: 100_000))
@@ -107,7 +107,7 @@ import Testing
         #expect(pace.isDue(nowMs: 230_000))
         var line: String?
         for index in 0..<8 { line = pace.record(windows: 1, busyMs: 100, nowMs: 300_000 + Int64(index)) }
-        #expect(line == "voice recognition: 10 background slices, 12 windows, 7800 ms busy")
+        #expect(line == "voice recognition: 10 background slices, 12 windows, 7100 ms busy")
         #expect(pace.record(windows: 1, busyMs: 100, nowMs: 400_000) == nil)
     }
 }

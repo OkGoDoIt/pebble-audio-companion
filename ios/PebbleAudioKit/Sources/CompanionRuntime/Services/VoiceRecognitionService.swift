@@ -550,8 +550,6 @@ public actor VoiceRecognitionService {
     }
 
     private func fillHistory(plans: [VoiceHistoryPlan], metas: [SegmentMeta]) async throws -> Bool {
-        var capacity = try await history.pendingCapacity()
-        guard capacity > 0 else { return false }
         var advanced = false
         var inspected = 0
         let ordered = metas.sorted { ($0.startWallMs, $0.segmentId) < ($1.startWallMs, $1.segmentId) }
@@ -565,7 +563,7 @@ public actor VoiceRecognitionService {
             if candidates.isEmpty { try await history.finishDiscovery(runID: plan.runID); advanced = true; continue }
             for meta in candidates {
                 try Task.checkCancellation()
-                guard capacity > 0, inspected < 2 else { if advanced { changed() }; return advanced }
+                guard inspected < 2 else { if advanced { changed() }; return advanced }
                 var queued = false
                 do {
                     let source = try await load(meta.segmentId)
@@ -579,7 +577,7 @@ public actor VoiceRecognitionService {
                         try await store.enqueueJob(runID: plan.runID, segmentId: meta.segmentId,
                             startMediaMs: start, endMediaMs: end, recipeID: recipeID, explicitRerun: true)
                         changedSegments.insert(meta.segmentId)
-                        queued = true; capacity -= 1
+                        queued = true
                     }
                 } catch VoiceEnrollmentError.audioUnavailable { /* unavailable audio remains unavailable, no download */ }
                 catch VoiceIdentityError.sourceDeleted { /* source deleted after scope was chosen */ }
@@ -587,7 +585,6 @@ public actor VoiceRecognitionService {
                 catch VoiceEnrollmentError.unsupportedAudio {
                     lastMessage = "Some recordings use an unsupported audio format and were skipped."
                 }
-                catch VoiceIdentityError.capacityExceeded { if advanced { changed() }; return advanced }
                 try await history.advance(runID: plan.runID, startMs: meta.startWallMs,
                     segmentId: meta.segmentId, queued: queued, complete: meta.segmentId == candidates.last?.segmentId)
                 inspected += 1; advanced = true
@@ -739,6 +736,16 @@ public actor VoiceRecognitionService {
         let source = try await load(segmentId)
         return try await Task.detached(priority: .userInitiated) {
             try source.pcm(startMediaMs: startMediaMs, endMediaMs: min(endMediaMs, startMediaMs + 30_000))
+        }.value
+    }
+
+    /// The clip with the audio around it, to tell whose voice a short clip is.
+    public func clipContextPCM(segmentId: String, startMediaMs: Int64, endMediaMs: Int64,
+                               paddingMs: Int64 = 6_000) async throws -> Data {
+        let source = try await load(segmentId)
+        let range = source.contextRange(startMediaMs: startMediaMs, endMediaMs: endMediaMs, paddingMs: paddingMs)
+        return try await Task.detached(priority: .userInitiated) {
+            try source.pcm(startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
         }.value
     }
 

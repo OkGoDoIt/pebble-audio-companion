@@ -71,6 +71,8 @@ public struct PipelineSteps: Sendable {
     /// a backfill comes straight back for the rest.
     public var classifyAudio: @Sendable () async throws -> Bool
     public var recognizeVoices: @Sendable () async throws -> Bool
+    /// Backgrounded, when the voice step may run its next slice (`VoiceBackgroundPace`).
+    public var voiceSliceDueInMs: @Sendable () -> Int64 = { PipelinePacing.idleMs }
     /// One AI-reading pass (`AudioContentService.judgePass`). True when it saved a reading.
     public var judgeAudio: @Sendable () async throws -> Bool
     /// Rebuilds the conversation grouping the whole UI reads. Returns whether its STRUCTURE
@@ -458,9 +460,10 @@ public struct PipelinePass: Sendable {
         // (`BackgroundWorkPolicy.decideVoiceRecognition`, applied inside the step, which also
         // paces itself while backgrounded). No speech is uploaded. A backgrounded slice does not
         // bring the next pass forward: its own pace decides when the next one runs.
+        var voiceSliceRan = false
         if try await stage(.recognizeVoices, fallback: false, heavy: true,
                            when: !steps.isCatchUpActive(), steps.recognizeVoices) {
-            if steps.isForeground() { processed = true }
+            if steps.isForeground() { processed = true } else { voiceSliceRan = true }
             archiveChanged = true
         }
 
@@ -585,11 +588,15 @@ public struct PipelinePass: Sendable {
         await steps.refreshCoverageSnapshot()
 
         health?.passCompleted()
-        return try await sleepMs(processed: processed)
+        return try await sleepMs(processed: processed, voiceSliceRan: voiceSliceRan)
     }
 
-    private func sleepMs(processed: Bool) async throws -> Int64 {
+    private func sleepMs(processed: Bool, voiceSliceRan: Bool = false) async throws -> Int64 {
         if processed { return PipelinePacing.afterWorkMs }
+        // A backgrounded voice slice comes back when its pace allows the next one.
+        if voiceSliceRan {
+            return min(max(steps.voiceSliceDueInMs(), PipelinePacing.minRetryMs), PipelinePacing.idleMs)
+        }
         // The 5 s cadence exists so the live preview FEELS live. Backgrounded — which on a
         // charger is where this loop spends its nights — nobody is watching the preview, and
         // the idle cadence is what a segment that closes every 15 minutes actually needs.

@@ -168,6 +168,9 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
         try? await service.clipPCM(segmentId: segmentId, startMediaMs: startMs, endMediaMs: endMs)
     }
+    func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
+        try? await service.clipContextPCM(segmentId: segmentId, startMediaMs: startMs, endMediaMs: endMs)
+    }
 
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async {
         // Every name teaches now, so a whole-archive pass per save would be O(library) work
@@ -243,17 +246,49 @@ extension UnknownVoiceDisplay {
                                    detail: detail.prefix(1).uppercased() + detail.dropFirst(), clips: clips)
     }
 
+    /// What was said during a clip, in the paragraph's own words. Word timings are subword
+    /// tokens with no spacing ("L", "ike"), so they only locate the clip inside the paragraph
+    /// text; the quote is that text, widened to whole words.
     nonisolated static func quote(_ transcript: SegmentTranscript?, from start: Int64, to end: Int64) -> String? {
         guard let transcript else { return nil }
-        let words = transcript.words.filter { $0.startMs < end && $0.endMs > start }.map(\.text)
-        let raw = words.isEmpty
-            ? transcript.segments.filter { $0.startMs < end && $0.endMs > start }.map(\.text)
-            : words
-        let text = raw.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let paragraphs = transcript.segments.filter { $0.startMs < end && $0.endMs > start }
+        let parts = paragraphs.map { paragraph -> String in
+            let tokens = transcript.words.filter { $0.startMs >= paragraph.startMs && $0.endMs <= paragraph.endMs }
+            return excerpt(paragraph.text, tokens: tokens, from: start, to: end) ?? paragraph.text
+        }
+        let text = parts.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !text.isEmpty else { return nil }
-        guard text.count > 64 else { return "“\(text)”" }
-        let cut = text.prefix(64)
+        guard text.count > 140 else { return "“\(text)”" }
+        let cut = text.prefix(140)
         return "“\(cut.prefix(upTo: cut.lastIndex(of: " ") ?? cut.endIndex))…”"
+    }
+
+    /// The words of `text` the clip covers, found by walking the tokens through it. Nil when
+    /// the tokens don't spell the text (another provider's tokens), so the caller shows it all.
+    nonisolated static func excerpt(_ text: String, tokens: [TranscriptWord], from start: Int64, to end: Int64) -> String? {
+        let chars = Array(text)
+        var index = 0
+        var lower: Int?, upper: Int?
+        for token in tokens {
+            let letters = token.text.filter { !$0.isWhitespace }
+            guard !letters.isEmpty else { continue }
+            while index < chars.count, chars[index].isWhitespace { index += 1 }
+            let tokenStart = index
+            for letter in letters {
+                guard index < chars.count, chars[index] == letter else { return nil }
+                index += 1
+            }
+            if token.startMs < end && token.endMs > start {
+                if lower == nil { lower = tokenStart }
+                upper = index
+            }
+        }
+        guard var lo = lower, var hi = upper else { return nil }
+        while lo > 0, !chars[lo - 1].isWhitespace { lo -= 1 }
+        while hi < chars.count, !chars[hi].isWhitespace { hi += 1 }
+        let words = String(chars[lo..<hi]).trimmingCharacters(in: .whitespaces)
+        let before = lo > 0 ? "…" : "", after = hi < chars.count ? "…" : ""
+        return before + words + after
     }
 
     /// "mostly mornings" when most sightings share a part of the day; nil when they don't.

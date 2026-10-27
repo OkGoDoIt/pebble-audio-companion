@@ -2,6 +2,7 @@ import AppDB
 import CompanionRuntime
 import Foundation
 import Testing
+import Transcription
 
 /// "Who is this?": recurring unnamed voices, asked about in People & voices and in a conversation.
 @Suite("who is this") @MainActor
@@ -79,5 +80,25 @@ extension WhoIsThisTests {
         #expect(LiveVoiceSource.paragraph(around: 5_000..<9_000, in: paragraphs) == 0..<8_000,
                 "Straddling two paragraphs, the one holding at least half the clip")
         #expect(LiveVoiceSource.paragraph(around: 40_000..<44_000, in: paragraphs) == nil, "Outside every paragraph")
+    }
+
+    /// Word timings are subword tokens without spacing ("c", "li", "ent"), as G17's transcripts
+    /// have them; joined with spaces they read "a c li ent". The quote is the paragraph's own
+    /// words around the clip.
+    @Test func aClipsQuoteIsTheParagraphsWordsNotItsTokens() {
+        let text = "Like when a client goes to a different store? You went to a different store."
+        let tokens = ["L", "ike", "when", "a", "c", "li", "ent", "go", "es", "to", "a", "different", "store", "?",
+                      "You", "w", "ent", "to", "a", "different", "stor", "e."]
+        let words = tokens.enumerated().map { TranscriptWord(text: $1, startMs: Int64($0) * 100, endMs: Int64($0) * 100 + 90) }
+        let transcript = SegmentTranscript(segmentId: "s", text: text, modeUsed: .localOnly, providerId: "parakeet",
+            createdAtMs: 0, segments: [TranscriptSegment(text: text, startMs: 0, endMs: 2_200)], words: words)
+        // The clip starts inside "client" (token "li") and ends inside "goes".
+        #expect(UnknownVoiceDisplay.quote(transcript, from: 500, to: 800) == "“…client goes…”")
+        #expect(UnknownVoiceDisplay.quote(transcript, from: 0, to: 2_200) == "“\(text)”")
+        // Tokens that don't spell the text fall back to the whole paragraph, never fragments.
+        let other = SegmentTranscript(segmentId: "s", text: text, modeUsed: .localOnly, providerId: "cloud", createdAtMs: 0,
+            segments: [TranscriptSegment(text: text, startMs: 0, endMs: 2_200)],
+            words: [TranscriptWord(text: "Something", startMs: 0, endMs: 2_000)])
+        #expect(UnknownVoiceDisplay.quote(other, from: 500, to: 800) == "“\(text)”")
     }
 }

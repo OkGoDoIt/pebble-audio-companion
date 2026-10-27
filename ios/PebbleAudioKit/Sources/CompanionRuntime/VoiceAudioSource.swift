@@ -86,6 +86,16 @@ struct VoiceAudioSource: Sendable {
         return nil
     }
 
+    /// The clip widened by `paddingMs` each side, never past the continuous run it sits in
+    /// (a quiet, loss or redaction boundary) and never longer than 30 s.
+    func contextRange(startMediaMs: Int64, endMediaMs: Int64, paddingMs: Int64) -> Range<Int64> {
+        let run = continuousSampleRanges.first { Int64($0.lowerBound / 16) <= startMediaMs && Int64($0.upperBound / 16) > startMediaMs }
+        let lower = max(startMediaMs - paddingMs, run.map { Int64($0.lowerBound / 16) } ?? startMediaMs, 0)
+        let upper = min(endMediaMs + paddingMs, run.map { Int64($0.upperBound / 16) } ?? endMediaMs, self.endMediaMs,
+                        lower + 30_000)
+        return lower..<max(upper, lower + 1)
+    }
+
     func pcm(startMediaMs: Int64, endMediaMs: Int64) throws -> Data {
         guard startMediaMs >= 0, endMediaMs > startMediaMs,
               endMediaMs - startMediaMs <= 30_000, endMediaMs <= self.endMediaMs else {

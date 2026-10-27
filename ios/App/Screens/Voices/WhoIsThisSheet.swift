@@ -14,6 +14,7 @@ struct WhoIsThisSheet: View {
 
     private enum Choice: Equatable { case person(String), me, newPerson }
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router: AppRouter?
     @State private var model: WhoIsThisModel
     @State private var choice: Choice?
     @State private var newName = ""
@@ -145,7 +146,7 @@ struct WhoIsThisSheet: View {
 
     private func clipRow(_ clip: UnknownVoiceClip, checkable: Bool = false) -> some View {
         HStack(spacing: 12) {
-            Button { model.toggle(clip) } label: {
+            Button { if model.playing == clip.id { model.stop() } else { model.toggle(clip) } } label: {
                 Image(systemName: model.playing == clip.id ? "stop.fill" : "play.fill")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.onTint)
                     .frame(width: 36, height: 36).background(Circle().fill(Tokens.tint))
@@ -175,6 +176,31 @@ struct WhoIsThisSheet: View {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(checkable && kept.contains(clip.segmentId) ? .isSelected : [])
+            // A clip is a few seconds; these are for when that isn't enough to tell.
+            Menu {
+                Button(model.playing == clip.id && model.playingLonger ? "Stop" : "Play Longer",
+                       systemImage: "waveform") { model.toggle(clip, longer: true) }
+                if clip.heardAt != nil {
+                    Button("Open Conversation", systemImage: "text.bubble") { show(clip) }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundStyle(Tokens.tint)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("More for this clip")
+        }
+    }
+
+    /// Leaves the question for the conversation, at the moment the clip was heard.
+    private func show(_ clip: UnknownVoiceClip) {
+        guard let heardAt = clip.heardAt else { return }
+        model.stop()
+        Task {
+            guard let route = await Route.moment(atWallMs: Int64(heardAt.timeIntervalSince1970 * 1_000)) else {
+                model.couldNotOpen(); return
+            }
+            dismiss()
+            router?.navigate(to: route)
         }
     }
 
@@ -211,6 +237,8 @@ final class WhoIsThisModel {
     private(set) var working = false
     private(set) var errorMessage: String?
     private(set) var playing: String?
+    /// The clip playing is the longer one, with the audio around it.
+    private(set) var playingLonger = false
     private var player: AVAudioPlayer?
     private let injectedVoices: (any VoiceRecognitionDataSource)?
     private let injectedPeople: (any PeopleDataSource)?
@@ -226,13 +254,16 @@ final class WhoIsThisModel {
         do { people = try await peopleSource.people() } catch { errorMessage = Copy.Speaker.loadFailed }
     }
 
-    func toggle(_ clip: UnknownVoiceClip) {
-        if playing == clip.id { stop(); return }
+    func toggle(_ clip: UnknownVoiceClip, longer: Bool = false) {
+        if playing == clip.id, playingLonger == longer { stop(); return }
         stop()
         playing = clip.id
+        playingLonger = longer
         Task {
-            guard let pcm = await voices?.clipAudio(segmentId: clip.segmentId, startMs: clip.startMs, endMs: clip.endMs),
-                  playing == clip.id else { if playing == clip.id { playing = nil }; return }
+            let audio = longer
+                ? await voices?.clipContextAudio(segmentId: clip.segmentId, startMs: clip.startMs, endMs: clip.endMs)
+                : await voices?.clipAudio(segmentId: clip.segmentId, startMs: clip.startMs, endMs: clip.endMs)
+            guard let pcm = audio, playing == clip.id else { if playing == clip.id { playing = nil }; return }
             do {
                 try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
                 try AVAudioSession.sharedInstance().setActive(true)
@@ -240,7 +271,7 @@ final class WhoIsThisModel {
                 player?.play()
                 let length = Double(pcm.count) / 32_000
                 try? await Task.sleep(for: .seconds(length))
-                if playing == clip.id { playing = nil }
+                if playing == clip.id { playing = nil; playingLonger = false }
             } catch {
                 playing = nil
                 errorMessage = "Couldn’t play this clip."
@@ -252,7 +283,10 @@ final class WhoIsThisModel {
         player?.stop()
         player = nil
         playing = nil
+        playingLonger = false
     }
+
+    func couldNotOpen() { errorMessage = "Couldn’t find this moment in a conversation." }
 
     /// The person's display name on success.
     func name(_ voice: UnknownVoiceDisplay, personId: String, recordings: Set<String>? = nil) async -> String? {
