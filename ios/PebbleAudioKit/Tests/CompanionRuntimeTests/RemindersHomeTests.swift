@@ -17,6 +17,7 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
     private var counter = 0
     var clock: Int64 = 1_000
 
+    var failDelete = false
     var authorized = true
     var refused = false
     func requestAccess() async -> Bool { authorized }
@@ -60,7 +61,10 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             return item
         }
     }
-    func delete(id: String) throws { lock.withLock { _items[id] = nil } }
+    func delete(id: String) throws {
+        if failDelete { throw CocoaError(.fileWriteUnknown) }
+        lock.withLock { _items[id] = nil }
+    }
     func reminders(ids: [String]) -> [AppleReminder] { lock.withLock { ids.compactMap { _items[$0] } } }
     func observeChanges(_ onChange: @escaping @Sendable () -> Void) -> AnyObject { NSObject() }
 
@@ -134,6 +138,27 @@ private final class FakeAlerts: ReminderAlertScheduling, @unchecked Sendable {
         #expect(apple.items.allSatisfy { $0.listId == "groceries" })
         #expect(try await store.load(id: "a")?.appleId != nil)
         #expect(try await store.load(id: "s")?.appleId == nil)
+    }
+
+    @Test func concurrentSyncDeliversOnceToTheSelectedListAndReopenRemovesIt() async throws {
+        let home = home()
+        try await home.switchToApple(.existing(id: "todo"))
+        try await put("selected", stage: .suggested)
+        #expect(try await store.reviewFromAssistant(id: "selected", stage: .reminder, appleListId: "groceries"))
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 { group.addTask { await home.sync() } }
+        }
+        #expect(apple.items.count == 1)
+        #expect(apple.items.first?.listId == "groceries")
+        #expect(try await store.reviewFromAssistant(id: "selected", stage: .suggested, reopen: true))
+        apple.failDelete = true
+        await home.sync()
+        #expect(apple.items.count == 1)
+        #expect(try await store.load(id: "selected")?.appleId != nil)
+        apple.failDelete = false
+        await home.sync()
+        #expect(apple.items.isEmpty)
+        #expect(try await store.load(id: "selected")?.appleId == nil)
     }
 
     @Test func theNewListIsMadeOnceAndUsed() async throws {

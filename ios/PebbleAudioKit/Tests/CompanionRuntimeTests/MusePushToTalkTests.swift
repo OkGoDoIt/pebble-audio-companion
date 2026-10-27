@@ -399,6 +399,7 @@ struct MusePushToTalkTests {
         try fx.ask(turn: 9, seconds: 1)
         let action = try #require(await fx.answerNextAction(status: .done, text: "3100,4200"))
         #expect(WatchActionRequest.parse(action.payload) == .health(.distanceMeters, days: 2))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
         #expect(await fx.waitUntil { fx.link.updates().last?.kind == .done })
         #expect(fx.muse.toolResults.first?["ok"]?.bool == true)
         let report = try #require(fx.service.lastQuestion.value)
@@ -763,9 +764,10 @@ private final class PushToTalkFixture: @unchecked Sendable {
 
     /// Answers the next watch action the way the watch would, once it has been sent.
     func answerNextAction(status: WatchActionStatus, value: Int = 0, text: String = "") async -> WatchAction? {
-        let before = link.actions().count
-        guard await waitUntil({ self.link.actions().count > before }) else { return nil }
-        let action = link.actions()[before]
+        // The next request may already have arrived when the prior result was delivered.
+        // Consume unanswered requests instead of waiting for the count to increase again.
+        guard await waitUntil({ self.link.unansweredAction() != nil }),
+              let action = link.unansweredAction() else { return nil }
         link.push(.watchActionResult(WatchActionResult(actionId: action.actionId, statusRaw: status.rawValue, value: value, text: Array(text.utf8))))
         return action
     }
@@ -828,6 +830,7 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
     private var replies: [AudioReceiverSession.MuseSetupReply] = []
     private var token = 0
     private var _quietLink: [Bool] = []
+    private var answeredActions: Set<Int> = []
     private var _resultBeforeAck = false
     var resultBeforeAck: Bool {
         get { lock.withLock { _resultBeforeAck } }
@@ -873,7 +876,10 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
     }
 
     func push(_ inbound: AudioReceiverSession.AssistantInbound) {
-        let handler = lock.withLock { self.handler }
+        let handler = lock.withLock {
+            if case .watchActionResult(let result) = inbound { answeredActions.insert(result.actionId) }
+            return self.handler
+        }
         handler?(inbound)
     }
 
@@ -888,6 +894,10 @@ private final class FakeAssistantLink: MuseAssistantLink, @unchecked Sendable {
 
     func updates() -> [AssistantUpdate] { messages().compactMap { $0 as? AssistantUpdate } }
     func actions() -> [WatchAction] { messages().compactMap { $0 as? WatchAction } }
+    func unansweredAction() -> WatchAction? {
+        let answered = lock.withLock { answeredActions }
+        return actions().first { !answered.contains($0.actionId) }
+    }
 }
 
 private final class FakeMuse: MuseVoiceConnector, @unchecked Sendable {
@@ -1070,6 +1080,14 @@ private final class FakeData: MuseDataProvider, @unchecked Sendable {
         return true
     }
     func resumeRecording() async -> Bool { true }
+    func recordingStatus() async -> MuseRecordingSnapshot? {
+        MuseRecordingSnapshot(intent: "paused", connection: "disconnected", recording: nil)
+    }
+    func deleteMoment(id: String) async -> Bool { id == "saved-mark" }
+    func saveMoment(_ label: String?) async -> MuseMoment? {
+        _ = await markMoment(label)
+        return MuseMoment(id: "saved-mark", at: Date(), note: label ?? "")
+    }
     func markMoment(_ label: String?) async -> Bool {
         lock.withLock { _marks.append(label) }
         return true
@@ -1085,6 +1103,7 @@ struct MuseToolsTests {
         _ = try #require(await fx.answerNextAction(status: .done, value: 0))
         // The health read itself, on the watch.
         _ = try #require(await fx.answerNextAction(status: .done, text: "8100"))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
         #expect((await reply.value)["ok"]?.bool == true)
         #expect(fx.preferences.current.value.access(.health) == .ask)
 
@@ -1092,8 +1111,9 @@ struct MuseToolsTests {
         let before = fx.link.actions().count
         let again = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "distance"]) }
         _ = try #require(await fx.answerNextAction(status: .done, text: "6200"))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
         #expect((await again.value)["ok"]?.bool == true)
-        #expect(fx.link.actions().count == before + 1)
+        #expect(fx.link.actions().count == before + 2)
 
         // A new question asks again.
         fx.link.push(.pttEvent(PttEvent(turn: 9, eventRaw: PttEventKind.start.rawValue, detail: PttTrigger.inApp.rawValue, maxSeconds: 15)))
@@ -1113,6 +1133,7 @@ struct MuseToolsTests {
         #expect(WatchActionRequest.parse(latest.payload) == .health(.heartRate, days: 1))
         let daily = try #require(await fx.answerNextAction(status: .done, text: "70/55/140,-1"))
         #expect(WatchActionRequest.parse(daily.payload) == .health(.heartRateDaily, days: 2))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
         let payload = try #require((await reply.value)["payload"])
         #expect(payload["latest"]?["bpm"]?.number == 72)
         #expect(payload["days"]?.array?.first?["average_bpm"]?.number == 70)
@@ -1218,6 +1239,19 @@ struct MuseToolsTests {
         #expect(prompts.isEmpty)
     }
 
+    @Test func revokingHealthDuringItsReadWithholdsTheResult() async throws {
+        let fx = PushToTalkFixture()
+        fx.preferences.update { $0.dataAccess[.health] = .allowed }
+        await fx.start()
+        let reply = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "steps"]) }
+        _ = try #require(await fx.answerNextAction(status: .done, text: "8100"))
+        fx.preferences.update { $0.dataAccess[.health] = .off }
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
+        let result = await reply.value
+        #expect(result["code"]?.string == "access_revoked")
+        #expect(result["payload"] == nil)
+    }
+
     @Test func healthComesFromTheWatchAsDailyValues() async throws {
         let fx = PushToTalkFixture()
         fx.preferences.update { $0.dataAccess[.health] = .allowed }
@@ -1225,6 +1259,7 @@ struct MuseToolsTests {
         let reply = Task { await fx.service.runCommand(MuseTools.healthCommand, ["metric": "sleep", "days": 2]) }
         let action = try #require(await fx.answerNextAction(status: .done, text: "27000,-1"))
         #expect(WatchActionRequest.parse(action.payload) == .health(.sleepSeconds, days: 2))
+        _ = try #require(await fx.answerNextAction(status: .done, text: "1,1793059200,25200,3\nICT"))
         let days = try #require((await reply.value)["payload"]?["days"]?.array)
         #expect(days.count == 2)
         #expect(days[0]["sleep_minutes"]?.number == 450)
@@ -1240,6 +1275,21 @@ struct MuseToolsTests {
         let result = await reply.value
         #expect(result["payload"]?["title"]?.string == "Clair de lune")
         #expect(result["payload"]?["artist"]?.string == "Debussy")
+    }
+
+    @Test func savedMomentsNeedSeparateWriteConsentAndRecordingCanBeUnknown() async throws {
+        let fx = PushToTalkFixture()
+        fx.preferences.update { $0.dataAccess[.conversations] = .allowed }
+        await fx.start()
+        let status = await fx.service.runCommand(MuseTools.recordingCommand, ["action": "status"])
+        #expect(status["payload"]?["recording"] == .null)
+        #expect(status["payload"]?["connection"]?.string == "disconnected")
+        let mark = await fx.service.runCommand(MuseTools.recordingCommand, ["action": "mark", "label": "idea"])
+        #expect(mark["payload"]?["moment"]?["id"]?.string == "saved-mark")
+        let removal = Task { await fx.service.runCommand(MuseTools.momentsCommand, ["action": "delete", "id": "saved-mark"]) }
+        let consent = try #require(await fx.answerNextAction(status: .done, value: 0))
+        guard case .choose = WatchActionRequest.parse(consent.payload) else { Issue.record("Moment deletion skipped write consent"); return }
+        #expect(await removal.value["payload"]?["deleted_id"]?.string == "saved-mark")
     }
 
     @Test func recordingControlNeedsNoQuestion() async {
@@ -1290,7 +1340,7 @@ struct MuseToolsTests {
 
     @Test func everyCommandIsOfferedOnlyWhileItsSwitchAllows() {
         let all = MuseTools.commands(for: MusePreferences(), hasData: true).object ?? [:]
-        #expect(all.count == 15)
+        #expect(all.count == 16)
         let none = MuseTools.commands(
             for: MusePreferences(watchActions: [], dataAccess: Dictionary(uniqueKeysWithValues: MuseSource.allCases.map { ($0, .off) })),
             hasData: true).object ?? [:]

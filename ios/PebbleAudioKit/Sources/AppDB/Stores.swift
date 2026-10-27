@@ -1073,6 +1073,34 @@ public struct FollowUpStore: Sendable {
         }
     }
 
+    /// Applies a review edit and decision together. A concurrent UI decision wins rather than
+    /// being overwritten by a tool that read an older suggestion. Reopen is only for AI marks.
+    public func reviewFromAssistant(id: String, stage: FollowUpStage, title: String? = nil,
+        dueAtMs: Int64? = nil, setDue: Bool = false, priority: FollowUpPriority? = nil,
+        appleListId: String? = nil, reopen: Bool = false,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws -> Bool {
+        if let title, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw FollowUpReviewEditError.emptyText
+        }
+        return try await db.writer.write { db in
+            try db.execute(sql: """
+                UPDATE follow_ups SET text = COALESCE(?, text),
+                  dueAtMs = CASE WHEN ? THEN ? ELSE dueAtMs END,
+                  priority = COALESCE(?, priority), appleListId = COALESCE(?, appleListId),
+                  stage = ?, decidedAtMs = ?, touchedAtMs = ?,
+                  editedAtMs = CASE WHEN ? THEN ? ELSE editedAtMs END,
+                  done = CASE WHEN ? THEN 0 ELSE done END,
+                  completedAtMs = CASE WHEN ? THEN NULL ELSE completedAtMs END
+                WHERE id = ? AND origin = 'ai' AND archivedAtMs IS NULL
+                  AND ((? = 0 AND stage = 'suggested') OR (? = 1 AND stage != 'suggested'))
+                """, arguments: [title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    setDue, dueAtMs, priority?.rawValue, appleListId, stage.rawValue,
+                    stage == .suggested ? nil : nowMs, nowMs,
+                    title != nil || setDue || priority != nil, nowMs, reopen, reopen, id, reopen, reopen])
+            return db.changesCount > 0
+        }
+    }
+
     /// A hand-edit. Stamping `editedAtMs` is what makes the edit survive re-extraction.
     public func setText(
         id: String, _ text: String, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)

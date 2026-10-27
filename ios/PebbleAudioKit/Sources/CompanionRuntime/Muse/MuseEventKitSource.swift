@@ -12,6 +12,12 @@ public protocol MuseEventKitAccess: Sendable {
     func events(from start: Date, to end: Date, limit: Int) -> [MuseEventKitSource.Event]
     func addEvent(title: String, start: Date, end: Date?, notes: String?) throws -> MuseEventKitSource.Event
 
+    func calendars() -> [MuseEventKitSource.ReminderList]
+    func eventPage(from: Date, to: Date, calendarID: String?, offset: Int, limit: Int) throws -> [MuseEventKitSource.Event]
+    func event(id: String) throws -> MuseEventKitSource.Event
+    func saveEvent(id: String?, change: MuseEventChange, span: String?) throws -> MuseEventKitSource.Event
+    func deleteEvent(id: String, span: String?) throws -> MuseEventKitSource.Event
+
     /// Every reminders list on the phone, the default one marked.
     func reminderLists() -> [MuseEventKitSource.ReminderList]
     /// Reminders not done yet in `listIDs` (all lists when nil), and with `completedSince`, also
@@ -21,6 +27,8 @@ public protocol MuseEventKitAccess: Sendable {
     /// Adds a reminder to `listID`, or to the default list when nil.
     func addReminder(title: String, due: Date?, dueHasTime: Bool, notes: String?, listID: String?) throws
         -> MuseEventKitSource.Reminder
+    func addReminder(title: String, due: Date?, dueHasTime: Bool, notes: String?, listID: String?,
+                     priority: Int?, recurrence: MuseRecurrence.Change?) throws -> MuseEventKitSource.Reminder
     /// Applies `change` and returns the reminder as it is now.
     func updateReminder(id: String, _ change: MuseEventKitSource.ReminderChange) throws -> MuseEventKitSource.Reminder
     /// Deletes the reminder and returns what it was.
@@ -32,7 +40,7 @@ public protocol MuseEventKitAccess: Sendable {
 /// Access is asked for on the Muse screen, where the person turns a source on, never in the
 /// middle of a question: iOS shows its permission sheet only to an app on screen.
 public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
-    private let store = EKEventStore()
+    let store = EKEventStore()
 
     public init() {}
 
@@ -60,6 +68,14 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
     }
 
     public struct Event: Sendable, Equatable {
+        public var id: String = ""
+        public var calendarID: String = ""
+        public var account: String = ""
+        public var notes: String? = nil
+        public var timezone: String? = nil
+        public var recurring: Bool = false
+        public var occurrence: Date? = nil
+        public var recurrence: [MuseRecurrence] = []
         public let title: String
         public let start: Date
         public let end: Date
@@ -78,6 +94,7 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
     }
 
     public struct ReminderList: Sendable, Equatable {
+        public var account: String = ""
         public let id: String
         public let name: String
         public let isDefault: Bool
@@ -93,6 +110,8 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
     }
 
     public struct Reminder: Sendable, Equatable {
+        public var priority: Int = 0
+        public var recurrence: [MuseRecurrence] = []
         /// EventKit's `calendarItemIdentifier`: stays the same across edits and moves.
         public let id: String
         public let title: String
@@ -133,6 +152,8 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
         /// Moves it to this list.
         public var listID: String?
         public var completed: Bool?
+        public var priority: Int? = nil
+        public var recurrence: MuseRecurrence.Change? = nil
 
         public init(title: String? = nil, due: Due? = nil, notes: String? = nil, listID: String? = nil, completed: Bool? = nil) {
             self.title = title
@@ -142,7 +163,7 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
             self.completed = completed
         }
 
-        public var isEmpty: Bool { title == nil && due == nil && notes == nil && listID == nil && completed == nil }
+        public var isEmpty: Bool { title == nil && due == nil && notes == nil && listID == nil && completed == nil && priority == nil && recurrence == nil }
     }
 
     public enum Failure: Error, Equatable {
@@ -151,6 +172,10 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
         case noSuchList
         case noSuchReminder
         case listCannotChange
+        case noSuchEvent
+        case recurrenceScopeRequired
+        case invalidEvent
+        case unsupported
     }
 
     public func events(from start: Date, to end: Date, limit: Int) -> [Event] {
@@ -187,9 +212,11 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
         let defaultID = store.defaultCalendarForNewReminders()?.calendarIdentifier
         return store.calendars(for: .reminder)
             .map {
-                ReminderList(
+                var list = ReminderList(
                     id: $0.calendarIdentifier, name: $0.title, isDefault: $0.calendarIdentifier == defaultID,
                     canChange: $0.allowsContentModifications)
+                list.account = $0.source.title
+                return list
             }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
@@ -219,6 +246,11 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
     }
 
     public func addReminder(title: String, due: Date?, dueHasTime: Bool, notes: String?, listID: String?) throws -> Reminder {
+        try addReminder(title: title, due: due, dueHasTime: dueHasTime, notes: notes, listID: listID, priority: nil, recurrence: nil)
+    }
+
+    public func addReminder(title: String, due: Date?, dueHasTime: Bool, notes: String?, listID: String?,
+                            priority: Int?, recurrence: MuseRecurrence.Change?) throws -> Reminder {
         guard Self.remindersAuthorized else { throw Failure.notAllowed }
         let calendar: EKCalendar
         if let listID {
@@ -234,6 +266,8 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
         reminder.calendar = calendar
         if let notes, !notes.isEmpty { reminder.notes = notes }
         if let due { Self.setDue(reminder, due, hasTime: dueHasTime) }
+        if let priority { reminder.priority = priority }
+        if case .set(let rule)? = recurrence { reminder.recurrenceRules = [rule.rule()] }
         try store.save(reminder, commit: true)
         return Self.snapshot(reminder)
     }
@@ -258,6 +292,10 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
             reminder.dueDateComponents = nil
         case nil:
             break
+        }
+        if let priority = change.priority { reminder.priority = priority }
+        if let recurrence = change.recurrence {
+            switch recurrence { case .clear: reminder.recurrenceRules = nil; case .set(let rule): reminder.recurrenceRules = [rule.rule()] }
         }
         if let completed = change.completed { reminder.isCompleted = completed }
         try store.save(reminder, commit: true)
@@ -293,7 +331,7 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
 
     private static func snapshot(_ item: EKReminder) -> Reminder {
         let components = item.dueDateComponents
-        return Reminder(
+        var result = Reminder(
             id: item.calendarItemIdentifier,
             title: item.title ?? "",
             due: components.flatMap { Calendar.current.date(from: $0) },
@@ -302,5 +340,8 @@ public final class MuseEventKitSource: MuseEventKitAccess, @unchecked Sendable {
             list: item.calendar?.title ?? "",
             listID: item.calendar?.calendarIdentifier ?? "",
             completed: item.isCompleted)
+        result.priority = item.priority
+        result.recurrence = (item.recurrenceRules ?? []).map(MuseRecurrence.init)
+        return result
     }
 }

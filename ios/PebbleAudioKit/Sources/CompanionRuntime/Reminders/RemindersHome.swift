@@ -45,6 +45,9 @@ public actor RemindersHome {
     private let log: (@Sendable (String) -> Void)?
     private var observers: [AnyObject] = []
     private var pending: Task<Void, Never>?
+    private var creatingIDs: Set<String> = []
+    private var syncing = false
+    private var syncAgain = false
 
     public init(
         followUps: FollowUpStore, apple: AppleRemindersAccess, alerts: ReminderAlertScheduling,
@@ -183,6 +186,13 @@ public actor RemindersHome {
     /// One pass: Apple Reminders brought into step when it is the home, and the app's own
     /// alerts scheduled.
     public func sync() async {
+        // Awaiting the database permits actor reentry. Two passes must never create two
+        // Apple reminders before either has saved its identifier.
+        guard !syncing else { syncAgain = true; return }
+        syncing = true
+        defer { syncing = false }
+        repeat {
+        syncAgain = false
         do {
             let prefs = preferences.current.value
             if prefs.home == .apple, apple.authorized {
@@ -194,6 +204,7 @@ public actor RemindersHome {
         } catch {
             log?("reminders: sync failed: \(error)")
         }
+        } while syncAgain
     }
 
     /// Notifications may need iOS's permission: asked when the person did something that wants
@@ -219,7 +230,8 @@ public actor RemindersHome {
             guard let appleId = row.appleId else { continue }
             // Off the list in the app: skipped, filed away, or no longer a reminder.
             if row.stage != .reminder || row.archivedAtMs != nil {
-                try? apple.delete(id: appleId)
+                // Keep the mapping on failure so a later pass can finish the removal.
+                try apple.delete(id: appleId)
                 try await followUps.setApple(id: row.id, appleId: nil, listId: nil)
                 continue
             }
@@ -247,8 +259,15 @@ public actor RemindersHome {
     private func pushMissing(listId: String) async throws -> Int {
         let prefs = preferences.current.value
         var made = 0
-        for item in try await openReminders() where item.appleId == nil {
-            let created = try apple.create(draft(item, prefs), inList: listId)
+        for candidate in try await openReminders() where candidate.appleId == nil {
+            guard creatingIDs.insert(candidate.id).inserted else { continue }
+            defer { creatingIDs.remove(candidate.id) }
+            guard let item = try await followUps.load(id: candidate.id), item.appleId == nil,
+                  item.stage == .reminder, !item.isArchived else { continue }
+            let destination = item.appleListId ?? listId
+            // A selected list that disappeared must not silently become the default list.
+            guard apple.lists().contains(where: { $0.id == destination && $0.writable }) else { continue }
+            let created = try apple.create(draft(item, prefs), inList: destination)
             try await followUps.setApple(id: item.id, appleId: created.id, listId: created.listId)
             made += 1
         }

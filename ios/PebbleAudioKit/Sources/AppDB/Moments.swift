@@ -80,6 +80,19 @@ public struct MomentStore: Sendable {
         }
     }
 
+    public func load(id: String) async throws -> Moment? {
+        try await db.reader.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM moments WHERE id = ?", arguments: [id]).map(Self.moment(from:))
+        }
+    }
+
+    public func page(offset: Int, limit: Int) async throws -> [Moment] {
+        try await db.reader.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM moments ORDER BY wallMs DESC, id DESC LIMIT ? OFFSET ?",
+                             arguments: [limit, offset]).map(Self.moment(from:))
+        }
+    }
+
     public func observe() -> AsyncValueObservation<[Moment]> {
         ValueObservation.tracking { db in
             try Row.fetchAll(db, sql: "SELECT * FROM moments ORDER BY wallMs DESC, id DESC")

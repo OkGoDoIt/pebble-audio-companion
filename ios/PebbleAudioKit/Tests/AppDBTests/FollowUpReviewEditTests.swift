@@ -10,6 +10,22 @@ import Testing
             dueAtMs: 500, stage: .suggested)
     }
 
+    @Test func assistantReviewIsAtomicRejectsRacesAndCanReopen() async throws {
+        let store = FollowUpStore(db: try AppDatabase.inMemory())
+        try await store.upsertExtracted(suggestion())
+        #expect(try await store.reviewFromAssistant(id: "review", stage: .reminder,
+            title: "Buy tickets", dueAtMs: 900, setDue: true, priority: .high, appleListId: "travel", nowMs: 200))
+        let saved = try #require(try await store.load(id: "review"))
+        #expect(saved.text == "Buy tickets" && saved.dueAtMs == 900 && saved.priority == .high)
+        #expect(saved.stage == .reminder && saved.appleListId == "travel")
+        #expect(saved.quote == suggestion().quote && saved.editedAtMs == 200)
+        #expect(try await !store.reviewFromAssistant(id: "review", stage: .skipped, title: "Stale", nowMs: 300))
+        #expect(try await store.load(id: "review")?.text == "Buy tickets")
+        #expect(try await store.reviewFromAssistant(id: "review", stage: .suggested, reopen: true, nowMs: 400))
+        #expect(try await store.load(id: "review")?.stage == .suggested)
+        #expect(try await !store.reviewFromAssistant(id: "missing", stage: .reminder))
+    }
+
     @Test func savingPreservesProvenanceAndReviewStateAndSurvivesExtraction() async throws {
         let store = FollowUpStore(db: try AppDatabase.inMemory())
         let original = suggestion()

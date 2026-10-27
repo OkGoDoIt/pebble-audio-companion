@@ -1,5 +1,6 @@
 import CompanionRuntime
 import Foundation
+import SwiftUI
 import Testing
 
 // The Privacy screen is a promise about a microphone, so every sentence on it is derived
@@ -217,6 +218,29 @@ struct PrivacyModelTests {
         #expect(PrivacyModel.rootFooter(inputs) == "Recordings stay on this phone. Your server keeps a copy of their text.")
     }
 
+    /// Export the actual footer component at phone, tablet, and wide layouts for this review.
+    @Test func renderMuseToolDisclosure() throws {
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/audits/muse-tool-disclosure", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let state = PrivacyInputs.MuseState(spokenQuestions: true, watchActions: [],
+            dataSources: [.conversations: .ask, .calendar: .ask, .reminders: .ask, .followUps: .ask])
+        let after = PrivacyModel.museLines(state).joined(separator: " ")
+        let before = PrivacyModel.museSentence + " Muse asks on your watch before it reads your conversations, your calendar, your reminders, and your follow-ups. Your conversations can include what other people said. Muse can add events and reminders you ask for. It can change or delete reminders too, never events. Muse can turn follow-ups into reminders or skip them when you ask. Muse asks on your watch before it changes your reminders or your follow-ups, once per question."
+        for width in [375.0, 820.0, 1024.0] {
+            for (name, text) in [("before", before), ("after", after)] {
+                let view = VStack(alignment: .leading, spacing: 12) {
+                    AssistantSectionHeader(title: "What goes to Muse")
+                    AssistantFooter(text: text)
+                }.padding(16).frame(width: width).background(Tokens.ground)
+                    .environment(\.colorScheme, .light)
+                let renderer = ImageRenderer(content: view); renderer.scale = 1
+                try #require(renderer.uiImage?.pngData()).write(to: directory.appendingPathComponent("\(name)-\(Int(width)).png"))
+            }
+        }
+    }
+
     // MARK: - What Muse can see (privacy-model.md §3.1, ce7146e6)
 
     func muse(_ sources: [MuseDataSource: MuseAccess], music: Bool = false) -> PrivacyPresentation {
@@ -242,7 +266,7 @@ struct PrivacyModelTests {
         let calendar = muse([.calendar: .allowed])
         #expect(calendar.whereItGoesFooters == [
             PrivacyModel.museSentence + " When you ask, Muse can also read your calendar to answer. What it reads goes to Meta."
-                + " Muse can add events you ask for. It never deletes them."
+                + " Muse can add, edit, or delete events when you ask."
         ])
         #expect(calendar.destinations.first?.chips.map(\.label) == ["Your questions", "Calendar"])
 
@@ -262,31 +286,31 @@ struct PrivacyModelTests {
         #expect(line.contains("When you ask, Muse can also read your conversations and your reminders to answer. What it reads goes to Meta."))
         #expect(line.contains("Muse asks on your watch before it reads your health data and your calendar."))
         #expect(line.contains("Your conversations can include what other people said."))
-        #expect(line.contains("Muse can add events and reminders you ask for. It can change or delete reminders too, never events."))
-        #expect(!line.contains("before it changes"))
+        #expect(line.contains("Muse can add, edit, or delete events and reminders when you ask."))
+        #expect(line.contains("before it changes your calendar"))
         #expect(mix.destinations.first?.chips.map(\.label) == ["Your questions", "Conversations", "Reminders"])
         #expect(mix.placeCount == 1)
 
         let three = muse([.calendar: .allowed, .reminders: .allowed, .followUps: .allowed])
         #expect(
             three.whereItGoesFooters.first?.contains(
-                "Muse can add events and reminders you ask for. It can change or delete reminders too, never events."
+                "Muse can add, edit, or delete events and reminders when you ask."
             ) == true)
-        #expect(three.whereItGoesFooters.first?.contains("Muse can turn follow-ups into reminders or skip them when you ask.") == true)
+        #expect(three.whereItGoesFooters.first?.contains("Muse can edit follow-ups, turn them into reminders, skip them, or return them to review when you ask.") == true)
         #expect(three.whereItGoesFooters.first?.contains("before it changes") == false)
 
         // Follow-ups alone, Ask first: nothing to add, only to decide, asked once per question.
         let followUps = muse([.followUps: .ask]).whereItGoesFooters.first ?? ""
         #expect(!followUps.contains("Muse can add"))
         #expect(followUps.hasSuffix(
-            "Muse can turn follow-ups into reminders or skip them when you ask. "
+            "Muse can edit follow-ups, turn them into reminders, skip them, or return them to review when you ask. "
                 + "Muse asks on your watch before it changes your follow-ups, once per question."))
         let both = muse([.reminders: .ask, .followUps: .ask]).whereItGoesFooters.first ?? ""
         #expect(both.contains("Muse asks on your watch before it changes your reminders or your follow-ups, once per question."))
 
         // Reminders alone, Ask first: changes are asked about once per question.
         let reminders = muse([.reminders: .ask]).whereItGoesFooters.first ?? ""
-        #expect(reminders.contains("Muse can add reminders you ask for. It can change or delete them too."))
+        #expect(reminders.contains("Muse can add, edit, or delete reminders when you ask."))
         #expect(reminders.hasSuffix("Muse asks on your watch before it changes your reminders, once per question."))
 
         // Music on or off.

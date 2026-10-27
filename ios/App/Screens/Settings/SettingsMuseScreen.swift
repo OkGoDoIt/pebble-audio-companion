@@ -420,7 +420,8 @@ struct SettingsMuseScreen: View {
             ListCard {
                 sourceRow(.conversations, Copy.Muse.seeConversations, subtitle: Copy.Muse.seeConversationsSubtitle)
                 sourceRow(.health, Copy.Muse.seeHealth)
-                sourceRow(.calendar, Copy.Muse.seeCalendar, phone: model.calendarPermission)
+                sourceRow(.calendar, Copy.Muse.seeCalendar, subtitle: Copy.Muse.seeCalendarSubtitle, phone: model.calendarPermission,
+                    askFooter: Copy.Muse.accessAskFooterReminders)
                 sourceRow(
                     .reminders, Copy.Muse.seeReminders, subtitle: Copy.Muse.seeRemindersSubtitle,
                     phone: model.remindersPermission, askFooter: Copy.Muse.accessAskFooterReminders)

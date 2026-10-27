@@ -4,6 +4,22 @@ import Testing
 @testable import AppDB
 
 @Suite struct MomentStoreTests {
+    @Test func paginatedMarksKeepStableIDsAndEditsDoNotResurrectDeletes() async throws {
+        let store = MomentStore(db: try AppDatabase.inMemory())
+        for index in 0..<65 {
+            try await store.add(Moment(id: "m-\(index)", wallMs: Int64(index), onAudioClock: false, createdAtMs: Int64(index)))
+        }
+        let first = try await store.page(offset: 0, limit: 40)
+        let second = try await store.page(offset: 40, limit: 40)
+        #expect(first.count == 40 && second.count == 25)
+        #expect(Set((first + second).map(\.id)).count == 65)
+        try await store.setNote(id: "m-64", note: "edited")
+        #expect(try await store.load(id: "m-64")?.note == "edited")
+        try await store.delete(id: "m-64")
+        try await store.setNote(id: "m-64", note: "late edit")
+        #expect(try await store.load(id: "m-64") == nil)
+    }
+
     @Test func aMarkSentTwiceIsKeptOnceAndARangeReadsInOrder() async throws {
         let store = MomentStore(db: try AppDatabase.inMemory())
         let first = Moment(id: "watch-100-1", wallMs: 5_000, onAudioClock: true, createdAtMs: 6_000)

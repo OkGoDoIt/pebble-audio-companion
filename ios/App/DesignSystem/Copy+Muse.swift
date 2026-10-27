@@ -157,13 +157,14 @@ extension Copy {
         // What Muse can see (D7a, D7c-D7e), word for word from docs/privacy-model.md.
         static let seeHeader = "What Muse can see"
         static let seeConversations = "Your conversations"
-        static let seeConversationsSubtitle = "Includes what other people said."
+        static let seeConversationsSubtitle = "Conversations and saved moments, including what other people said."
         static let seeHealth = "Health"
         static let seeCalendar = "Calendar"
+        static let seeCalendarSubtitle = "Muse can add, edit, and delete events with your permission."
         static let seeReminders = "Reminders"
         static let seeRemindersSubtitle = "In Pebble Audio and Apple Reminders. Muse can also add, change, and delete them."
         static let seeFollowUps = "Follow-ups"
-        static let seeFollowUpsSubtitle = "Waiting for your review. Muse can turn one into a reminder or skip it."
+        static let seeFollowUpsSubtitle = "Suggestions to review. Muse can edit them, turn them into reminders, skip them, or return them to review."
         static let accessAsk = "Ask first"
         static let accessAllowed = "Allowed"
         static let accessOff = "Off"
@@ -172,7 +173,7 @@ extension Copy {
         static let accessAskFooterReminders =
             "The first time Muse wants to read them, your watch asks you. It also asks once per question before changing them."
         static let accessAskFooterFollowUps =
-            "The first time Muse wants to read them, your watch asks you. It also asks once per question before turning them into reminders or skipping them."
+            "The first time Muse wants to read them, your watch asks you. It also asks once per question before editing or deciding them."
         static let noPhoneAccess = "No access in iPhone Settings"
         static let allowAccess = "Allow Access"
         static let openSettings = "Open Settings"

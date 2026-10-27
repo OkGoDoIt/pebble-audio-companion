@@ -67,6 +67,34 @@ struct MuseRemindersTests {
         #expect(match("  ") == .notFound)
     }
 
+    @Test func duplicateNamesRequireAnIDAndPagingReachesEveryReminder() async throws {
+        let same = [MuseEventKitSource.ReminderList(id: "personal", name: "Work", isDefault: true),
+                    MuseEventKitSource.ReminderList(id: "business", name: "Work", isDefault: false)]
+        #expect(MuseReminders.match("Work", in: same) == .ambiguous(same))
+        let fx = RemindersFixture(access: .allowed)
+        for index in 0..<75 { _ = fx.eventKit.seed("Task \(index)", list: "L2", due: Date(timeIntervalSince1970: 1_800_000_000)) }
+        let first = await fx.run(["action": "read", "list_id": "L2"])
+        let offset = try #require(first["payload"]?["next_offset"]?.number)
+        #expect(offset == 60)
+        let second = await fx.run(["action": "read", "list_id": "L2", "offset": .number(offset)])
+        let a = try #require(first["payload"]?["reminders"]?.array)
+        let b = try #require(second["payload"]?["reminders"]?.array)
+        #expect(Set((a + b).compactMap { $0["id"]?.string }).count == 75)
+        #expect(second["payload"]?["next_offset"] == .null)
+        #expect(await fx.run(["action": "add", "title": "Eggs", "list_id": "missing"])["ok"]?.bool == false)
+        #expect(fx.eventKit.all().count == 75)
+    }
+
+    @Test func oldCalendarReadAndAddGrantDoesNotAuthorizeDeletingEvents() async throws {
+        let fx = RemindersFixture(access: .allowed)
+        fx.preferences.update { $0.dataAccess[.calendar] = .allowed }
+        // The default fake answer is Not Now. The API must not be reached on the old grant.
+        let result = await fx.tools.run(MuseTools.calendarCommand, ["action": "delete", "id": "event-id"], watch: fx.watch)
+        #expect(result["ok"]?.bool == false)
+        #expect(fx.watch.questions() == [MuseTools.changeQuestion(.calendar)])
+        #expect(!fx.preferences.current.value.additionalChangeScopes.contains("calendar_full"))
+    }
+
     // MARK: - Adding to a named list
 
     @Test func anAddLandsInTheNamedListAndSaysWhichOne() async throws {
@@ -296,7 +324,10 @@ struct MuseRemindersTests {
         // The person's own default list stays the default for an add that names none.
         #expect(lists["payload"]?["default_list"]?.string == "TODO")
 
-        let added = await fx.run(["action": "add", "title": "Eggs", "list": "pebble audio", "due": "2026-10-23T09:00:00-05:00"])
+        let timed = await fx.run(["action": "add", "title": "Eggs", "list": "pebble audio", "due": "2026-10-23T09:00:00-05:00"])
+        #expect(timed["ok"]?.bool == false)
+        #expect(data.open().count == 1)
+        let added = await fx.run(["action": "add", "title": "Eggs", "list": "pebble audio", "due": "2026-10-23"])
         let reminder = try #require(added["payload"]?["added"])
         #expect(reminder["list"]?.string == "Pebble Audio")
         // Kept by the day: the reply says the day, not a time it didn't keep.

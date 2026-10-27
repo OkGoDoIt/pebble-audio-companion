@@ -10,6 +10,8 @@ public protocol MuseDataProvider: Sendable {
     /// Conversations that overlap `from`–`to`, newest first, their text cut to fit `characters`
     /// in all; with `query`, only the conversations (and passages) that match it.
     func conversations(from: Date, to: Date, query: String?, characters: Int) async -> [MuseConversationText]
+    func conversationPage(from: Date, to: Date, query: String?, offset: Int, limit: Int, characters: Int) async -> MuseConversationPage?
+    func conversation(id: String, textOffset: Int, characters: Int) async -> MuseConversationText?
     /// An answer to `question` from the person's own AI, reading their recordings. Nil when no AI
     /// is set up or it couldn't answer.
     func answerFromRecordings(_ question: String) async -> String?
@@ -39,14 +41,31 @@ public protocol MuseDataProvider: Sendable {
     /// Turns a follow-up waiting for review into a reminder, or skips it. Nil when no follow-up
     /// with that id is waiting.
     func decideFollowUp(id: String, remind: Bool) async -> MuseFollowUpDecision?
+    func followUpPage(scope: String, offset: Int, limit: Int) async -> [MuseFollowUp]?
+    func changeFollowUp(id: String, action: String, edit: MuseFollowUpEdit) async -> MuseFollowUpDecision?
     /// Pauses recording for `minutes` (0: until resumed). False when recording isn't on.
     func pauseRecording(minutes: Int) async -> Bool
     func resumeRecording() async -> Bool
     /// Marks this moment in the recording, with an optional label.
     func markMoment(_ label: String?) async -> Bool
+    func recordingStatus() async -> MuseRecordingSnapshot?
+    func saveMoment(_ note: String?) async -> MuseMoment?
+    func moments(offset: Int, limit: Int) async -> [MuseMoment]?
+    func moment(id: String, includeContext: Bool) async -> MuseMoment?
+    func editMoment(id: String, note: String) async -> MuseMoment?
+    func deleteMoment(id: String) async -> Bool
 }
 
 public struct MuseConversationText: Sendable, Equatable {
+    public var id: String = ""
+    public var link: String? = nil
+    public var truncated: Bool = false
+    public var textOffset: Int = 0
+    public var nextTextOffset: Int? = nil
+    public var textScope: String = "conversation"
+    public var processingState: String? = nil
+    public var isLive: Bool = false
+    public var timingIncomplete: Bool = false
     public let start: Date
     public let end: Date?
     public let title: String?
@@ -62,6 +81,8 @@ public struct MuseConversationText: Sendable, Equatable {
 
 /// A follow-up waiting for review: something the app noticed, not something decided.
 public struct MuseFollowUp: Sendable, Equatable {
+    public var stage: String = "suggested"
+    public var priority: Int = 1
     public let id: String
     public let text: String
     public let due: Date?
@@ -106,6 +127,9 @@ public struct MuseAppReminder: Sendable, Equatable {
 
 /// Where a follow-up went when it was decided.
 public struct MuseFollowUpDecision: Sendable, Equatable {
+    public var stage: String = "reminder"
+    public var deliveryPending: Bool = false
+    public var due: Date? = nil
     public let id: String
     public let title: String
     /// Its reminder is kept in Apple Reminders.
@@ -193,6 +217,7 @@ actor MuseTools {
     static let conversationsCommand = "conversations"
     static let followUpsCommand = "followups"
     static let recordingCommand = "recording"
+    static let momentsCommand = "moments"
 
     /// The most transcript text one call sends to Meta.
     static let conversationCharacters = 6_000
@@ -306,15 +331,24 @@ actor MuseTools {
         }
         if prefs.access(.calendar) != .off {
             c[calendarCommand] = [
-                "description": "The user's calendar on their phone: list events in a time range, or add an event.",
-                "required": ["action": param("string", "list or add.")],
+                "description": "Read calendars and paginated event occurrences. Add, get, edit, or delete by returned id. Edits preserve omitted fields. Repeating-event changes require span occurrence or future; never choose a scope the user did not request. all_day end is exclusive. Returned ids may change after edits; always use the latest id.",
+                "required": ["action": param("string", "calendars, list, get, add, edit, or delete.")],
                 "optional": [
                     "from": param("string", "With list: start of the range, \(date). Today if not given."),
                     "to": param("string", "With list: end of the range, \(date). The end of the from day if not given."),
                     "title": param("string", "With add: the event's title."),
                     "start": param("string", "With add: when it starts, \(date)."),
                     "end": param("string", "With add: when it ends. An hour after the start if not given."),
-                    "notes": param("string", "With add: notes for the event."),
+                    "notes": param("string", "With add/edit: notes; empty clears."),
+                    "id": param("string", "With get/edit/delete: exact occurrence id returned by list."),
+                    "calendar_id": param("string", "Calendar id from calendars; filters list or selects destination for add/edit."),
+                    "span": param("string", "With edit/delete: occurrence or future; required for repeating events."),
+                    "all_day": param("boolean", "With add/edit: all-day event; start/end are dates, end exclusive."),
+                    "location": param("string", "With add/edit: location; empty clears."),
+                    "timezone": param("string", "With add/edit: IANA timezone, such as America/New_York, or floating."),
+                    "recurrence": param("object", "With add/edit: {frequency: daily/weekly/monthly/yearly, interval: positive integer, weekdays: [1..7, Sunday=1], month_days: [-31..-1 or 1..31] for monthly, months: [1..12] for yearly, count: positive integer OR until: offset date-time}. Omit to preserve; null removes. Rule changes require span future on a repeating event."),
+                    "offset": param("integer", "With list: next_offset from the previous page, default 0."),
+                    "limit": param("integer", "With list: 1-100, default 40."),
                 ],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
@@ -335,6 +369,11 @@ actor MuseTools {
                     "notes": param("string", "With add or edit: notes. With edit, none removes them."),
                     "completed": param("string", "With edit: true marks it done, false marks it not done."),
                     "include_completed": param("string", "With read: true also includes reminders completed in the last 30 days."),
+                    "list_id": param("string", "Exact id from lists; use instead of list when names collide across accounts."),
+                    "offset": param("integer", "With read: next_offset from the previous page, default 0."),
+                    "limit": param("integer", "With read: 1-100, default 60."),
+                    "priority": param("integer", "With add/edit: Apple priority 0 none, 1-4 high, 5 medium, 6-9 low. Omit to preserve."),
+                    "recurrence": param("object", "With add/edit: frequency daily/weekly/monthly/yearly, interval, weekdays (1=Sunday), month_days for monthly, months for yearly, count OR until (offset date-time). null clears; omit preserves. Apple Reminders only; completing a repeating reminder advances its occurrence."),
                 ],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
@@ -342,9 +381,13 @@ actor MuseTools {
         if prefs.access(.conversations) != .off, hasData {
             c[conversationsCommand] = [
                 "description": "The user's recorded conversations from their Pebble watch (other people's words included). search returns transcript text for a time range and/or words to look for; ask has the user's own AI read their recordings and returns only its answer; recap returns a summary of a day or a week.",
-                "required": ["action": param("string", "search, ask or recap.")],
+                "required": ["action": param("string", "search, get, ask, or recap.")],
                 "optional": [
                     "query": param("string", "With search: words to look for. With ask: the question."),
+                    "id": param("string", "With get: conversation id from search."),
+                    "offset": param("integer", "With search: next_offset from the previous page, default 0."),
+                    "limit": param("integer", "With search: 1-100 conversations, default 20."),
+                    "text_offset": param("integer", "With get: next_text_offset from the previous part, default 0."),
                     "from": param("string", "With search: start of the range, \(date). The last 24 hours if not given."),
                     "to": param("string", "With search: end of the range, \(date). Now if not given."),
                     "date": param("string", "With recap: the day, \(date). Today if not given."),
@@ -357,8 +400,15 @@ actor MuseTools {
             c[followUpsCommand] = [
                 "description":
                     "The user's follow-ups: things Pebble Audio noticed in their recorded conversations that they might want to act on, waiting for them to review. A follow-up is a suggestion, not a commitment and not their to-do list: never present follow-ups as things they have to do. read returns the ones waiting, each with its id, the task, when it was said, the conversation, the words said, and why it might matter. remind turns one into a reminder, and skip sets one aside; do either only when the user asks. To add something the user wants to remember, use the reminders tool.",
-                "required": ["action": param("string", "One of: read, remind, skip.")],
-                "optional": ["id": param("string", "With remind and skip: the follow-up's id, from read.")],
+                "required": ["action": param("string", "One of: read, remind, skip, edit, reopen.")],
+                "optional": ["id": param("string", "With changes: the follow-up id from read."),
+                    "scope": param("string", "With read: review (default), skipped, or decided."),
+                    "offset": param("integer", "With read: next_offset from the previous page."),
+                    "limit": param("integer", "With read: 1-100, default 40."),
+                    "title": param("string", "With edit/remind: replace the suggested task before accepting."),
+                    "due": param("string", "With edit/remind: date YYYY-MM-DD, or none to clear."),
+                    "priority": param("integer", "With edit/remind: 0 low, 1 normal, or 2 high."),
+                    "list_id": param("string", "With remind: Apple Reminders list id, when Apple is the configured reminder home. Omit to use the configured home. Reopen returns a decided suggestion to review and removes its linked reminder.")],
                 "timeout_ms": .number(Double(dataCallLimitSeconds * 1000)),
             ]
         }
@@ -382,6 +432,20 @@ actor MuseTools {
                 "optional": ["action": param("string", "start (default) or stop."),
                     "seconds": param("integer", "With start: 1-30, default 10.")], "timeout_ms": 15_000]
         }
+        if actions.contains(.recording), hasData {
+            c[recordingCommand] = ["description": "Read recording status, request pause/resume, or save a marked moment with a stable id. Status separates intent, connection, and observed capture; unknown capture is null. A mark can be saved without audio and is not a reminder.",
+                "required": ["action": param("string", "status, pause, resume, or mark.")],
+                "optional": ["minutes": param("integer", "With pause: 1-1440; omit to pause until resumed."),
+                    "label": param("string", "With mark: optional note, up to 2000 characters.")], "timeout_ms": 20_000]
+        }
+        if prefs.access(.conversations) != .off, hasData {
+            c[momentsCommand] = ["description": "Read saved marked moments, including marks without audio; get shows available recording context. Edit only changes the mark's note. Delete removes the mark while preserving recordings. A mark is not a reminder. Read/get use recording access; changes ask separately.",
+                "required": ["action": param("string", "list, get, edit, or delete.")],
+                "optional": ["id": param("string", "Saved moment id for get/edit/delete."),
+                    "note": param("string", "New note for edit, up to 2000 characters; empty clears it."),
+                    "offset": param("integer", "Next offset from a previous list page, default zero."),
+                    "limit": param("integer", "Page size 1-100, default 40.")], "timeout_ms": 120_000]
+        }
         return .object(c)
     }
 
@@ -398,6 +462,18 @@ actor MuseTools {
     }
 
     func run(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide, invocationID: String? = nil) async -> MuseJSON {
+        let result = await runAuthorized(command, params, watch: watch, invocationID: invocationID)
+        // A provider can yield while reading. Turning a source off during that read must
+        // suppress the eventual content, including a result shared with an in-flight retry.
+        if result["payload"] != nil,
+           Self.commands(for: preferences.current.value, hasData: data != nil)[command] == nil {
+            return ["ok": false, "code": "access_revoked", "error": "Access was turned off while the request was running. Its result has been withheld.",
+                "change_may_have_completed": .bool(Self.changesState(command, params))]
+        }
+        return result
+    }
+
+    private func runAuthorized(_ command: String, _ params: MuseJSON, watch: any MuseWatchSide, invocationID: String?) async -> MuseJSON {
         guard Self.commands(for: preferences.current.value, hasData: data != nil)[command] != nil else {
             return await perform(command, params, watch: watch)
         }
@@ -469,7 +545,9 @@ actor MuseTools {
         case musicCommand: return params["action"]?.string != "now_playing"
         case quietTimeCommand, openAppCommand, findCommand: return params["state"]?.string != "status" && params["action"]?.string != "status" && params["action"]?.string != "list"
         case recordingCommand: return params["action"]?.string != "status"
+        case momentsCommand: return ["edit", "delete"].contains(params["action"]?.string ?? "")
         case remindersCommand: return MuseReminders.Action(params["action"]?.string)?.changes == true
+        case followUpsCommand: return [.edit, .reopen].contains(FollowUpAction(params["action"]?.string))
         case calendarCommand: return ["edit", "update", "delete"].contains(params["action"]?.string ?? "")
         default: return false
         }
@@ -611,15 +689,23 @@ actor MuseTools {
         case Self.recordingCommand:
             guard prefs.watchActions.contains(.recording), let data else { return Self.turnedOff }
             return await recording(params, data: data)
+        case Self.momentsCommand:
+            guard let data else { return Self.turnedOff }
+            let changes = ["edit", "delete"].contains(params["action"]?.string ?? "")
+            // Existing transcript read permission never silently authorizes deleting marks.
+            if let refusal = await permission(.conversations, prefs: prefs, watch: watch, deadline: deadline,
+                                               change: changes, changeScope: "moments") { return refusal }
+            return await moments(params, data: data)
         case Self.healthCommand:
             if let refusal = await permission(.health, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
             return await health(params, watch: watch)
         case Self.calendarCommand:
             let action = params["action"]?.string?.lowercased() ?? "list"
-            guard ["list", "add"].contains(action) else { return Self.error("action must be list or add") }
+            guard ["calendars", "list", "get", "add", "edit", "delete"].contains(action) else { return Self.error("action must be calendars, list, get, add, edit, or delete") }
             if let error = Self.calendarParameterError(params, action: action) { return Self.error(error) }
             if let refusal = await phoneAccess(.calendar, prefs: prefs, watch: watch, deadline: deadline,
-                                               change: action == "add") { return refusal }
+                                               change: ["add", "edit", "delete"].contains(action),
+                                               changeScope: ["edit", "delete"].contains(action) ? "calendar_full" : nil) { return refusal }
             return calendar(params)
         case Self.remindersCommand:
             return await reminders(params, prefs: prefs, watch: watch, deadline: deadline)
@@ -870,7 +956,7 @@ actor MuseTools {
     /// `change`: the call changes something (see `permission`).
     private func phoneAccess(
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
-        change: Bool = false
+        change: Bool = false, changeScope: String? = nil
     ) async -> MuseJSON? {
         let generation = questionGeneration
         let what = source == .calendar ? "calendar" : "reminders"
@@ -878,7 +964,7 @@ actor MuseTools {
             _ = await watch.runWatchAction(.notice(Self.refusedNotice(what)), wait: .seconds(5))
             return Self.reply(.phoneRefused, source)
         }
-        if let refusal = await permission(source, prefs: prefs, watch: watch, deadline: deadline, change: change) { return refusal }
+        if let refusal = await permission(source, prefs: prefs, watch: watch, deadline: deadline, change: change, changeScope: changeScope) { return refusal }
         guard !phoneAuthorized(source) else { return nil }
         // Allowed on the watch, but iOS hasn't been asked: the app asks the next time it is
         // opened, once. The call is held open meanwhile, so the read goes on if the person does
@@ -950,8 +1036,9 @@ actor MuseTools {
     /// docs/privacy-model.md, section 4.
     static func changeQuestion(_ source: MuseSource) -> String {
         switch source {
-        case .followUps: return "Let Muse turn your follow-ups into reminders or skip them? What it reads goes to Meta."
-        case .calendar: return "Let Muse add events to your calendar? What it reads goes to Meta."
+        case .followUps: return "Let Muse edit, accept, skip, or reopen your follow-ups? What it reads goes to Meta."
+        case .calendar: return "Let Muse add, edit, or delete calendar events? What it reads goes to Meta."
+        case .conversations: return "Let Muse edit notes on your saved moments or delete those marks? What it reads goes to Meta."
         default: return "Let Muse add to, change, or delete your \(sourceName(source))? What it reads goes to Meta."
         }
     }
@@ -1004,11 +1091,14 @@ actor MuseTools {
     /// off.
     private func permission(
         _ source: MuseSource, prefs: MusePreferences, watch: any MuseWatchSide, deadline: ContinuousClock.Instant,
-        change: Bool = false
+        change: Bool = false, changeScope: String? = nil
     ) async -> MuseJSON? {
         let generation = questionGeneration
+        func needsNewGrant(_ value: MusePreferences) -> Bool {
+            change && changeScope.map { !value.additionalChangeScopes.contains($0) } == true
+        }
         switch prefs.access(source) {
-        case .allowed: return nil
+        case .allowed: if !needsNewGrant(prefs) { return nil }
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
@@ -1021,7 +1111,7 @@ actor MuseTools {
         }
         // The answer may have come while waiting.
         switch preferences.current.value.access(source) {
-        case .allowed: return nil
+        case .allowed: if !needsNewGrant(preferences.current.value) { return nil }
         case .off: return Self.reply(.notAllowed, source)
         case .ask: break
         }
@@ -1050,7 +1140,10 @@ actor MuseTools {
             log("\(source.rawValue): \(change ? "changes" : "reading") allowed once on the watch")
             return nil
         case (.done?, 1?):
-            preferences.update { $0.dataAccess[source] = .allowed }
+            preferences.update {
+                $0.dataAccess[source] = .allowed
+                if change, let changeScope { $0.additionalChangeScopes.insert(changeScope) }
+            }
             log("\(source.rawValue): always allowed on the watch")
             return nil
         case (.done?, 3?):
@@ -1105,103 +1198,182 @@ actor MuseTools {
         if metric == .heartRate { return await heartRate(days: days, watch: watch) }
         let result = await watch.runWatchAction(.health(metric, days: days), wait: .seconds(10))
         guard result?.status == .done, let text = result?.textString else {
-            return Self.error("The watch has no \(params["metric"]?.string ?? "health") data.")
+            return Self.outcome(result) { _ in .null }
         }
-        let numbers = text.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? -1 }
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: clock())
-        let formatter = Self.dayFormatter
-        let daysJSON: [MuseJSON] = numbers.enumerated().map { index, value in
-            let day = calendar.date(byAdding: .day, value: -index, to: today) ?? today
-            var entry: [String: MuseJSON] = ["date": .string(formatter.string(from: day))]
+        let fields = text.split(separator: ",", omittingEmptySubsequences: false)
+        let numbers = fields.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard numbers.count == days, fields.count == days, numbers.allSatisfy({ $0 >= -1 }) else {
+            return Self.error("invalid_response: The watch returned incomplete or malformed health data.")
+        }
+        let context = await healthContext(watch)
+        let entries = numbers.enumerated().map { index, value -> MuseJSON in
+            var entry = context.day(index)
             entry[unit] = value < 0 ? .null : .number((Double(value) * scale).rounded())
+            entry["coverage"] = .string(value < 0 ? "missing" : "available")
             return .object(entry)
         }
-        return ["ok": true, "payload": ["days": .array(daysJSON)]]
+        var payload = context.payload
+        payload["days"] = .array(entries)
+        payload["missing_days"] = .number(Double(numbers.filter { $0 < 0 }.count))
+        return ["ok": true, "payload": .object(payload)]
     }
 
-    /// Heart rate: each day's average, lowest and highest from the watch's minute history, and
-    /// the latest reading. Background heart rate off is said plainly, so Muse can say where to
-    /// turn it on rather than that there is no data.
+    private struct HealthContext {
+        var now: Date
+        var offset: Int?
+        var abbreviation: String?
+        var watchNow: Date?
+        var payload: [String: MuseJSON] {
+            ["source": "watch", "observed_at": .string(MuseTools.isoFormatter.string(from: now)),
+             "timezone_source": .string(offset == nil ? "unknown" : "watch"),
+             "utc_offset_seconds": offset.map { .number(Double($0)) } ?? .null,
+             "timezone_abbreviation": abbreviation.map(MuseJSON.string) ?? .null,
+             "sample_coverage": "unknown", "today_is_partial": true]
+        }
+        func day(_ index: Int) -> [String: MuseJSON] {
+            var day: [String: MuseJSON] = ["day_index": .number(Double(index)), "date": .null]
+            if let offset, let zone = TimeZone(secondsFromGMT: offset), let watchNow {
+                var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+                let date = calendar.date(byAdding: .day, value: -index, to: watchNow) ?? watchNow
+                let components = calendar.dateComponents([.year, .month, .day], from: date)
+                day["date"] = .string(String(format: "%04d-%02d-%02d", components.year!, components.month!, components.day!))
+            }
+            return day
+        }
+    }
+
+    private func healthContext(_ watch: any MuseWatchSide) async -> HealthContext {
+        var context = HealthContext(now: clock())
+        let result = await watch.runWatchAction(.inspect(0), wait: .seconds(5))
+        if result?.status == .done, let text = result?.textString {
+            let lines = text.components(separatedBy: "\n")
+            let fields = lines[0].split(separator: ",").compactMap { Int($0) }
+            if lines.count == 2, fields.count == 4, fields[0] == 1,
+               (-86400...86400).contains(fields[2]) {
+                context.offset = fields[2]; context.abbreviation = lines[1]
+                context.watchNow = Date(timeIntervalSince1970: Double(fields[1]))
+            }
+        }
+        return context
+    }
+
     private func heartRate(days: Int, watch: any MuseWatchSide) async -> MuseJSON {
         let latest = await watch.runWatchAction(.health(.heartRate, days: 1), wait: .seconds(10))
         if latest?.status == .failed, latest?.textString == WatchActionRequest.heartRateOff {
-            return Self.error(
-                "heart_rate_off: Heart rate monitoring is turned off on the watch. The person can turn it on in the watch's Health settings.")
+            return ["ok": false, "code": "heart_rate_off", "error": "heart_rate_off: Heart rate monitoring is turned off on the watch. The person can turn it on in the watch's Health settings."]
         }
         var payload: [String: MuseJSON] = [:]
         if latest?.status == .done, let text = latest?.textString {
-            let numbers = text.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? -1 }
-            if let bpm = numbers.first, bpm > 0 {
-                payload["latest"] = [
-                    "bpm": .number(Double(bpm)),
-                    "measured_seconds_ago": numbers.count > 1 && numbers[1] >= 0 ? .number(Double(numbers[1])) : .null,
-                ]
+            let fields = text.split(separator: ",", omittingEmptySubsequences: false)
+            let numbers = fields.compactMap { Int($0) }
+            guard numbers.count == 2, fields.count == 2, numbers[0] >= -1, numbers[1] >= -1 else { return Self.error("invalid_response: Malformed latest heart rate.") }
+            if numbers[0] > 0 {
+                payload["latest"] = ["bpm": .number(Double(numbers[0])),
+                    "measured_seconds_ago": numbers[1] >= 0 ? .number(Double(numbers[1])) : .null]
             }
         }
-        // By day: a few seconds, as the watch reads its minute history a slice at a time.
         let daily = await watch.runWatchAction(.health(.heartRateDaily, days: days), wait: .seconds(30))
+        var entries: [[String: MuseJSON]] = []
         if daily?.status == .done, let text = daily?.textString {
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: clock())
-            payload["days"] = .array(text.split(separator: ",").enumerated().map { index, field in
-                let day = calendar.date(byAdding: .day, value: -index, to: today) ?? today
-                var entry: [String: MuseJSON] = ["date": .string(Self.dayFormatter.string(from: day))]
-                let parts = field.split(separator: "/").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                if parts.count == 3, parts[0] > 0 {
-                    entry["average_bpm"] = .number(Double(parts[0]))
-                    entry["lowest_bpm"] = .number(Double(parts[1]))
-                    entry["highest_bpm"] = .number(Double(parts[2]))
-                } else {
-                    entry["average_bpm"] = .null
-                }
-                return .object(entry)
-            })
+            let fields = text.split(separator: ",", omittingEmptySubsequences: false)
+            guard fields.count == days else { return Self.error("invalid_response: Incomplete heart-rate days.") }
+            for field in fields {
+                if field == "-1" { entries.append(["average_bpm": .null, "coverage": "missing"]); continue }
+                let parts = field.split(separator: "/", omittingEmptySubsequences: false).compactMap { Int($0) }
+                guard parts.count == 3, parts[1] > 0, parts[1] <= parts[0], parts[0] <= parts[2] else { return Self.error("invalid_response: Malformed heart-rate summary.") }
+                entries.append(["average_bpm": .number(Double(parts[0])), "lowest_bpm": .number(Double(parts[1])),
+                    "highest_bpm": .number(Double(parts[2])), "coverage": "available"])
+            }
+        } else {
+            payload["daily_error"] = Self.outcome(daily) { _ in .null }
         }
-        guard !payload.isEmpty else {
-            return Self.error("no_heart_rate_data: The watch has no heart rate readings for that time.")
+        guard payload["latest"] != nil || !entries.isEmpty else {
+            return Self.outcome(daily ?? latest) { _ in ["days": [], "latest": .null] }
         }
+        let context = await healthContext(watch)
+        payload.merge(context.payload) { old, _ in old }
+        payload["days"] = .array(entries.enumerated().map { index, entry in .object(entry.merging(context.day(index)) { old, _ in old }) })
+        payload["missing_days"] = .number(Double(entries.filter { $0["coverage"] == "missing" }.count))
+        payload["latest"] = payload["latest"] ?? .null
+        if latest?.status != .done { payload["latest_error"] = Self.outcome(latest) { _ in .null } }
         return ["ok": true, "payload": .object(payload)]
     }
 
     private static func calendarParameterError(_ params: MuseJSON, action: String) -> String? {
-        for key in action == "add" ? ["start", "end"] : ["from", "to"] where params[key] != nil {
+        for key in ["start", "end", "from", "to"] where params[key] != nil {
             guard let text = params[key]?.string, date(text) != nil else { return "Invalid \(key) date." }
         }
-        if action == "add" {
-            guard let title = params["title"]?.string, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let start = date(params["start"]?.string) else { return "add needs a title and a start" }
-            if let end = date(params["end"]?.string), end.date <= start.date { return "end must be after start" }
-        } else if let from = date(params["from"]?.string), let to = date(params["to"]?.string),
-                  to.date < from.date || (to.hasTime && to.date == from.date) {
-            return "to must be after from"
+        for key in ["title", "notes", "location", "timezone", "calendar_id", "id"] where params[key] != nil {
+            guard params[key]?.string != nil else { return "\(key) must be text" }
         }
+        if let title = params["title"]?.string, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "title cannot be empty" }
+        if ["get", "edit", "delete"].contains(action), params["id"]?.string?.isEmpty != false { return "\(action) needs an event id from list" }
+        if params["span"] != nil, !["occurrence", "future"].contains(params["span"]?.string ?? "") { return "span must be occurrence or future" }
+        if let zone = params["timezone"]?.string, zone != "floating", TimeZone(identifier: zone) == nil { return "timezone must be an IANA name or floating" }
+        if params["all_day"] != nil, params["all_day"]?.bool == nil { return "all_day must be a boolean" }
+        if let recurrence = params["recurrence"], (try? MuseRecurrence.parse(recurrence)) == nil { return "Invalid recurrence. Use frequency, interval, weekdays (1=Sunday), month_days, months, and either count or until (an offset date-time); none clears it." }
+        if action == "add", params["title"]?.string == nil || date(params["start"]?.string) == nil { return "add needs a title and a start" }
+        if let start = date(params["start"]?.string), let end = date(params["end"]?.string), end.date <= start.date { return "end must be after start" }
+        if params["all_day"]?.bool == true {
+            for key in ["start", "end"] where date(params[key]?.string)?.hasTime == true { return "All-day start and end use YYYY-MM-DD; end is exclusive" }
+        }
+        if action == "list" {
+            guard pagination(params) != nil else { return "Invalid offset or limit" }
+            if let from = date(params["from"]?.string), let to = date(params["to"]?.string),
+                to.date < from.date || (to.hasTime && to.date == from.date) { return "to must be after from" }
+        }
+        if action == "edit", !["title", "start", "end", "all_day", "location", "notes", "timezone", "calendar_id", "recurrence"].contains(where: { params[$0] != nil }) { return "edit needs at least one changed field" }
         return nil
     }
 
     private func calendar(_ params: MuseJSON) -> MuseJSON {
-        switch params["action"]?.string?.lowercased() {
-        case "list"?, nil:
-            let now = clock()
-            let from = Self.date(params["from"]?.string)?.date ?? Calendar.current.startOfDay(for: now)
-            let to = Self.date(params["to"]?.string).map { $0.hasTime ? $0.date : Calendar.current.date(byAdding: .day, value: 1, to: $0.date) ?? $0.date }
-                ?? Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: from)) ?? from
-            let events = eventKit.events(from: from, to: to, limit: 40)
-            return ["ok": true, "payload": ["events": .array(events.map { Self.json($0) })]]
-        case "add"?:
-            guard let title = params["title"]?.string, !title.isEmpty, let start = Self.date(params["start"]?.string) else {
-                return Self.error("add needs a title and a start")
+        let action = params["action"]?.string?.lowercased() ?? "list"
+        do {
+            switch action {
+            case "calendars":
+                return ["ok": true, "payload": ["calendars": .array(eventKit.calendars().map(MuseReminders.json))]]
+            case "list":
+                let from = Self.date(params["from"]?.string)?.date ?? Calendar.current.startOfDay(for: clock())
+                let to = Self.date(params["to"]?.string).map { $0.hasTime ? $0.date : Calendar.current.date(byAdding: .day, value: 1, to: $0.date) ?? $0.date }
+                    ?? Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: from)) ?? from
+                guard to > from, let page = Self.pagination(params) else { return Self.error("Invalid range or page") }
+                let events = try eventKit.eventPage(from: from, to: to, calendarID: params["calendar_id"]?.string, offset: page.offset, limit: page.limit + 1)
+                return ["ok": true, "payload": ["events": .array(events.prefix(page.limit).map(Self.json)),
+                    "next_offset": events.count > page.limit ? .number(Double(page.offset + page.limit)) : .null,
+                    "from": .string(Self.isoFormatter.string(from: from)), "to_exclusive": .string(Self.isoFormatter.string(from: to))]]
+            case "get":
+                return ["ok": true, "payload": Self.json(try eventKit.event(id: params["id"]?.string ?? ""))]
+            case "delete":
+                let event = try eventKit.deleteEvent(id: params["id"]?.string ?? "", span: params["span"]?.string)
+                return ["ok": true, "payload": ["deleted": Self.json(event), "span": params["span"] ?? "occurrence"]]
+            case "add", "edit":
+                var change = MuseEventChange()
+                change.title = params["title"]?.string
+                let start = Self.date(params["start"]?.string)
+                change.start = start?.date; change.end = Self.date(params["end"]?.string)?.date
+                change.startDay = start?.hasTime == false ? params["start"]?.string : nil
+                change.endDay = Self.date(params["end"]?.string)?.hasTime == false ? params["end"]?.string : nil
+                change.allDay = params["all_day"]?.bool ?? (start?.hasTime == false ? true : nil)
+                change.location = params["location"]?.string; change.notes = params["notes"]?.string
+                change.calendarID = params["calendar_id"]?.string
+                change.timezone = params["timezone"]?.string.map { $0 == "floating" ? "" : $0 }
+                if let raw = params["recurrence"] { change.recurrence = try MuseRecurrence.parse(raw) }
+                let event = try eventKit.saveEvent(id: action == "edit" ? params["id"]?.string : nil,
+                                                  change: change, span: params["span"]?.string)
+                return ["ok": true, "payload": .object([action == "add" ? "added" : "updated": Self.json(event)])]
+            default: return Self.error("Unsupported calendar action")
             }
-            do {
-                let event = try eventKit.addEvent(
-                    title: title, start: start.date, end: Self.date(params["end"]?.string)?.date, notes: params["notes"]?.string)
-                return ["ok": true, "payload": ["added": Self.json(event)]]
-            } catch {
-                return Self.error("The event couldn't be added.")
-            }
-        default:
-            return Self.error("action must be list or add")
-        }
+        } catch MuseEventKitSource.Failure.recurrenceScopeRequired {
+            return Self.error("Choose span occurrence or future for a repeating event. A recurrence-rule change requires future. Nothing was changed.")
+        } catch MuseEventKitSource.Failure.noSuchEvent {
+            return Self.error("The event occurrence is unavailable or changed. List the calendar again before retrying.")
+        } catch MuseEventKitSource.Failure.listCannotChange {
+            return Self.error("That calendar is read-only. Nothing was changed.")
+        } catch MuseEventKitSource.Failure.noSuchList {
+            return Self.error("That calendar id is unavailable. Read calendars to choose an existing calendar.")
+        } catch MuseEventKitSource.Failure.invalidEvent {
+            return Self.error("The event needs a title and an end after its start. Nothing was saved.")
+        } catch { return Self.error("The calendar request could not be completed.") }
     }
 
     // MARK: - Reminders
@@ -1269,6 +1441,7 @@ actor MuseTools {
     /// Reminders can't be read, and the call names nothing but that list and its reminders.
     private func needsApple(_ params: MuseJSON, appList: Bool) -> Bool {
         guard appList, !eventKit.remindersAuthorized else { return true }
+        if let id = params["list_id"]?.string, id != MuseReminders.appListID { return true }
         if let id = params["id"]?.string?.trimmingCharacters(in: .whitespaces), !id.isEmpty, MuseReminders.appID(id) == nil {
             return true
         }
@@ -1324,7 +1497,10 @@ actor MuseTools {
     private func resolve(_ request: MuseReminders.Request, namesAllowed: Bool, appList: Bool) async -> Resolution {
         let lists = allLists(appList: appList)
         var list: MuseEventKitSource.ReminderList?
-        if let name = request.list {
+        if let id = request.listID {
+            guard let selected = lists.first(where: { $0.id == id }) else { return .failed(Self.error("No reminders list has that id; call lists again.")) }
+            list = selected
+        } else if let name = request.list {
             switch MuseReminders.match(name, in: lists) {
             case .found(let found): list = found
             case .ambiguous(let candidates): return .failed(MuseReminders.ambiguousList(name, candidates, namesAllowed: namesAllowed))
@@ -1348,6 +1524,8 @@ actor MuseTools {
         // The Pebble Audio list is the app's own: no notes, and nothing crosses to Apple's.
         let inApp = (existing?.listID ?? list?.id) == MuseReminders.appListID
         if inApp, request.notes != nil, request.action != .delete { return .failed(MuseReminders.appNoNotes) }
+        if inApp, request.priority != nil || request.recurrence != nil { return .failed(Self.error("The Pebble Audio reminders list does not support priority or recurrence through this tool. Nothing was changed.")) }
+        if inApp, case .set(_, let hasTime)? = request.due, hasTime { return .failed(Self.error("The Pebble Audio list supports a due day only. Use YYYY-MM-DD. Nothing was changed.")) }
         if let existing, let list, (existing.listID == MuseReminders.appListID) != (list.id == MuseReminders.appListID) {
             return .failed(MuseReminders.noMoveAcrossHomes)
         }
@@ -1366,7 +1544,7 @@ actor MuseTools {
                 if case .set(let date, let hasTime)? = request.due { due = (date, hasTime) }
                 let added = try eventKit.addReminder(
                     title: request.title ?? "", due: due?.0, dueHasTime: due?.1 ?? false, notes: request.notes,
-                    listID: ready.list?.id)
+                    listID: ready.list?.id, priority: request.priority, recurrence: request.recurrence)
                 log("reminders: added to a list")
                 return ["ok": true, "payload": ["added": MuseReminders.json(added)]]
             case .edit:
@@ -1438,6 +1616,7 @@ actor MuseTools {
     private static func change(_ request: MuseReminders.Request, listID: String?) -> MuseEventKitSource.ReminderChange {
         var change = MuseEventKitSource.ReminderChange(
             title: request.title, notes: request.notes, listID: listID, completed: request.completed)
+        change.priority = request.priority; change.recurrence = request.recurrence
         switch request.due {
         case .set(let date, let hasTime)?: change.due = .set(date, hasTime: hasTime)
         case .clear?: change.due = .clear
@@ -1476,7 +1655,21 @@ actor MuseTools {
     private func readReminders(_ params: MuseJSON, appList: Bool) async -> MuseJSON {
         var listIDs: [String]?
         var listName: String?
-        if let name = params["list"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+        guard let page = Self.pagination(params, defaultLimit: Self.remindersPerRead) else { return Self.error("Invalid offset or limit") }
+        for key in ["id", "list", "list_id"] where params[key] != nil {
+            guard params[key]?.string?.isEmpty == false else { return Self.error("\(key) must be nonempty text") }
+        }
+        if params["include_completed"] != nil, MuseReminders.bool(params["include_completed"]) == nil { return Self.error("include_completed must be true or false") }
+        if params["id"] != nil, params["list"] != nil || params["list_id"] != nil { return Self.error("Read one id or a list; do not combine them") }
+        if let id = params["id"]?.string {
+            guard let item = await findReminder(id) else { return MuseReminders.noSuchReminder }
+            return ["ok": true, "payload": ["reminders": [MuseReminders.json(item)], "next_offset": .null]]
+        }
+        if params["list_id"] != nil {
+            guard params["list"] == nil, let id = params["list_id"]?.string,
+                  let list = allLists(appList: appList).first(where: { $0.id == id }) else { return Self.error("Use one valid list_id or list name from lists") }
+            listIDs = [list.id]; listName = list.name
+        } else if let name = params["list"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
             let lists = allLists(appList: appList)
             switch MuseReminders.match(name, in: lists) {
             case .found(let list):
@@ -1488,10 +1681,13 @@ actor MuseTools {
         }
         let since = MuseReminders.bool(params["include_completed"]) == true ? clock().addingTimeInterval(-30 * 24 * 60 * 60) : nil
         let found = MuseReminders.ordered(await fetchReminders(listIDs: listIDs, since: since, appList: appList))
-        let shown = found.prefix(Self.remindersPerRead)
+        let shown = found.dropFirst(page.offset).prefix(page.limit)
         var payload: [String: MuseJSON] = ["reminders": .array(shown.map { MuseReminders.json($0) })]
         if let listName { payload["list"] = .string(listName) }
-        if found.count > shown.count { payload["not_shown"] = .number(Double(found.count - shown.count)) }
+        let remaining = max(0, found.count - page.offset - shown.count)
+        payload["next_offset"] = remaining > 0 ? .number(Double(page.offset + shown.count)) : .null
+        payload["total"] = .number(Double(found.count))
+        if remaining > 0 { payload["not_shown"] = .number(Double(remaining)) }
         if appList, !eventKit.remindersAuthorized { payload["note"] = .string(MuseReminders.noAppleAccess) }
         return ["ok": true, "payload": .object(payload)]
     }
@@ -1507,10 +1703,20 @@ actor MuseTools {
             let to = Self.date(params["to"]?.string).map { $0.hasTime ? $0.date : Calendar.current.date(byAdding: .day, value: 1, to: $0.date) ?? $0.date } ?? now
             guard to > from else { return Self.error("to must be after from") }
             let query = params["query"]?.string?.trimmingCharacters(in: .whitespaces)
-            let found = await data.conversations(
-                from: from, to: to, query: query?.isEmpty == false ? query : nil, characters: Self.conversationCharacters)
-            log("conversations: \(found.count) sent")
-            return ["ok": true, "payload": ["conversations": .array(found.map { Self.json($0) })]]
+            guard let page = Self.pagination(params, defaultLimit: 20) else { return Self.error("Invalid offset or limit") }
+            guard let found = await data.conversationPage(from: from, to: to,
+                query: query?.isEmpty == false ? query : nil, offset: page.offset, limit: page.limit,
+                characters: Self.conversationCharacters) else { return Self.error("Conversations could not be read.") }
+            return ["ok": true, "payload": ["conversations": .array(found.items.map(Self.json)),
+                "next_offset": found.nextOffset.map { .number(Double($0)) } ?? .null,
+                "from": .string(Self.isoFormatter.string(from: from)), "to_exclusive": .string(Self.isoFormatter.string(from: to)),
+                "scope": "Conversations overlapping this range, restricted to turns starting within it. A turn can extend beyond the end. Untimed text is omitted unless its entire piece falls within the range. Search returns matching passages; get returns the full conversation transcript."]]
+        case "get"?:
+            guard let id = params["id"]?.string, !id.isEmpty,
+                params["text_offset"] == nil || Self.int(params["text_offset"]).map({ $0 >= 0 }) == true else { return Self.error("get needs id and a nonnegative text_offset") }
+            guard let item = await data.conversation(id: id, textOffset: Self.int(params["text_offset"]) ?? 0,
+                characters: Self.conversationCharacters) else { return Self.error("Conversation is unavailable or deleted.") }
+            return ["ok": true, "payload": Self.json(item)]
         case "ask"?:
             guard let question = params["query"]?.string ?? params["question"]?.string, !question.isEmpty else {
                 return Self.error("ask needs the question in query")
@@ -1531,7 +1737,7 @@ actor MuseTools {
             }
             return ["ok": true, "payload": ["recap": .string(recap)]]
         default:
-            return Self.error("action must be search, ask or recap")
+            return Self.error("action must be search, get, ask, or recap")
         }
     }
 
@@ -1539,13 +1745,15 @@ actor MuseTools {
     /// (`docs/reminders.md`). Muse can read them, and turn one into a reminder or skip it. It
     /// can't add one: something the person wants to remember is a reminder.
     enum FollowUpAction: Equatable {
-        case read, remind, skip, add
+        case read, remind, skip, edit, reopen, add
 
         init?(_ name: String?) {
             switch name?.lowercased().trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "_") {
             case nil, "read"?, "list"?, "get"?: self = .read
             case "remind"?, "remind_me"?, "accept"?, "keep"?: self = .remind
             case "skip"?, "dismiss"?: self = .skip
+            case "edit"?, "update"?: self = .edit
+            case "undo"?, "reopen"?: self = .reopen
             case "add"?, "create"?, "new"?: self = .add
             default: return nil
             }
@@ -1567,18 +1775,46 @@ actor MuseTools {
             return Self.followUpAddRefused
         case .read:
             if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline) { return refusal }
-            let items = await data.followUpsToReview(limit: 40)
-            return ["ok": true, "payload": ["follow_ups": .array(items.map(Self.json))]]
-        case .remind, .skip:
+            guard let page = Self.pagination(params), ["review", "skipped", "decided"].contains(params["scope"]?.string ?? "review") else { return Self.error("Invalid page or scope") }
+            guard let items = await data.followUpPage(scope: params["scope"]?.string ?? "review", offset: page.offset, limit: page.limit + 1) else { return Self.error("Follow-ups could not be read.") }
+            return ["ok": true, "payload": ["follow_ups": .array(items.prefix(page.limit).map(Self.json)),
+                "next_offset": items.count > page.limit ? .number(Double(page.offset + page.limit)) : .null]]
+        case .remind, .skip, .edit, .reopen:
             guard let id = params["id"]?.string?.trimmingCharacters(in: .whitespaces), !id.isEmpty else {
                 return Self.error("\(action == .remind ? "remind" : "skip") needs the follow-up's id, from read")
             }
-            if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline, change: true) {
-                return refusal
+            var edit = MuseFollowUpEdit()
+            let hasEdits = ["title", "due", "priority", "list_id"].contains { params[$0] != nil }
+            guard !hasEdits || action == .remind || action == .edit else { return Self.error("Only edit or remind accepts changed fields") }
+            if let title = params["title"] {
+                guard let text = title.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return Self.error("title must be nonempty text") }
+                edit.title = text
             }
-            guard let decided = await data.decideFollowUp(id: id, remind: action == .remind) else {
-                return Self.error(
-                    "There is no follow-up waiting for review with that id; it may have been decided already. Call followups with action read to get current ids. Nothing was changed.")
+            if let due = params["due"] {
+                if due == .null || due.string == "none" { edit.due = .clear }
+                else {
+                    guard let date = Self.date(due.string), !date.hasTime else { return Self.error("Follow-ups use a due day, YYYY-MM-DD, or none") }
+                    edit.due = .set(date.date, hasTime: false)
+                }
+            }
+            if params["priority"] != nil {
+                guard let priority = Self.int(params["priority"]), (0...2).contains(priority) else { return Self.error("priority must be 0, 1, or 2") }
+                edit.priority = priority
+            }
+            if params["list_id"] != nil {
+                guard action == .remind, let id = params["list_id"]?.string, !id.isEmpty else { return Self.error("list_id is only available with remind") }
+                edit.listID = id
+            }
+            if let refusal = await permission(.followUps, prefs: prefs, watch: watch, deadline: deadline, change: true,
+                changeScope: action == .edit || action == .reopen || hasEdits ? "followups_full" : nil) { return refusal }
+            guard let decided = await data.changeFollowUp(id: id,
+                action: action == .remind ? "remind" : action == .skip ? "skip" : action == .edit ? "edit" : "reopen", edit: edit) else {
+                return Self.error("The follow-up changed, is unavailable, or the selected reminder list cannot be used. Read it again before retrying.")
+            }
+            if action == .edit || action == .reopen {
+                return ["ok": true, "payload": ["id": .string(decided.id), "task": .string(decided.title),
+                    "stage": .string(decided.stage), "due": decided.due.map { .string(Self.dayFormatter.string(from: $0)) } ?? .null,
+                    "linked_reminder_removal_pending": .bool(decided.deliveryPending)]]
             }
             log("followups: \(action == .remind ? "one became a reminder" : "one was skipped")")
             if action == .skip {
@@ -1591,7 +1827,9 @@ actor MuseTools {
                 ]
             }
             var reminder: [String: MuseJSON] = [
-                "task": .string(decided.title),
+                "task": .string(decided.title), "follow_up_id": .string(decided.id),
+                "delivery_pending": .bool(decided.deliveryPending),
+                "due": decided.due.map { .string(Self.dayFormatter.string(from: $0)) } ?? .null,
                 "kept_in": .string(decided.keptInApple ? "Apple Reminders" : "Pebble Audio"),
                 "list": .string(decided.list),
             ]
@@ -1601,7 +1839,7 @@ actor MuseTools {
     }
 
     static func json(_ item: MuseFollowUp) -> MuseJSON {
-        var entry: [String: MuseJSON] = ["id": .string(item.id), "task": .string(item.text)]
+        var entry: [String: MuseJSON] = ["id": .string(item.id), "task": .string(item.text), "stage": .string(item.stage), "priority": .number(Double(item.priority))]
         if let saidAt = item.saidAt { entry["said_at"] = .string(isoFormatter.string(from: saidAt)) }
         if let title = item.conversation, !title.isEmpty { entry["conversation"] = .string(title) }
         if let quote = item.quote, !quote.isEmpty { entry["quote"] = .string(quote) }
@@ -1611,26 +1849,76 @@ actor MuseTools {
     }
 
     private func recording(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
-        switch params["action"]?.string?.lowercased() {
-        case "pause"?:
-            guard params["minutes"] == nil || Self.int(params["minutes"]).map({ (0...1440).contains($0) }) == true else {
-                return Self.error("minutes must be an integer from 0 to 1440")
-            }
-            let minutes = Self.int(params["minutes"]) ?? 0
-            return await data.pauseRecording(minutes: minutes)
-                ? ["ok": true, "payload": ["pause_requested": true, "paused_minutes": .number(Double(minutes)),
-                    "note": "Pause requested in the app; the watch must be connected to apply it."]]
-                : Self.error("Recording isn't on.")
-        case "resume"?:
-            return await data.resumeRecording()
-                ? ["ok": true, "payload": ["resume_requested": true,
-                    "note": "Recording is enabled in the app. Actual capture depends on the watch connection and its recording state."]]
-                : Self.error("Recording couldn't be resumed.")
-        case "mark"?:
-            return await data.markMoment(params["label"]?.string) ? ["ok": true, "payload": ["marked": true]] : Self.error("This moment couldn't be marked.")
-        default:
-            return Self.error("action must be pause, resume or mark")
+        let action = params["action"]?.string?.lowercased()
+        if action == "status" {
+            guard let status = await data.recordingStatus() else { return Self.error("unavailable: Recording status could not be read.") }
+            return ["ok": true, "payload": Self.json(status)]
         }
+        if action == "mark" {
+            guard params["label"] == nil || params["label"]?.string.map({ $0.count <= 2000 }) == true else { return Self.error("label must be text of at most 2000 characters") }
+            guard let moment = await data.saveMoment(params["label"]?.string) else { return Self.error("This moment could not be saved.") }
+            return ["ok": true, "payload": ["marked": true, "moment": Self.json(moment)]]
+        }
+        guard action == "pause" || action == "resume" else { return Self.error("action must be status, pause, resume, or mark") }
+        guard params["minutes"] == nil || (action == "pause" && Self.int(params["minutes"]).map({ (0...1440).contains($0) }) == true) else { return Self.error("minutes must be 0-1440 and only used with pause") }
+        let minutes = Self.int(params["minutes"]) ?? 0
+        let accepted = action == "pause" ? await data.pauseRecording(minutes: minutes) : await data.resumeRecording()
+        guard accepted else { return Self.error("Recording intent could not be changed.") }
+        var payload: [String: MuseJSON] = ["request_accepted": true,
+            action == "pause" ? "pause_requested" : "resume_requested": true]
+        if action == "pause" { payload["paused_minutes"] = .number(Double(minutes)) }
+        if let status = await data.recordingStatus() {
+            payload["status"] = Self.json(status)
+            payload["capture_matches_request"] = status.recording.map { .bool($0 == (action == "resume")) } ?? .null
+        } else { payload["capture_matches_request"] = .null }
+        return ["ok": true, "payload": .object(payload)]
+    }
+
+    private func moments(_ params: MuseJSON, data: any MuseDataProvider) async -> MuseJSON {
+        switch params["action"]?.string {
+        case "list":
+            guard let page = Self.pagination(params) else { return Self.error("Invalid offset or limit") }
+            guard let items = await data.moments(offset: page.offset, limit: page.limit + 1) else { return Self.error("Saved moments could not be read.") }
+            return ["ok": true, "payload": ["moments": .array(items.prefix(page.limit).map(Self.json)),
+                "next_offset": items.count > page.limit ? .number(Double(page.offset + page.limit)) : .null]]
+        case "get", "edit", "delete":
+            guard let id = params["id"]?.string, !id.isEmpty else { return Self.error("id is required") }
+            if params["action"]?.string == "delete" {
+                guard await data.deleteMoment(id: id) else { return Self.error("not_found: Moment could not be deleted.") }
+                return ["ok": true, "payload": ["deleted_id": .string(id)]]
+            }
+            let item: MuseMoment?
+            if params["action"]?.string == "edit" {
+                guard let note = params["note"]?.string, note.count <= 2000 else { return Self.error("note must be text of at most 2000 characters") }
+                item = await data.editMoment(id: id, note: note)
+            } else { item = await data.moment(id: id, includeContext: true) }
+            guard let item else { return Self.error("not_found: Moment could not be read or changed.") }
+            return ["ok": true, "payload": Self.json(item)]
+        default: return Self.error("action must be list, get, edit, or delete")
+        }
+    }
+
+    static func pagination(_ params: MuseJSON, defaultLimit: Int = 40) -> (offset: Int, limit: Int)? {
+        guard params["offset"] == nil || int(params["offset"]).map({ $0 >= 0 && $0 <= Int.max - 101 }) == true,
+              params["limit"] == nil || int(params["limit"]).map({ (1...100).contains($0) }) == true else { return nil }
+        return (int(params["offset"]) ?? 0, int(params["limit"]) ?? defaultLimit)
+    }
+
+    static func json(_ status: MuseRecordingSnapshot) -> MuseJSON {
+        ["intent": .string(status.intent), "connection": .string(status.connection),
+         "recording": status.recording.map(MuseJSON.bool) ?? .null,
+         "watch_state": status.watchState.map(MuseJSON.string) ?? .null,
+         "paused_until": status.pausedUntil.map { .string(isoFormatter.string(from: $0)) } ?? .null,
+         "last_audio_at": status.lastAudioAt.map { .string(isoFormatter.string(from: $0)) } ?? .null,
+         "last_watch_report_at": status.lastWatchReportAt.map { .string(isoFormatter.string(from: $0)) } ?? .null,
+         "observed_at": .string(isoFormatter.string(from: status.observedAt))]
+    }
+
+    static func json(_ moment: MuseMoment) -> MuseJSON {
+        ["id": .string(moment.id), "marked_at": .string(isoFormatter.string(from: moment.at)),
+         "note": .string(moment.note), "was_recording": moment.wasRecording.map(MuseJSON.bool) ?? .null,
+         "context_status": moment.contextStatus.map(MuseJSON.string) ?? .null,
+         "quote": moment.quote.map(MuseJSON.string) ?? .null, "link": .string(moment.link)]
     }
 
     // MARK: - Helpers
@@ -1676,7 +1964,7 @@ actor MuseTools {
         default:
             let message = result.textString ?? "The watch could not complete this action."
             let prefix = message.split(separator: ":", maxSplits: 1).first.map(String.init) ?? "failed"
-            let known = ["not_found", "not_installed", "full", "busy", "incompatible_data", "storage_error", "state_unknown", "ambiguous", "finished", "unsupported_label"]
+            let known = ["not_found", "not_installed", "full", "busy", "incompatible_data", "storage_error", "state_unknown", "ambiguous", "finished", "unsupported_label", "no_data", "health_off", "unsupported"]
             return ["ok": false, "code": .string(known.contains(prefix) ? prefix : "failed"), "error": .string(message)]
         }
     }
@@ -1759,7 +2047,12 @@ actor MuseTools {
             "start": .string(isoFormatter.string(from: event.start)),
             "end": .string(isoFormatter.string(from: event.end)),
             "all_day": .bool(event.allDay),
-            "calendar": .string(event.calendar),
+            "calendar": .string(event.calendar), "id": .string(event.id),
+            "calendar_id": .string(event.calendarID), "account": .string(event.account),
+            "notes": event.notes.map(MuseJSON.string) ?? .null,
+            "timezone": event.timezone.map(MuseJSON.string) ?? .null,
+            "recurring": .bool(event.recurring), "recurrence": .array(event.recurrence.map(\.json)),
+            "occurrence": event.occurrence.map { .string(isoFormatter.string(from: $0)) } ?? .null,
         ]
         if let location = event.location { entry["location"] = .string(location) }
         return .object(entry)
@@ -1768,7 +2061,14 @@ actor MuseTools {
     static func json(_ conversation: MuseConversationText) -> MuseJSON {
         var entry: [String: MuseJSON] = [
             "start": .string(isoFormatter.string(from: conversation.start)),
-            "transcript": .string(conversation.text),
+            "transcript": .string(conversation.text), "id": .string(conversation.id),
+            "link": conversation.link.map(MuseJSON.string) ?? .null,
+            "truncated": .bool(conversation.truncated), "text_scope": .string(conversation.textScope),
+            "processing_state": conversation.processingState.map(MuseJSON.string) ?? .null,
+            "is_live": .bool(conversation.isLive), "coverage": "saved_transcript_only",
+            "timing_incomplete": .bool(conversation.timingIncomplete),
+            "text_offset": .number(Double(conversation.textOffset)),
+            "next_text_offset": conversation.nextTextOffset.map { .number(Double($0)) } ?? .null,
         ]
         if let end = conversation.end { entry["end"] = .string(isoFormatter.string(from: end)) }
         if let title = conversation.title, !title.isEmpty { entry["title"] = .string(title) }

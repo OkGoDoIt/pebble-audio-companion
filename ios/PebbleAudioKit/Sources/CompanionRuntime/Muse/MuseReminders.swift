@@ -43,6 +43,9 @@ enum MuseReminders {
         var title: String?
         /// Add: the list to add to. Edit: the list to move it to.
         var list: String?
+        var listID: String?
+        var priority: Int?
+        var recurrence: MuseRecurrence.Change?
         var due: Due?
         var notes: String?
         var completed: Bool?
@@ -61,9 +64,25 @@ enum MuseReminders {
             guard let value = params[key]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
             return value
         }
+        for key in ["id", "title", "list", "list_id", "due", "notes"] where params[key] != nil {
+            if action == .edit, ["due", "notes"].contains(key), params[key] == .null { continue }
+            guard params[key]?.string != nil else { return .invalid("\(key) must be text") }
+        }
         var request = Request(action: action)
         request.id = text("id").flatMap { $0.isEmpty ? nil : $0 }
         request.list = text("list").flatMap { $0.isEmpty ? nil : $0 }
+        if params["list_id"] != nil {
+            guard let id = text("list_id"), !id.isEmpty, params["list"] == nil else { return .invalid("Use list_id or list name, not both") }
+            request.listID = id
+        }
+        if params["priority"] != nil {
+            guard action == .add || action == .edit, let priority = MuseTools.int(params["priority"]), (0...9).contains(priority) else { return .invalid("priority must be an integer 0-9 with add or edit") }
+            request.priority = priority
+        }
+        if let raw = params["recurrence"] {
+            guard action == .add || action == .edit, let rule = try? MuseRecurrence.parse(raw) else { return .invalid("Invalid recurrence; use frequency, interval, weekdays, month_days, months, count, or until. null removes it.") }
+            request.recurrence = rule
+        }
         switch action {
         case .add:
             guard let title = text("title"), !title.isEmpty else { return .invalid("add needs a title") }
@@ -79,6 +98,8 @@ enum MuseReminders {
                 guard !title.isEmpty else { return .invalid("title can't be empty") }
                 request.title = title
             }
+            if params["due"] == .null { request.due = .clear }
+            if params["notes"] == .null { request.notes = "" }
             if let raw = text("due") {
                 if raw.isEmpty || ["none", "null", "clear", "remove"].contains(raw.lowercased()) {
                     request.due = .clear
@@ -102,7 +123,7 @@ enum MuseReminders {
                 }
             }
             guard request.title != nil || request.due != nil || request.notes != nil || request.list != nil
-                || request.completed != nil
+                || request.completed != nil || request.listID != nil || request.priority != nil || request.recurrence != nil
             else { return .invalid("edit needs something to change: title, due, notes, list or completed") }
         case .delete:
             guard request.id != nil else { return .invalid("delete needs the reminder's id, from read or from add") }
@@ -114,7 +135,7 @@ enum MuseReminders {
 
     static func bool(_ value: MuseJSON?) -> Bool? {
         if let flag = value?.bool { return flag }
-        if let number = value?.number { return number != 0 }
+        if let number = value?.number { return number == 0 ? false : number == 1 ? true : nil }
         switch value?.string?.lowercased().trimmingCharacters(in: .whitespaces) {
         case "true"?, "yes"?, "1"?, "done"?: return true
         case "false"?, "no"?, "0"?: return false
@@ -138,11 +159,13 @@ enum MuseReminders {
         let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !wanted.isEmpty, !lists.isEmpty else { return .notFound }
         let exact = lists.filter { $0.name.compare(wanted, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
-        if let pick = pick(exact) { return .found(pick) }
+        if exact.count > 1 { return .ambiguous(exact) }
+        if let pick = exact.first { return .found(pick) }
         let wantedKey = key(wanted)
         guard !wantedKey.isEmpty else { return .notFound }
         let same = lists.filter { key($0.name) == wantedKey }
-        if let pick = pick(same) { return .found(pick) }
+        if same.count > 1 { return .ambiguous(same) }
+        if let pick = same.first { return .found(pick) }
         let partial = lists.filter { list in
             let listKey = key(list.name)
             guard listKey.count >= 3, wantedKey.count >= 3 else { return false }
@@ -153,13 +176,6 @@ enum MuseReminders {
         case 1: return .found(partial[0])
         default: return .ambiguous(partial)
         }
-    }
-
-    /// Lists with the very same name (in two accounts) can't be told apart by name: Pebble
-    /// Audio's own list, else the default one, else one that can be changed, else the first.
-    private static func pick(_ lists: [ReminderList]) -> ReminderList? {
-        lists.first { $0.id == appListID } ?? lists.first(where: \.isDefault) ?? lists.first(where: \.canChange)
-            ?? lists.first
     }
 
     // MARK: - The Pebble Audio list
@@ -242,7 +258,7 @@ enum MuseReminders {
             "ok": false,
             "error": .string(
                 "More than one reminders list matches \"\(name)\": \(quotedList(candidates.map(\.name))). "
-                    + "Use the exact name, or ask the person which one. Nothing was changed."),
+                    + "Use the list id from lists, or ask the person which account they mean. Nothing was changed."),
             "lists": .array(candidates.map { .string($0.name) }),
         ]
     }
@@ -272,7 +288,8 @@ enum MuseReminders {
             "id": .string(reminder.id),
             "title": .string(reminder.title),
             "list": .string(reminder.list),
-            "completed": .bool(reminder.completed),
+            "completed": .bool(reminder.completed), "list_id": .string(reminder.listID),
+            "priority": .number(Double(reminder.priority)), "recurrence": .array(reminder.recurrence.map(\.json)),
         ]
         if let due = reminder.due {
             entry["due"] = .string(reminder.dueHasTime ? MuseTools.isoFormatter.string(from: due) : MuseTools.dayFormatter.string(from: due))
@@ -282,7 +299,7 @@ enum MuseReminders {
     }
 
     static func json(_ list: ReminderList) -> MuseJSON {
-        var entry: [String: MuseJSON] = ["name": .string(list.name)]
+        var entry: [String: MuseJSON] = ["name": .string(list.name), "id": .string(list.id), "account": .string(list.account)]
         if list.isDefault { entry["default"] = true }
         if !list.canChange { entry["read_only"] = true }
         return .object(entry)
@@ -296,6 +313,8 @@ enum MuseReminders {
         if (before.notes ?? "") != (after.notes ?? "") { fields.append("notes") }
         if before.listID != after.listID { fields.append("list") }
         if before.completed != after.completed { fields.append("completed") }
+        if before.priority != after.priority { fields.append("priority") }
+        if before.recurrence != after.recurrence { fields.append("recurrence") }
         return fields
     }
 
@@ -304,10 +323,12 @@ enum MuseReminders {
         reminders.sorted { a, b in
             if a.completed != b.completed { return !a.completed }
             switch (a.due, b.due) {
-            case (let x?, let y?): return x < y
+            case (let x?, let y?) where x != y: return x < y
             case (.some, nil): return true
             case (nil, .some): return false
-            case (nil, nil): return a.title.localizedStandardCompare(b.title) == .orderedAscending
+            default:
+                let comparison = a.title.localizedStandardCompare(b.title)
+                return comparison == .orderedSame ? a.id < b.id : comparison == .orderedAscending
             }
         }
     }

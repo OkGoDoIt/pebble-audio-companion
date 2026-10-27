@@ -201,6 +201,24 @@ enum PieceLibrary {
 
 @Suite("conversation pieces") @MainActor
 struct ConversationPiecesTests {
+    @Test func museTimeRangeKeepsConversationOwnershipAndDoesNotLeakUntimedText() throws {
+        let member = ConversationMember(segmentId: "seg-a", startMediaMs: PieceLibrary.cutA)
+        let meta = PieceLibrary.metas["seg-a"]!
+        let piece = ConversationText.piece(member, of: PieceLibrary.transcripts["seg-a"])!
+        let start = Int64(PieceLibrary.t0)
+        let result = AppMuseData.transcriptInWindow(piece, member: member, meta: meta,
+            window: (start + 45_000)..<(start + 60_000))
+        #expect(result.transcript.text == "We could fly on the ninth.")
+        #expect(!result.transcript.text.contains("standup"))
+        var untimed = piece; untimed.segments = []
+        let excluded = AppMuseData.transcriptInWindow(untimed, member: member, meta: meta,
+            window: (start + 45_000)..<(start + 60_000))
+        #expect(excluded.transcript.text.isEmpty && excluded.timingIncomplete)
+        let complete = AppMuseData.transcriptInWindow(untimed, member: member, meta: meta,
+            window: start..<(start + 60_000))
+        #expect(complete.transcript.text == untimed.text)
+    }
+
     typealias Library = PieceLibrary
 
     // MARK: - The grouping under test is the one described above

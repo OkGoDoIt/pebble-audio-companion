@@ -65,6 +65,8 @@ public struct MusePreferences: Equatable, Sendable {
     /// What Muse sends by itself (a scheduled result, an update, an answer that came late) goes
     /// to the watch. On by default: Muse is an agent, and this is how it reaches the wrist.
     public var messagesOnWatch = true
+    /// Separate grants for newly added write surfaces; old read grants do not authorize them.
+    public var additionalChangeScopes: Set<String> = []
 
     public init(
         voiceLevel: MuseVoiceLevel = .automatic, chatPlace: MuseChatPlace = .watchChat,
@@ -107,6 +109,10 @@ public final class MusePreferencesStore: @unchecked Sendable {
         let next: MusePreferences = lock.withLock {
             var value = current.value
             change(&value)
+            if value.access(.conversations) != .allowed { value.additionalChangeScopes.remove("moments") }
+            if value.access(.calendar) != .allowed { value.additionalChangeScopes.remove("calendar_full") }
+            if value.access(.followUps) != .allowed { value.additionalChangeScopes.remove("followups_full") }
+            defaults.set(value.additionalChangeScopes.sorted(), forKey: "muse.additionalChangeScopes")
             switch value.voiceLevel {
             case .automatic: defaults.removeObject(forKey: Key.voiceLevel)
             case .fixed(let gain): defaults.set(gain, forKey: Key.voiceLevel)
@@ -162,6 +168,7 @@ public final class MusePreferencesStore: @unchecked Sendable {
 
     private static func load(_ defaults: UserDefaults) -> MusePreferences {
         var value = MusePreferences()
+        value.additionalChangeScopes = Set(defaults.stringArray(forKey: "muse.additionalChangeScopes") ?? [])
         if defaults.object(forKey: Key.voiceLevel) != nil {
             let gain = defaults.integer(forKey: Key.voiceLevel)
             value.voiceLevel = .fixed(gainDB: min(max(gain, MuseVoiceLevel.fixedRange.lowerBound), MuseVoiceLevel.fixedRange.upperBound))

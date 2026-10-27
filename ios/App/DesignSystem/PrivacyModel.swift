@@ -365,26 +365,16 @@ enum PrivacyModel {
             lines.append("Muse asks on your watch before it reads \(Copy.list(askFirst.map(\.readName))).")
         }
         if readable.contains(.conversations) {
-            lines.append("Your conversations can include what other people said.")
+            lines.append("Your conversations can include what other people said. Muse can also read your saved moments; editing their notes or deleting them needs your permission.")
         }
         let adds = readable.compactMap(\.addName)
         if !adds.isEmpty {
-            // Reminders can also be changed and deleted (D7d); events never are.
-            let others = readable.filter { $0 != .reminders }.compactMap(\.addName)
-            let changes: String
-            if !readable.contains(.reminders) {
-                changes = "It never deletes them."
-            } else if others.isEmpty {
-                changes = "It can change or delete them too."
-            } else {
-                changes = "It can change or delete reminders too, never \(Copy.list(others, conjunction: "or"))."
-            }
-            lines.append("Muse can add \(Copy.list(adds)) you ask for. \(changes)")
+            lines.append("Muse can add, edit, or delete \(Copy.list(adds)) when you ask.")
         }
         if readable.contains(.followUps) {
-            lines.append("Muse can turn follow-ups into reminders or skip them when you ask.")
+            lines.append("Muse can edit follow-ups, turn them into reminders, skip them, or return them to review when you ask.")
         }
-        let askedChanges = [MuseDataSource.reminders, .followUps].filter { muse.access($0) == .ask }
+        let askedChanges = [MuseDataSource.calendar, .reminders, .followUps].filter { muse.access($0) == .ask }
         if !askedChanges.isEmpty {
             lines.append(
                 "Muse asks on your watch before it changes \(Copy.list(askedChanges.map(\.readName), conjunction: "or")), "
