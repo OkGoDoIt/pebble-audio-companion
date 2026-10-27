@@ -166,7 +166,13 @@ enum TranscriptItems {
                 let exactWordStart = identityWords.map(\.mediaStartMs).min().map {
                     $0 - mediaBeforeMemberMs + own.mediaMs.lowerBound
                 }
-                let exactWordEnd = identityWords.map(\.mediaEndMs).max().map {
+                // A point-timed final word still has to belong to the half-open correction.
+                // Include that timestamp by one millisecond; the piece check below prevents
+                // this from claiming the neighbor's first instant at a conversation boundary.
+                let exactWordEnd = identityWords.map { word in
+                    word.mediaEndMs > word.mediaStartMs ? word.mediaEndMs
+                        : word.mediaStartMs + (word.mediaStartMs < Int64.max ? 1 : 0)
+                }.max().map {
                     $0 - mediaBeforeMemberMs + own.mediaMs.lowerBound
                 }
                 let scopeStart = fullScope?.startMs ?? speech.startMs
@@ -348,11 +354,14 @@ struct TranscriptWordAligner {
         wordStartChar = cumulative
 
         let rendered = speechTexts.reduce(0) { $0 + Self.significantCount($1) }
-        func letters(_ text: String) -> String {
-            String(text.filter { $0.isLetter || $0.isNumber }).lowercased()
+        func compact(_ text: String) -> String {
+            String(text.filter { !$0.isWhitespace })
         }
+        // Identity attribution also requires the original tokens to reproduce the text.
+        // Highlighting can tolerate punctuation/case differences; saving a narrower name
+        // cannot, or the shared attribution/export path will reject the saved range.
         hasExactTextMatch = !ordered.isEmpty && rendered > 0
-            && letters(ordered.map(\.text).joined()) == letters(speechTexts.joined())
+            && compact(ordered.map(\.text).joined()) == compact(speechTexts.joined())
         // The two streams should agree letter for letter; 5% covers a provider that drops the
         // odd filler token from one side. Beyond that they are describing different audio (a
         // migrated row whose words were never stored, a provider whose words and segments come

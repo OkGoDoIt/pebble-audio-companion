@@ -63,6 +63,84 @@ struct SpeakerAttributionTests {
             speaker: nil, legacyAssignments: []) == nil)
     }
 
+    private var tokenizedTranscript: SegmentTranscript {
+        SegmentTranscript(segmentId: "s", text: "We stayed in Paris for a week.", modeUsed: .localOnly,
+            providerId: "test", createdAtMs: 0,
+            segments: [TranscriptSegment(text: "We stayed in Paris for a week.", startMs: 0, endMs: 1_400, speaker: "1")],
+            words: [TranscriptWord(text: "We", startMs: 0, endMs: 100),
+                    TranscriptWord(text: "sta", startMs: 200, endMs: 260),
+                    TranscriptWord(text: "y", startMs: 260, endMs: 260),
+                    TranscriptWord(text: "ed", startMs: 260, endMs: 300),
+                    TranscriptWord(text: "in", startMs: 400, endMs: 500),
+                    TranscriptWord(text: "Paris", startMs: 600, endMs: 600),
+                    TranscriptWord(text: "for", startMs: 700, endMs: 800),
+                    TranscriptWord(text: "a", startMs: 900, endMs: 1_000),
+                    TranscriptWord(text: "week", startMs: 1_100, endMs: 1_200),
+                    TranscriptWord(text: ".", startMs: 1_300, endMs: 1_400)])
+    }
+
+    @Test func zeroDurationSubwordsAndSeparatelyTimedPunctuationKeepSavedNames() {
+        let transcript = tokenizedTranscript
+        var identity = snapshot(person: current, range: 0..<1_000)
+        var turns = SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: "s",
+            identity: identity, legacyAssignments: [])
+        #expect(turns.map(\.text) == ["We stayed in Paris for a ", "week."])
+        #expect(turns.map { $0.person?.id } == [current.id, nil])
+        #expect(turns.flatMap(\.words) == transcript.words)
+        #expect(turns.map(\.text).joined() == transcript.text)
+        // Selecting the last word ends at its letters, before the provider's separate period.
+        identity.corrections.append(SpeakerCorrection(id: "last", segmentId: "s",
+            startMediaMs: 1_100, endMediaMs: 1_200, person: current, createdAtMs: 1))
+        turns = SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: "s",
+            identity: identity, legacyAssignments: [])
+        #expect(turns.count == 1)
+        #expect(turns.first?.person?.id == current.id)
+        #expect(turns.first?.endMs == 1_200)
+        #expect(turns.first?.text == transcript.text)
+        #expect(turns.flatMap(\.words) == transcript.words)
+    }
+
+    @Test(arguments: [true, false])
+    func tokenizedWordsRespectManualUnknownAndPartialLocks(unnamed: Bool) {
+        let identity = SpeakerIdentitySnapshot(corrections: [SpeakerCorrection(id: "lock", segmentId: "s",
+            startMediaMs: 200, endMediaMs: unnamed ? 300 : 260, person: unnamed ? nil : old, createdAtMs: 1)],
+            automaticAttributions: [auto(current, start: 0, end: 1_400)])
+        let turns = SpeakerAttribution.attributedTurns(transcript: tokenizedTranscript, segmentId: "s",
+            identity: identity, legacyAssignments: assignments)
+        #expect(turns.first { $0.text.contains("stayed") }?.person == nil)
+        #expect(turns.map(\.text).joined() == tokenizedTranscript.text)
+        #expect(!turns.contains { $0.text == "sta" || $0.text == "yed " })
+    }
+
+    @Test func zeroDurationSuffixAtTurnEndKeepsTheWholeWord() {
+        let transcript = SegmentTranscript(segmentId: "s", text: "Yes.", modeUsed: .localOnly,
+            providerId: "test", createdAtMs: 0,
+            segments: [TranscriptSegment(text: "Yes.", startMs: 0, endMs: 100)],
+            words: [TranscriptWord(text: "Ye", startMs: 0, endMs: 100),
+                    TranscriptWord(text: "s", startMs: 100, endMs: 100),
+                    TranscriptWord(text: ".", startMs: 100, endMs: 100)])
+        let turns = SpeakerAttribution.attributedTurns(transcript: transcript, segmentId: "s",
+            identity: snapshot(person: current, range: 0..<100), legacyAssignments: [])
+        #expect(turns.count == 1 && turns.first?.person?.id == current.id)
+        #expect(turns.flatMap(\.words) == transcript.words)
+        #expect(turns.first?.text == transcript.text)
+    }
+
+    @Test func boundarySuffixDoesNotLeakIntoTheNextSpeaker() {
+        let words = [TranscriptWord(text: "Ye", startMs: 0, endMs: 100),
+                     TranscriptWord(text: "s", startMs: 100, endMs: 100),
+                     TranscriptWord(text: ".", startMs: 100, endMs: 100),
+                     TranscriptWord(text: "No.", startMs: 100, endMs: 200)]
+        let turns = SpeakerAttribution.attributedTurns(
+            segments: [TranscriptSegment(text: "Yes.", startMs: 0, endMs: 100, speaker: "1"),
+                       TranscriptSegment(text: "No.", startMs: 100, endMs: 200, speaker: "2")],
+            words: words, segmentId: "s", identity: snapshot(person: current, range: 0..<100),
+            legacyAssignments: [])
+        #expect(turns.map(\.text) == ["Yes.", "No."])
+        #expect(turns.map { $0.person?.id } == [current.id, nil])
+        #expect(turns.flatMap(\.words) == words)
+    }
+
     @Test(arguments: ["1", nil] as [String?])
     func explicitCorrectionNamesBothCloudAndLocalSpeech(_ label: String?) {
         let identity = snapshot(person: current)

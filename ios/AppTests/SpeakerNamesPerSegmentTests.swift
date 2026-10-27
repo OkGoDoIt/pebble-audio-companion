@@ -169,6 +169,43 @@ struct SpeakerNamesPerSegmentTests {
         #expect(turns.allSatisfy { $0.identificationText == text && $0.sourceEndMs == 50_000 })
     }
 
+    @Test func punctuationMismatchUsesWholePassageAsAttributionRequires() {
+        let text = (0..<40).map { "word\($0)," }.joined(separator: " ")
+        let words = (0..<40).map { index in
+            SearchKit.TranscriptWord(text: "word\(index)", startMs: Int64(index) * 500,
+                                     endMs: Int64(index + 1) * 500)
+        }
+        let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+            segments: [SearchKit.TranscriptSegment(text: text, startMs: 0, endMs: 20_000, speaker: "1")],
+            words: words, assignments: [], timebase: .media)
+        let turns = built.items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        #expect(turns.count > 1)
+        #expect(turns.allSatisfy { $0.identificationText == text && $0.sourceStartMs == 0 && $0.sourceEndMs == 20_000 })
+        #expect(turns.allSatisfy { !$0.words.isEmpty }) // Highlighting remains usable.
+    }
+
+    @Test func aPointTimedFinalWordBelongsToItsSavedCorrection() throws {
+        let segments = [SearchKit.TranscriptSegment(text: "First Paris.", startMs: 0, endMs: 220, speaker: "1"),
+                        SearchKit.TranscriptSegment(text: "Next.", startMs: 240, endMs: 500, speaker: "2")]
+        let words = [SearchKit.TranscriptWord(text: "First", startMs: 0, endMs: 100),
+                     SearchKit.TranscriptWord(text: "Paris", startMs: 200, endMs: 200),
+                     SearchKit.TranscriptWord(text: ".", startMs: 210, endMs: 220),
+                     SearchKit.TranscriptWord(text: "Next.", startMs: 240, endMs: 500)]
+        func render(_ identity: SpeakerIdentitySnapshot) -> [TranscriptTurn] {
+            TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
+                segments: segments, words: words, assignments: [], identities: identity, timebase: .media)
+                .items.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
+        }
+        let selected = try #require(render(.init()).first)
+        #expect(selected.sourceEndMs == 201)
+        let named = render(SpeakerIdentitySnapshot(corrections: [SpeakerCorrection(id: "c", segmentId: "s",
+            startMediaMs: try #require(selected.sourceStartMs), endMediaMs: try #require(selected.sourceEndMs),
+            person: Person(id: "kevin", name: "Kevin"), createdAtMs: 0)]))
+        #expect(named.map(\.name) == ["Kevin", "Speaker 2"])
+        #expect(named.map(\.text) == ["First Paris.", "Next."])
+        #expect(named.first?.sourceEndMs == selected.sourceEndMs)
+    }
+
     @Test func aTimedTurnCrossingAPieceCannotNameTheNeighborsAudio() {
         let built = TranscriptItems.member(segmentId: "s", meta: Library.meta("s", index: 0),
             segments: [SearchKit.TranscriptSegment(text: "Hello there.", startMs: 5_000, endMs: 15_000)],
