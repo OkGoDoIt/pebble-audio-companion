@@ -80,7 +80,13 @@ capacity with paused timers, disconnect survival, expiry/restart, stale ids and 
 app tests exercise request validation, complete list decoding, unknown outcomes, duplicate writes,
 new questions, disabled tools, older firmware, calendar consent and invalid dates.
 
-Release builds and final test evidence are recorded in the workspace implementation progress log.
+Final validation: 173 focused Swift tests plus the golden-fixture round-trip test; 12 Kotlin
+protocol and 30 transport tests; all 125 generated fixtures; ten focused firmware suites; six
+analytics heartbeat guards. All passed. The final unsigned iOS Release device build passed with
+one known existing Sendable warning in SettingsRemindersScreen. Both PT2 firmware slots built as
+`v4.41.0-671-g696dced85` and were mirrored to the usual Desktop/iCloud filenames. App source commit
+`9a4c70db`; firmware commits `29c6f27e1` and `696dced85`. Nothing was installed or flashed.
+Detailed evidence is recorded in the workspace implementation progress log.
 No source-level pass establishes physical watch behavior, phone battery cost, or deployment.
 Install matching app and watch firmware, then ask Muse to create two labelled timers, list them,
 pause one, change its label/duration, resume, cancel the other, let one ring, and restart it.
