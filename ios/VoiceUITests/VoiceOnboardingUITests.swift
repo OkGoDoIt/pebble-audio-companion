@@ -19,10 +19,22 @@ final class VoiceOnboardingUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 90), "Public voice models should install or already be cached")
         name.tap()
         name.typeText("Voice Test\n")
+        let watchSample = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Quiet room")).firstMatch
+        XCTAssertTrue(watchSample.waitForExistence(timeout: 5))
+        watchSample.tap()
+        XCTAssertTrue(app.buttons["Start listening"].isEnabled)
+        XCTAssertTrue(app.buttons["Start listening"].isHittable)
+        app.buttons["Back"].tap()
+        let phoneSample = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Phone microphone")).firstMatch
+        XCTAssertTrue(phoneSample.waitForExistence(timeout: 5))
+        phoneSample.tap()
         XCTAssertTrue(app.buttons["Record a sample"].isEnabled)
         XCTAssertTrue(app.buttons["Record a sample"].isHittable)
         let setup = XCTAttachment(screenshot: app.screenshot())
         setup.name = "Voice setup before recording"; setup.lifetime = .keepAlways; add(setup)
+        app.buttons["Back"].tap()
         app.buttons["Cancel"].tap()
         XCTAssertTrue(recognition.waitForExistence(timeout: 5))
         XCTAssertEqual(recognition.value as? String, "0", "Preparing or cancelling enrollment must not enable recognition")
