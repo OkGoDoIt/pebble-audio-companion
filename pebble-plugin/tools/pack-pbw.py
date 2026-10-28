@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Package this plugin-only project into a .pbw the Pebble app can sideload, without the Pebble SDK.
 
-    python3 tools/pack-pbw.py [project-dir]       # default: the directory above tools/
+    python3 tools/pack-pbw.py [project-dir] [--out FILE]
+                                       # default: the directory above tools/, build/<name>.pbw
 
 A plugin-only pbw has no watch binary: it is a zip of appinfo.json (built from package.json's
 `pebble` block, marked as using permissions with manifestVersion 2) and the files the manifest
 names, the plugin script and the bundled settings page, at the paths the manifest gives them.
-The result is written to build/<package name>.pbw.
+The result is written to build/<package name>.pbw, or to --out (the iOS app's build runs this
+straight into its own resources, so the app always carries the plugin as it is in this directory).
 
 Before writing, it checks what the Pebble app would otherwise reject or silently drop: a missing
 uuid, script, or settings page, sources without declared properties and shapes, and a plugin-defined
@@ -78,13 +80,21 @@ def bundled_files(appinfo):
 
 
 def main(argv):
-    project = os.path.abspath(argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), ".."))
+    args = argv[1:]
+    out = None
+    if "--out" in args:
+        index = args.index("--out")
+        if index + 1 >= len(args):
+            fail("--out needs a file name")
+        out = os.path.abspath(args[index + 1])
+        del args[index:index + 2]
+    project = os.path.abspath(args[0] if args else os.path.join(os.path.dirname(__file__), ".."))
     with open(os.path.join(project, "package.json"), encoding="utf-8") as f:
         package = json.load(f)
     appinfo = appinfo_for(package)
     check(appinfo)
 
-    out = os.path.join(project, "build", f"{package['name']}.pbw")
+    out = out or os.path.join(project, "build", f"{package['name']}.pbw")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as pbw:
         pbw.writestr("appinfo.json", json.dumps(appinfo, indent=2))

@@ -24,14 +24,18 @@ It is a plugin-only project for the plugin API of the Pebble app 1.15 and 1.16
 ```sh
 cd pebble-plugin
 node --test                         # the plugin against a fake host (Node 20 or later)
-python3 tools/pack-pbw.py           # writes build/pebble-audio.pbw
+python3 tools/pack-pbw.py           # writes build/pebble-audio.pbw (--out FILE writes there instead)
 ```
 
 Released `pebble-tool` cannot build a plugin-only project yet; `tools/pack-pbw.py` writes the same pbw it
 would: `appinfo.json` from `package.json`'s `pebble` block with `manifestVersion` 2 (uses permissions), and the
 script and settings page at the paths the manifest names. It refuses a manifest the Pebble app would reject.
 
-To put a build where the phone can open it:
+The iOS app carries the plugin: its build runs `tools/pack-pbw.py --out` into the app's resources on every build
+(`ios/project.yml`, "Bundle Pebble Plugin"), so Settings › Watch › **Install in Pebble App** always installs the
+plugin exactly as it is in this directory. Nothing is copied by hand for that.
+
+To put a build where the phone can open it from Files instead:
 
 ```sh
 mkdir -p ~/Desktop/PebblePlugins "$HOME/Library/Mobile Documents/com~apple~CloudDocs/PebblePlugins"
@@ -48,14 +52,15 @@ The server must have the plugin's endpoints first (deployed from `server/`, see 
 1. Turn on plugins in the Pebble app. On 1.15: **Settings › Debug › Show debug options**, then **Use
    experimental plugins**. On 1.16: **Settings › Plugins › Plugins / permissions preview**. An **Apps ›
    Plugins** tab appears.
-2. In the Files app, open **iCloud Drive › PebblePlugins** and tap **pebble-audio.pbw** (or share it to the
-   Pebble app). Install it, and allow internet access to `pebbleaudio.okgodoit.com` when the Pebble app asks.
-3. On the server, open **Connect an app › Pebble plugin** (`https://pebbleaudio.okgodoit.com/connect/pebble-plugin`)
-   and tap **Show a Code**.
-4. In the Pebble app, open **Apps › Plugins › Pebble Audio** and its settings, enter the code, and tap
-   **Connect**. The settings page says **Connected** with the watch's status, and the server's page turns its
-   wait into a check. The plugin is listed in **Who can read** as "Pebble plugin", read-only, and is
-   disconnected there like any other access.
+2. In Pebble Audio on the phone (linked to the server in Settings › AI Assistants), open **Settings › Watch** and
+   tap **Install in Pebble App**, then choose Pebble. (Or, in the Files app, open **iCloud Drive › PebblePlugins**
+   and tap **pebble-audio.pbw**.) Install it, and allow internet access to `pebbleaudio.okgodoit.com` when the
+   Pebble app asks.
+3. Under the install button, Settings › Watch shows a one-time code. Tap **Copy**.
+4. In the Pebble app, open **Apps › Plugins › Pebble Audio** and its settings, paste the code, and tap
+   **Connect**. The settings page says **Connected** with the watch's status, and Pebble Audio's Settings › Watch
+   says **Connected** with the plugin's last read. On the server, **Who can read** lists it under **On your
+   watch** as "Pebble plugin", read-only, and it is disconnected there.
 5. Open **Dashboard (Plugin Demo)** (1.15 names it "Plugin Demo: Dashboard"; it comes with plugins turned on)
    and its settings in the Pebble app. Point a tile at **audio/status** (for example `recording`, which draws
    a check and says Recording, Paused, Off, No watch, or Unknown) and another at **audio/conversation**
@@ -105,8 +110,9 @@ On `https://pebbleaudio.okgodoit.com`, JSON, `Cache-Control: no-store`. The two 
 token are refused) and answer 401 without one.
 
 `POST /plugin/link` (no token) `{ "code": "K7QM-3XWD" }` → `201 { "token": "pat_…" }`, a new read-only token
-named "Pebble plugin". Codes come from `/connect/pebble-plugin`: eight characters, ten minutes, once; case,
-spaces, and dashes do not matter, and showing a new code ends the last. `409 { "error" }` for a wrong, used, or
+named "Pebble plugin". Codes come from the phone app, which asks for one at `POST /sync/plugin-code`
+(`server/docs/sync-protocol.md` §5): eight characters, ten minutes, once; case, spaces, and dashes do not matter,
+and a new code ends the last. `409 { "error" }` for a wrong, used, or
 expired code; after ten wrong codes from one address in ten minutes, `429` (shared with `POST /link`).
 
 `GET /plugin/status` → the newest report from a linked phone (sync-protocol.md §2.8), with when it arrived and

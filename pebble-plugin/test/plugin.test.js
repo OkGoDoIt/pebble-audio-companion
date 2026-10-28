@@ -277,7 +277,7 @@ test('errors carry the host codes and safe words, never the token or the server'
   assert.equal(plugin.requests.length, 0);
 });
 
-test('settings: a code from the connect page becomes a token kept only in secure storage', async () => {
+test('settings: a code from Pebble Audio becomes a token kept only in secure storage', async () => {
   let linked = null;
   const plugin = load({
     routes: {
@@ -293,7 +293,7 @@ test('settings: a code from the connect page becomes a token kept only in secure
   assert.deepEqual(linked, { code: 'k7qm-3xwd' });
   assert.equal(plugin.requests[0].url, `${SERVER}/plugin/link`);
   assert.equal(plugin.requests[0].headers.Authorization, undefined, 'linking sends no token');
-  // Its first read is what turns the connect page's wait into a check.
+  // Its first read is what Pebble Audio's Settings › Watch shows as its last read.
   assert.equal(plugin.requests[1].headers.Authorization, `Bearer ${TOKEN}`);
   assert.deepEqual(reply, { connected: true, line: "Your phone hasn't sent the watch's status yet." });
   assert.equal(plugin.secure.get('token'), TOKEN);

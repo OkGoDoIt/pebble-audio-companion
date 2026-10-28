@@ -266,7 +266,8 @@ async function describe(token) {
   }
 }
 
-// A code from the connect page, or a pasted access key (pat_…) for someone who made one by hand.
+// A code from Pebble Audio on the phone (Settings › Watch), or a pasted access key (pat_…) for someone who made
+// one by hand.
 async function connect(entered) {
   var value = String(entered || '').trim();
   if (!value) return { connected: false, error: 'Enter the code from Pebble Audio.' };
@@ -285,7 +286,7 @@ async function connect(entered) {
       return { connected: false, error: UNREACHABLE.message };
     }
     if (response.status === 409) return { connected: false, error: 'That code didn\'t work. Codes last ten minutes and work once.' };
-    if (response.status === 429) return { connected: false, error: 'Too many tries. Wait a few minutes, then show a new code.' };
+    if (response.status === 429) return { connected: false, error: 'Too many tries. Wait a few minutes, then try a new code.' };
     if (response.status !== 201) {
       console.log('Pebble Audio: linking answered HTTP ' + response.status);
       return { connected: false, error: NO_ANSWER.message };
@@ -298,7 +299,7 @@ async function connect(entered) {
     if (typeof token !== 'string' || token.indexOf('pat_') !== 0) return { connected: false, error: NO_ANSWER.message };
   }
   // A pasted key is checked before it is kept. A linked one is known good; its first read below is
-  // what tells the server's connect page that the plugin has arrived.
+  // what Pebble Audio's Settings › Watch shows as its last read.
   if (value === token) {
     try {
       await get('/plugin/today', token);
