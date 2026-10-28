@@ -37,7 +37,7 @@ Living notes for whichever agent continues this. Newest state first. The design 
   key after-first-unlock, queue cap removed, recent-first claims, faster pace, Play Longer / Open
   Conversation on clips, quotes from paragraph text. Its ten-minute check never ran: G17 left the Mac
   at 18:44 and did not return overnight (waiter gave up 06:44 10-28).
-- NOT on G17: `6edbfc14` (profile screen samples) and the other agent's Muse/Focus commits up to
+- On G17 since 2026-10-28 10:10: `6edbfc14` (fallback; launch waited on unlock). NOT on G17: the other agent's Muse/Focus commits up to
   `c90ffbd7`. Main tip installs on the next reconnect (waiter `scratchpad/deploy-then-check.sh`,
   deploying `scratchpad/bg` = main).
 - Measured before the queue fix (18:20 DB): 512 pending jobs (the cap), 53 done, 5 recognized,
