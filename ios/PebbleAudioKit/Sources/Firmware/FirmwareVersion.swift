@@ -29,11 +29,22 @@ import Foundation
 ///
 /// Equality follows the same rule set: two versions are `==` exactly when they order the same.
 /// `4.36` and `v4.36.0` are equal; `4.36.1+audio.3` and `4.36.1` are not.
+///
+/// **`git describe` tags.** Every build of the branch is named by `git describe`
+/// (`tools/gitinfo.py`): `v4.41.0-678-g49b06928d` is 678 commits *after* v4.41.0. Read as semver
+/// that suffix is a prerelease, which would sort the build *before* v4.41.0 and order two builds
+/// by comparing their hashes as text. So a trailing `-<count>-g<hash>` (and `-dirty`) is taken
+/// as build metadata instead: `[count, g<hash>]`, count compared as a number. The watch's
+/// Device Information firmware revision and a release bundle's `versionTag` are both this form.
 public struct FirmwareVersion: Sendable, Hashable, Comparable, CustomStringConvertible {
     /// The version exactly as the feed (or the watch) spelled it. Displayed verbatim: an
     /// invented canonical form ("4.36.0" for a release tagged "v4.36") would not match what the
     /// person sees on the release page.
     public let raw: String
+
+    /// `raw` without a `git describe` hash: `v4.41.0-678` for `v4.41.0-678-g49b06928d`. The
+    /// commit count already says which build is newer; the hash is noise on a phone screen.
+    public let label: String
 
     /// The dot-separated numeric core, `v` stripped. Never empty.
     public let components: [Int]
@@ -63,6 +74,13 @@ public struct FirmwareVersion: Sendable, Hashable, Comparable, CustomStringConve
             buildText = body[body.index(after: plus)...]
             body = body[..<plus]
         }
+        var describeBuild: [String] = []
+        var label = trimmed
+        if let describe = FirmwareVersion.gitDescribeSuffix(body) {
+            body = describe.tag
+            describeBuild = describe.build
+            label = trimmed.replacingOccurrences(of: "-" + describe.hash, with: "")
+        }
         var prereleaseText = Substring("")
         if let dash = body.firstIndex(of: "-") {
             prereleaseText = body[body.index(after: dash)...]
@@ -84,9 +102,32 @@ public struct FirmwareVersion: Sendable, Hashable, Comparable, CustomStringConve
         }
 
         self.raw = trimmed
+        self.label = label
         self.components = parsed
         self.prerelease = FirmwareVersion.identifiers(prereleaseText)
-        self.build = FirmwareVersion.identifiers(buildText)
+        self.build = describeBuild + FirmwareVersion.identifiers(buildText)
+    }
+
+    /// Splits `4.41.0-678-g49b06928d[-dirty]` into the tag it describes and the build identifiers
+    /// `["678", "g49b06928d"(, "dirty")]`, or nil when there is no such suffix. The hash must be
+    /// `g` and at least four hex digits (git's shortest abbreviation), so an ordinary prerelease
+    /// like `4.37.0-rc.1` is never mistaken for one.
+    private static func gitDescribeSuffix(
+        _ body: Substring
+    ) -> (tag: Substring, build: [String], hash: String)? {
+        var parts = body.split(separator: "-", omittingEmptySubsequences: false)
+        var dirty = false
+        if parts.last == "dirty" {
+            dirty = true
+            parts.removeLast()
+        }
+        guard parts.count >= 3, let hash = parts.last, let count = parts.dropLast().last,
+            hash.count >= 5, hash.first == "g", hash.dropFirst().allSatisfy(\.isHexDigit),
+            !count.isEmpty, count.allSatisfy(\.isNumber)
+        else { return nil }
+        let tagLength = parts.dropLast(2).reduce(0) { $0 + $1.count } + parts.count - 3
+        let tag = body.prefix(tagLength)
+        return (tag, [String(count), String(hash)] + (dirty ? ["dirty"] : []), String(hash))
     }
 
     private static func identifiers(_ text: Substring) -> [String] {

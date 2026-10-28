@@ -35,6 +35,10 @@ public enum AudioCompanionGattIds {
     public static let batteryServiceUUID = GattUUID(string: "180F")
     /// Battery Level (org.bluetooth.characteristic.battery_level): one byte, 0-100.
     public static let batteryLevelCharacteristicUUID = GattUUID(string: "2A19")
+    /// Firmware Revision String (org.bluetooth.characteristic.firmware_revision_string). PebbleOS
+    /// fills it with the build's `git describe` tag (`fw/services/bluetooth/dis.c`), the same
+    /// value a release bundle's manifest carries as `versionTag`.
+    public static let firmwareRevisionCharacteristicUUID = GattUUID(string: "2A26")
     public static let serviceUUID = GattUUID(string: ProtocolConstants.serviceUUID)
     public static let infoCharacteristicUUID = GattUUID(string: ProtocolConstants.infoCharacteristicUUID)
     public static let controlCharacteristicUUID = GattUUID(string: ProtocolConstants.controlCharacteristicUUID)
@@ -49,6 +53,9 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
     /// purpose: it is still the best estimate anyone has, and Settings says separately whether
     /// the watch is connected right now.
     public let watchBatteryPercent = StateSubject<Int?>(nil)
+    /// See `AudioGattLink.watchFirmwareRevision`. Re-read on every connection, so the build a
+    /// flash installed replaces the old one as soon as the watch is back.
+    public let watchFirmwareRevision = StateSubject<String?>(nil)
 
     // Bounded so an unconsumed link (receiver stopped, link still subscribed) cannot grow
     // memory without limit; at ~7 data notifications/s the data bound is ~10 minutes.
@@ -1159,10 +1166,12 @@ extension CoreBluetoothAudioGattLink: CBCentralManagerDelegate {
     }
 
     /// The companion service, plus the watch's standard Battery Service for the battery
-    /// telemetry. Battery is best-effort: its absence changes nothing below.
+    /// telemetry and its Device Information Service for the exact firmware build. Both are
+    /// best-effort: their absence changes nothing below.
     private static let discoveredServiceUUIDs: [GattUUID] = [
         AudioCompanionGattIds.serviceUUID,
         AudioCompanionGattIds.batteryServiceUUID,
+        AudioCompanionGattIds.deviceInformationServiceUUID,
     ]
 
     public func centralManager(
@@ -1290,6 +1299,43 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
                 [AudioCompanionGattIds.batteryLevelCharacteristicUUID.raw], for: battery
             )
         }
+        if let information = peripheral.services?.first(where: {
+            $0.uuid == AudioCompanionGattIds.deviceInformationServiceUUID
+        }) {
+            peripheral.discoverCharacteristics(
+                [AudioCompanionGattIds.firmwareRevisionCharacteristicUUID.raw], for: information
+            )
+        }
+    }
+
+    /// The Device Information half of characteristic discovery: one read of the firmware
+    /// revision. Like the battery, nothing about the link waits on it.
+    private func handleDeviceInformationCharacteristics(_ peripheral: CBPeripheral,
+                                                        _ service: CBService, error: Error?) {
+        if let error {
+            log("device information: characteristic discovery failed: \(describeError(error))")
+            return
+        }
+        guard let revision = service.characteristics?.first(where: {
+            $0.uuid == AudioCompanionGattIds.firmwareRevisionCharacteristicUUID
+        }) else {
+            log("device information: no firmware revision characteristic")
+            return
+        }
+        peripheral.readValue(for: revision)
+    }
+
+    /// A Firmware Revision String: UTF-8, padded with NULs to the firmware's fixed field width.
+    private func handleFirmwareRevision(_ value: [UInt8], error: Error?) {
+        if let error {
+            log("firmware revision read failed: \(describeError(error))")
+            return
+        }
+        let text = String(decoding: value.prefix { $0 != 0 }, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, watchFirmwareRevision.value != text else { return }
+        watchFirmwareRevision.value = text
+        log("watch firmware \(text)")
     }
 
     /// The Battery Service half of characteristic discovery: read the level once now, and
@@ -1338,6 +1384,10 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         // companion service failing discovery, which is what the fall-through below would call it.
         if service.uuid == AudioCompanionGattIds.batteryServiceUUID {
             handleBatteryCharacteristics(peripheral, service, error: error)
+            return
+        }
+        if service.uuid == AudioCompanionGattIds.deviceInformationServiceUUID {
+            handleDeviceInformationCharacteristics(peripheral, service, error: error)
             return
         }
         if let error {
@@ -1435,6 +1485,8 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
             }
         case AudioCompanionGattIds.batteryLevelCharacteristicUUID:
             handleBatteryLevel(value, error: error)
+        case AudioCompanionGattIds.firmwareRevisionCharacteristicUUID:
+            handleFirmwareRevision(value, error: error)
         default:
             break
         }

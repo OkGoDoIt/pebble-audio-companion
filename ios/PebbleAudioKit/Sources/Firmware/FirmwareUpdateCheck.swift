@@ -2,16 +2,15 @@ import Foundation
 
 /// Where a belief about the installed firmware came from.
 ///
-/// The provenance is part of the answer, not decoration. This app has never once been told the
-/// watch's firmware version — `InfoSnapshot.fwVersionPacked` is in the wire layout
-/// (`PROTOCOL.md` §3, offset 12) but `audio_companion_fill_info()` never assigns it, so the word
-/// arrives zero — which means every version this screen can show is either a memory of what the
-/// app itself handed over or nothing at all. Saying "Installed: 4.36" from a hand-off record
-/// would be a claim the app cannot support: the person may have cancelled at the share sheet,
-/// the Pebble app may have refused the board, the watch may have been out of range.
+/// The provenance is part of the answer, not decoration. The watch states its exact build in its
+/// Device Information Service, and that is the only source strong enough to say "up to date".
+/// (The companion Info characteristic's `fw_version_packed` is major.minor.patch only, which
+/// every build of a release shares, so it cannot tell two builds apart.) Saying "Installed: 4.36"
+/// from a hand-off record would be a claim the app cannot support: the person may have cancelled
+/// at the share sheet, the Pebble app may have refused the board, the watch may have been out of
+/// range.
 public enum FirmwareVersionSource: Sendable, Equatable {
-    /// The watch reported it over the audio-companion Info characteristic. Reserved for the day
-    /// the firmware fills that field; nothing produces this today.
+    /// The watch reported it: the Firmware Revision String of its Device Information Service.
     case watchReported
     /// This app handed that build to the Pebble app on this date. A record of an intention, not
     /// of an install — worded that way everywhere it is shown.

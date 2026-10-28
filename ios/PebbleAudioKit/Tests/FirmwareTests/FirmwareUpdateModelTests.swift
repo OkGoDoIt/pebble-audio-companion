@@ -317,6 +317,39 @@ struct FirmwareUpdateModelTests {
         #expect(subject.lastHandoff == nil)
     }
 
+    @Test("A build the watch reports after the feed arrived re-decides the offer")
+    func reevaluatesWhenTheWatchReports() async throws {
+        let directory = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = ReportedBox()
+        let subject = FirmwareUpdateModel(
+            source: URL(string: "https://example.invalid/firmware.json"),
+            fetcher: StubFetcher(result: .success(try feed())),
+            downloader: StubDownloader(bytes: Data()),
+            staging: FirmwareStagingArea(directory: directory),
+            handoffLog: InMemoryFirmwareHandoffLog(),
+            cache: nil,
+            watchReportedVersion: { box.value }
+        )
+        await subject.refresh()
+        #expect(subject.availability?.isUpdate == false)  // nothing known yet
+
+        box.value = "v4.10.0-12-gabcdef12"
+        subject.reevaluate()
+        #expect(subject.availability?.isUpdate == true)
+
+        // A hand-off does not outrank the watch: until it reports the new build, the offer stands.
+        let offered = try #require(subject.availability?.release)
+        subject.recordHandoff(
+            of: offered, destination: .openedInApp, openedIn: PebbleAppHandoff.bundleIdentifier
+        )
+        #expect(subject.availability?.isUpdate == true)
+
+        box.value = offered.version.raw
+        subject.reevaluate()
+        #expect(subject.availability?.isUpdate == false)
+    }
+
     @Test("The Pebble app is recognised by bundle id, and nothing else is")
     func recognisesPebble() {
         #expect(PebbleAppHandoff.isPebbleApp("coredevices.coreapp"))
@@ -327,6 +360,11 @@ struct FirmwareUpdateModelTests {
     }
 
     // MARK: Helpers
+
+    @MainActor
+    private final class ReportedBox {
+        var value: String?
+    }
 
     private func writeTemp(_ bytes: Data, in directory: URL) throws -> URL {
         let url = directory.appendingPathComponent("source-\(UUID().uuidString).bin")

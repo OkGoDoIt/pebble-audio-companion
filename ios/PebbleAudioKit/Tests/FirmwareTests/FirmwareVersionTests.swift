@@ -66,6 +66,28 @@ struct FirmwareVersionTests {
         #expect(FirmwareVersion("four") == nil)
     }
 
+    @Test("A git describe build comes after its tag, ordered by commit count")
+    func gitDescribe() throws {
+        // What the watch's Device Information Service and a bundle's versionTag both say.
+        let installed = try v("v4.41.0-640-g0a1b2c3d4")
+        let published = try v("v4.41.0-678-g49b06928d")
+        #expect(installed < published)
+        #expect(try v("v4.41.0") < installed)  // 640 commits AFTER the tag, not a prerelease
+        #expect(try v("v4.41.0-999-gaaaaaaa") < v("v4.41.0-1000-gbbbbbbb"))  // count, not text
+        #expect(try published < v("v4.42.0"))
+        #expect(try published == v("v4.41.0-678-g49b06928d"))
+        #expect(try v("v4.41.0-rc1-5-gabcdef1") < v("v4.41.0"))  // still a prerelease of 4.41.0
+        #expect(try v("v4.41.0-678-g49b06928d") < v("v4.41.0-678-g49b06928d-dirty"))
+    }
+
+    @Test("A git describe build is labelled without its hash")
+    func gitDescribeLabel() throws {
+        #expect(try v("v4.41.0-678-g49b06928d").label == "v4.41.0-678")
+        #expect(try v("v4.41.0-678-g49b06928d-dirty").label == "v4.41.0-678-dirty")
+        #expect(try v("v4.37.0-rc.1").label == "v4.37.0-rc.1")
+        #expect(try v("v4.36.1").label == "v4.36.1")
+    }
+
     @Test("Whitespace around a tag does not change it")
     func trimsWhitespace() throws {
         #expect(try v("  v4.36.1\n") == v("4.36.1"))

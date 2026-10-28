@@ -74,6 +74,13 @@ public protocol AudioGattLink: Sendable {
     /// (fakes, command-line tools) keep the default and never publish one.
     var watchBatteryPercent: StateSubject<Int?> { get }
 
+    /// The watch's exact firmware build ("v4.41.0-678-g49b06928d"), from the Firmware Revision
+    /// String of the standard Device Information Service; nil until one has been read. The
+    /// companion Info characteristic carries only major.minor.patch, which every build on the
+    /// branch shares, so this is the one value that can say whether a published build is newer.
+    /// Links that cannot read it (fakes, command-line tools) keep the default.
+    var watchFirmwareRevision: StateSubject<String?> { get }
+
     /// Reads the Info characteristic (raw 20-byte snapshot).
     func readInfo() async throws -> [UInt8]
 
@@ -121,10 +128,13 @@ public protocol AudioGattLink: Sendable {
 private let unnamedDevice = StateSubject<String?>(nil)
 /// Same reasoning, for links that never read the watch's battery.
 private let unknownWatchBattery = StateSubject<Int?>(nil)
+/// Same reasoning, for links that never read the watch's firmware revision.
+private let unknownFirmwareRevision = StateSubject<String?>(nil)
 
 public extension AudioGattLink {
     var deviceName: StateSubject<String?> { unnamedDevice }
     var watchBatteryPercent: StateSubject<Int?> { unknownWatchBattery }
+    var watchFirmwareRevision: StateSubject<String?> { unknownFirmwareRevision }
     func connect() {}
     func disconnect() {}
     func resync() {}

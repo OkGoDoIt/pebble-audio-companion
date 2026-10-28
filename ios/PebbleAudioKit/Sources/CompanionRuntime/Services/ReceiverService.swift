@@ -231,6 +231,10 @@ public actor ReceiverService {
     public nonisolated var deviceName: StateSubject<String?> { link.deviceName }
     /// The watch's own battery level, from its Battery Service. Nil until one has been read.
     public nonisolated var watchBatteryPercent: StateSubject<Int?> { link.watchBatteryPercent }
+    /// The watch's exact firmware build, from its Device Information Service. Nil until read.
+    public nonisolated var watchFirmwareRevision: StateSubject<String?> {
+        link.watchFirmwareRevision
+    }
     /// Control messages the session has written to the watch. Telemetry for the heartbeat.
     public nonisolated var outboundControlCount: StateSubject<Int> { session.outboundControlCount }
     public nonisolated var captureIntent: CaptureIntent { intentBox.value }

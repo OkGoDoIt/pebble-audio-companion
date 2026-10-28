@@ -99,10 +99,13 @@ public final class FirmwareUpdateModel {
     @ObservationIgnored private let staging: FirmwareStagingArea
     @ObservationIgnored private let handoffLog: any FirmwareHandoffLogging
     @ObservationIgnored private let cache: FirmwareFeedCache?
-    /// The watch's own reported version, when it ever reports one. Supplied by the app layer
-    /// (`SettingsDataSources.current.watch.firmwareVersion`), which reads it off the Info
-    /// characteristic. Today it is always nil; the design does not depend on it.
+    /// The watch's own reported build, nil until the watch has been read. Supplied by the app
+    /// layer (`SettingsDataSources.current.watch.firmwareRevision`), which reads it off the
+    /// watch's Device Information Service.
     @ObservationIgnored private let watchReportedVersion: @MainActor () -> String?
+    /// The feed the current answer was decided from, kept so `reevaluate()` can decide again
+    /// when what is known about the watch changes, without another fetch.
+    @ObservationIgnored private var lastFeed: FirmwareFeed?
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
     /// Retires a superseded download; see `startDownload`.
     @ObservationIgnored private var downloadGeneration = 0
@@ -132,10 +135,9 @@ public final class FirmwareUpdateModel {
 
     /// What this app believes is on the watch, and why.
     ///
-    /// The watch's own word wins when it exists. It does not today: the audio-companion Info
-    /// characteristic's `fw_version_packed` is never assigned by the firmware, so the app reads
-    /// zero and `firmwareVersion` comes back nil. The fallback is this app's memory of what it
-    /// handed over, which is a much weaker claim and is labelled as one everywhere.
+    /// The watch's own word wins when it exists: the exact build it reports through its Device
+    /// Information Service. The fallback is this app's memory of what it handed over, which is a
+    /// much weaker claim and is labelled as one everywhere.
     public var known: KnownFirmware? {
         if let reported = watchReportedVersion(), let version = FirmwareVersion(reported) {
             return KnownFirmware(version: version, source: .watchReported)
@@ -163,6 +165,7 @@ public final class FirmwareUpdateModel {
         do {
             let feed = try await fetcher.fetch(from: source)
             feedRejectedCount = feed.rejectedCount
+            lastFeed = feed
             check = .loaded(evaluate(feed), checkedAt: Date(), fromCache: false)
         } catch {
             // Offline is not the same as "there is no firmware". If a feed was read before, show
@@ -170,6 +173,7 @@ public final class FirmwareUpdateModel {
             // act on.
             if let entry = cache?.load(sourceURL: source) {
                 feedRejectedCount = entry.feed.rejectedCount
+                lastFeed = entry.feed
                 check = .loaded(evaluate(entry.feed), checkedAt: entry.fetchedAt, fromCache: true)
             } else {
                 feedRejectedCount = 0
@@ -180,6 +184,16 @@ public final class FirmwareUpdateModel {
 
     private func evaluate(_ feed: FirmwareFeed) -> FirmwareAvailability {
         FirmwareUpdateCheck.evaluate(feed: feed, board: nil, installed: known?.version)
+    }
+
+    /// Decides again against the feed already read. For when the watch reports its build after
+    /// the feed arrived — the usual order on a fresh connection — or reports a new one after a
+    /// flash. A no-op until a feed has been read.
+    public func reevaluate() {
+        guard let lastFeed, case .loaded(_, let checkedAt, let fromCache) = check else { return }
+        let decided = evaluate(lastFeed)
+        guard decided != availability else { return }
+        check = .loaded(decided, checkedAt: checkedAt, fromCache: fromCache)
     }
 
     // MARK: Downloading
@@ -274,18 +288,9 @@ public final class FirmwareUpdateModel {
         lastHandoff = handoff
         // Re-decide against the new belief, so the screen stops offering what was just sent.
         // A Files export forms no belief (`FirmwareHandoff.known`), so it correctly leaves the
-        // offer standing.
-        if case .loaded(let availability, let checkedAt, let fromCache) = check,
-           let offered = availability.release,
-           let version = handoff.known?.version {
-            check = .loaded(
-                FirmwareUpdateCheck.evaluate(
-                    feed: FirmwareFeed(releases: [offered]), board: nil, installed: version
-                ),
-                checkedAt: checkedAt,
-                fromCache: fromCache
-            )
-        }
+        // offer standing — and so does a watch that is still reporting the old build, because
+        // the watch's own word outranks this app's memory of what it sent.
+        reevaluate()
     }
 
     /// Drops the memory of the last hand-off — for when it is wrong (the install was cancelled,
