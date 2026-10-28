@@ -87,6 +87,19 @@ Living notes for whichever agent continues this. Newest state first. The design 
 - `575f3037` (not voice) archive sync reads its saved `state.json` in `init`: a pass at launch ran before
   `start()` loaded it, re-sent the preferences, re-marked every conversation for the transcript export,
   and saved that over the real state — every launch since 10-22. Test `aPassBeforeStartWorksFromTheSavedState`.
+- `b2a557af` **voice prints: a new sample no longer restarts the history scan.** Every analysed
+  turn keeps its print (`voice_turn_prints`, sealed half-precision vector; `voice_print_sources` holds the
+  merged analysed ranges and the corpus revision its names were matched against; migration
+  `voice-turn-prints-v1`; triggers drop them with the source's generation bump and recognition off).
+  A corpus change no longer cancels jobs or resets history plans (`reconcileCorpus` is gone, jobs are
+  valid across corpus revisions via `VoiceWorkToken.sameWork`). `renameFromPrints` runs first in every
+  allowed slice: ≤ 2,000 prints, diffed so an unchanged name is never rewritten (no archive churn), a
+  stopped run keeps its names, an undone one gives them up. A job over audio already analysed adopts it
+  (`adoptAnalyzed`, no model time) and an explicit rerun no longer deletes names on analysed audio.
+  `clearAutomatic` freezes prints (`frozenCorpus`) until a history run asks again. `SpeakerMatchRoster`
+  prepares the roster once; a test checks it decides exactly as `SpeakerMatcher.match`. Names are always
+  matched from the saved half-precision print, so a re-read decides as the first reading did.
+  `pendingRecordings` counts recordings waiting to be re-matched. Recent run IDs drop the corpus revision.
 - (superseded) three directions for the question UI — A queue in People & voices, B one question on
   Today, C a hint inside the conversation with per-recording Yes/No — in
   `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
