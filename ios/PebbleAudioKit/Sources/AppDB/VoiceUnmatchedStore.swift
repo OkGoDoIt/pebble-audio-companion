@@ -71,6 +71,69 @@ public struct VoiceUnmatchedStore: Sendable {
         }
     }
 
+    /// A human dismissal belongs to this audio range, never to an embedding or a person.
+    /// Keep it across model changes, reanalysis, and recognition being toggled off and on.
+    public func ignore(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws {
+        guard !segmentId.isEmpty, startMediaMs >= 0, endMediaMs > startMediaMs else {
+            throw VoiceIdentityError.invalidRecord
+        }
+        try await db.writer.write { d in
+            try Self.ignore(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
+        }
+    }
+
+    public func ignore(_ crops: [VoiceUnmatchedCrop]) async throws {
+        try await db.writer.write { d in
+            for crop in crops {
+                try Self.ignore(d, segmentId: crop.segmentId, start: crop.startMediaMs, end: crop.endMediaMs)
+            }
+        }
+    }
+
+    /// Also check saved decisions when naming a group captured before a dismissal.
+    public func excludingIgnored(_ crops: [VoiceUnmatchedCrop]) async throws -> [VoiceUnmatchedCrop] {
+        try await db.reader.read { d in
+            try crops.filter { crop in
+                try Bool.fetchOne(d, sql: """
+                    SELECT EXISTS(SELECT 1 FROM voice_ignored_clips WHERE segmentId = ?
+                        AND startMediaMs < ? AND endMediaMs > ?)
+                    """, arguments: [crop.segmentId, crop.endMediaMs, crop.startMediaMs]) != true
+            }
+        }
+    }
+
+    private static func ignore(_ d: Database, segmentId: String, start: Int64, end: Int64) throws {
+        // A stale sheet must not recreate metadata for a deleted recording.
+        try d.execute(sql: """
+            INSERT OR IGNORE INTO voice_ignored_clips(segmentId,startMediaMs,endMediaMs)
+            SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM voice_sources WHERE segmentId = ? AND state NOT IN ('deleted','expired'))
+            """, arguments: [segmentId, start, end, segmentId])
+        try d.execute(sql: """
+            DELETE FROM voice_unmatched_crops WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?
+            """, arguments: [segmentId, end, start])
+    }
+
+    static func installIgnoredClipsSchema(_ d: Database) throws {
+        try d.execute(sql: """
+            CREATE TABLE voice_ignored_clips (
+                segmentId TEXT NOT NULL, startMediaMs INTEGER NOT NULL, endMediaMs INTEGER NOT NULL,
+                PRIMARY KEY(segmentId,startMediaMs,endMediaMs),
+                CHECK(startMediaMs >= 0 AND endMediaMs > startMediaMs)
+            );
+            CREATE TRIGGER voice_unmatched_skip_ignored BEFORE INSERT ON voice_unmatched_crops
+            WHEN EXISTS (SELECT 1 FROM voice_ignored_clips i WHERE i.segmentId = NEW.segmentId
+                AND i.startMediaMs < NEW.endMediaMs AND i.endMediaMs > NEW.startMediaMs)
+            BEGIN SELECT RAISE(IGNORE); END;
+            CREATE TRIGGER voice_ignored_source_deleted AFTER DELETE ON voice_sources BEGIN
+                DELETE FROM voice_ignored_clips WHERE segmentId = OLD.segmentId;
+            END;
+            CREATE TRIGGER voice_ignored_source_retired AFTER UPDATE OF state ON voice_sources
+            WHEN NEW.state IN ('deleted','expired') BEGIN
+                DELETE FROM voice_ignored_clips WHERE segmentId = NEW.segmentId;
+            END;
+            """)
+    }
+
     static func insert(_ d: Database, _ crops: [VoiceUnmatchedCrop]) throws {
         guard !crops.isEmpty else { return }
         for c in crops {

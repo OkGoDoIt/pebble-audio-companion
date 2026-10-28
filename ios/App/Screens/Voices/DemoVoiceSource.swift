@@ -79,6 +79,13 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
         return count
     }
     func dismissUnknownVoice(id: String) async throws { unknown.removeAll { $0.id == id } }
+    func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
+        for index in unknown.indices {
+            unknown[index].clips.removeAll { $0.id == clip.id }
+            unknown[index].recordingCount = Set(unknown[index].clips.map(\.segmentId)).count
+        }
+        unknown.removeAll { $0.clips.isEmpty }
+    }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { nil }
     func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { nil }
     func cancelEnrollment() async {}

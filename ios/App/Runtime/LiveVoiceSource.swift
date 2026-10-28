@@ -182,9 +182,12 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     }
 
     func dismissUnknownVoice(id: String) async throws {
-        guard let group = unknownGroups[id] else { return }
+        guard let group = unknownGroups[id] else { throw SpeakerEditorError.voiceUnavailable }
         try await service.dismissUnknownVoice(group)
         unknownGroups[id] = nil
+    }
+    func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
+        try await service.ignoreUnknownClip(segmentId: clip.segmentId, startMediaMs: clip.startMs, endMediaMs: clip.endMs)
     }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
         try? await service.clipPCM(segmentId: segmentId, startMediaMs: startMs, endMediaMs: endMs)

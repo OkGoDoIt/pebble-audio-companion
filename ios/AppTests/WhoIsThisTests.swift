@@ -45,6 +45,33 @@ struct WhoIsThisTests {
         #expect(people.registry.last?.name == "Sam" && voices.namedUnknown.last?.1 == people.registry.last?.id)
     }
 
+    @Test func ignoringOnlyTheChosenClipDoesNotNameOrTeachAndFailureAllowsRetry() async throws {
+        let voices = VoiceTestSource(), people = People()
+        let model = WhoIsThisModel(voices: voices, people: people)
+        let clip = try #require(voice().clips.first)
+        voices.failIgnore = true
+        #expect(await !model.ignore(clip))
+        #expect(model.errorMessage != nil && !model.working)
+        #expect(voices.ignoredClips.isEmpty)
+        voices.failIgnore = false
+        #expect(await model.ignore(clip))
+        #expect(model.errorMessage == nil && !model.working)
+        #expect(voices.ignoredClips == [clip])
+        #expect(voices.namedUnknown.isEmpty && voices.dismissedUnknown.isEmpty)
+        #expect(voices.enrollmentPeople.isEmpty && voices.learnedRechecks.isEmpty)
+    }
+
+    @Test func ignoringAllUsesTheWholeGroupWithoutNamingOrLearning() async {
+        let voices = VoiceTestSource(), model = WhoIsThisModel(voices: voices, people: People())
+        voices.failIgnore = true
+        #expect(await !model.ignoreAll(voice()))
+        #expect(model.errorMessage != nil && voices.dismissedUnknown.isEmpty)
+        voices.failIgnore = false
+        #expect(await model.ignoreAll(voice()))
+        #expect(model.errorMessage == nil && voices.dismissedUnknown == ["v"])
+        #expect(voices.ignoredClips.isEmpty && voices.namedUnknown.isEmpty && voices.enrollmentPeople.isEmpty)
+    }
+
     @Test func aRecurringVoiceIsMarkedOnlyOnUnnamedParagraphsItOverlaps() async {
         let members = [ConversationMember(segmentId: "s", startMediaMs: 0, endMediaMs: 30_000)]
         let transcripts = ["s": Library.transcript("s", [

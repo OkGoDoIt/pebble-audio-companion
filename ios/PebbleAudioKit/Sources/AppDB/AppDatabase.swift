@@ -912,6 +912,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("follow-ups-wall-replace-v1") { db in
             try FollowUpWallTimeFill.listForReplacement(db)
         }
+        migrator.registerMigration("voice-ignored-clips-v1") { db in
+            try VoiceUnmatchedStore.installIgnoredClipsSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

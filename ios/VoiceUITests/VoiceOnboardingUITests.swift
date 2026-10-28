@@ -3,6 +3,44 @@ import XCTest
 /// Explicit simulator smoke test; its separate scheme keeps model downloads out of unit tests.
 /// Exercises the real composition, model installer, persistence and production views.
 final class VoiceOnboardingUITests: XCTestCase {
+    @MainActor func testIgnoreSuggestedClipsIndividuallyAndAllTogether() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")
+        app.launchArguments = ["-demo-data", "-onboarding.skip", "-route", "settings/voices"]
+        app.launch()
+        let six = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Heard in 6 recordings")).firstMatch
+        for _ in 0..<5 {
+            if six.exists && six.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(six.isHittable)
+        six.tap()
+        XCTAssertTrue(app.buttons["Ignore All Clips"].waitForExistence(timeout: 5))
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        }
+        capture("Ignore all clips on question screen")
+        app.buttons["More for this clip"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Ignore Clip"].waitForExistence(timeout: 5))
+        capture("Ignore individual clip menu")
+        app.buttons["Ignore Clip"].tap()
+        let five = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Heard in 5 recordings")).firstMatch
+        XCTAssertTrue(five.waitForExistence(timeout: 5))
+        five.tap()
+        XCTAssertTrue(app.buttons["Ignore All Clips"].waitForExistence(timeout: 5))
+        // There are five clips but only three previews: all five must be dismissed.
+        app.buttons["Ignore All Clips"].tap()
+        let four = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Heard in 4 recordings")).firstMatch
+        XCTAssertTrue(four.waitForExistence(timeout: 5))
+        XCTAssertFalse(five.exists)
+        capture("Only unrelated suggested voice remains")
+        four.tap()
+        XCTAssertTrue(app.buttons["Ignore All Clips"].waitForExistence(timeout: 5))
+        app.buttons["Ignore All Clips"].tap()
+        XCTAssertFalse(four.waitForExistence(timeout: 2))
+    }
+
     @MainActor func testFocusQuietTimeOptInPersistsAndSetupIsReadable() throws {
         continueAfterFailure = false
         let app = XCUIApplication(bundleIdentifier: "dev.audiocompanion.app.dev")

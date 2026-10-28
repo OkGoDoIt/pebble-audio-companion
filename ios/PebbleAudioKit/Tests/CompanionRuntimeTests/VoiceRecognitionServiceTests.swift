@@ -479,6 +479,28 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
 }
 
 @Suite struct UnknownVoiceNamingTests {
+    @Test func dismissingTheWholeGroupDoesNotTeachOrAllowAStaleAnswerToNameItsClips() async throws {
+        let db = try AppDatabase.inMemory()
+        let identity = VoiceIdentityStore(db: db)
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let service = VoiceRecognitionService(database: db, files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")),
+            models: VoiceTestModels(), analyzer: VoiceTestAnalyzer(), policy: VoiceRecognitionService.initialPolicy,
+            recipeID: "test-recipe", protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
+        var crops: [VoiceUnmatchedCrop] = []
+        for segment in ["a", "b", "c", "d"] {
+            _ = try await identity.prepareSource(segmentId: segment, revision: "r")
+            crops.append(VoiceUnmatchedCrop(segmentId: segment, startMediaMs: 0, endMediaMs: 3_000,
+                sourceRevision: "r", recipeID: "test-recipe", embeddingJSON: Data(), speechConfidence: 0.9))
+        }
+        let group = VoiceRecognitionService.UnknownVoiceGroup(crops: crops)
+        try await service.dismissUnknownVoice(group)
+        #expect(try await VoiceUnmatchedStore(db: db).excludingIgnored(crops).isEmpty,
+                "All four clips are dismissed, including the one beyond the three previews")
+        #expect(try await service.nameUnknownVoice(group, personId: person.id) == 0)
+        #expect(try await identity.examples().isEmpty)
+        #expect(try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["a", "b", "c", "d"]).corrections.isEmpty)
+    }
+
     @Test func namingAVoiceNamesTheWiderRangeAndForgetsTheGroup() async throws {
         let db = try AppDatabase.inMemory()
         let person = try await PeopleStore(db: db).createPerson(name: "Dana")

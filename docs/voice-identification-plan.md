@@ -4,6 +4,20 @@ Research checked **2026-10-25** against 34 primary sources. The native iOS imple
 
 Build an **optional voice identity layer owned by Pebble Audio**, independent of transcription and AI. People can enroll their own voice, remember other people, correct an audio passage, and find voices in retained recordings without changing transcription providers. Manual naming remains useful with recognition off. A wrong confident name is worse than an unnamed speaker.
 
+## Noise suggestions — October 28, 2026
+
+The existing “Who is this?” sheet offers **Ignore All Clips** directly below “More than one
+person”, and **Ignore Clip** in each clip’s menu. Ignoring all applies to the entire suggestion,
+including clips beyond the three previews. After a successful save the sheet closes and the
+suggestions refresh. A failed save keeps the sheet open for retry. “Not Now” only closes it.
+
+These are decisions about particular audio ranges, not evidence about a voice. Persist the
+recording ID and media range without an embedding, person assignment, or training example.
+Reanalysis, model changes, and toggling recognition must not restore dismissed clips. Other
+nonoverlapping clips, including similar-sounding audio elsewhere, remain eligible. Delete the
+dismissal metadata with its source recording. The queue’s existing “Don’t Ask About This Voice”
+action uses the same range-based behavior.
+
 ## Implementation status — October 25, 2026
 
 ### Implemented in native iOS

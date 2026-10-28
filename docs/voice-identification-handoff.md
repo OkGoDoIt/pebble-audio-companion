@@ -22,6 +22,17 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
+- **2026-10-28, noise suggestions:** "Who is this?" now has **Ignore All Clips** below "More than
+  one person", plus **Ignore Clip** in each clip menu. Both save audio-range dismissals, never
+  embedding-based negative evidence. All includes the group's crops beyond the three previews.
+  Reanalysis, changed models, and recognition off/on preserve dismissals; deletion/retention
+  clears them with the source. The existing queue context-menu dismissal uses the same durable
+  path. G17 was freshly checked and **unavailable**; this change has not been installed.
+  Kit: 2,697 tests passed (two pre-existing known segmentation issues); App: 823 passed / 8 skipped.
+  The simulator interaction test covers individual dismissal, whole-group dismissal including
+  hidden previews, and leaving an unrelated suggestion intact. DB tests cover reopen, reanalysis,
+  adjacent/similar audio staying eligible, no training/naming, and stale naming after dismissal.
+
 - On G17: `f69a8623` (installed 2026-10-27 18:32 +07): background recognition while charging, voice
   key after-first-unlock, queue cap removed, recent-first claims, faster pace, Play Longer / Open
   Conversation on clips, quotes from paragraph text. Its ten-minute check never ran: G17 left the Mac

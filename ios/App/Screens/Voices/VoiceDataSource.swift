@@ -181,8 +181,9 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     /// Names the voice in every recording it was heard in, or only in `recordings` when the
     /// group turned out to mix people; the rest stay unnamed. Returns how many recordings.
     func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int
-    /// "More than one person": stop asking about this group.
+    /// Stop asking about these particular clips, without learning from their voices.
     func dismissUnknownVoice(id: String) async throws
+    func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws
     /// A clip's audio (16 kHz mono PCM) for listening before naming.
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data?
     /// The clip with several seconds of audio either side.

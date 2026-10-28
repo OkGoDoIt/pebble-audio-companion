@@ -776,6 +776,7 @@ public actor VoiceRecognitionService {
     /// of a paragraph leaves the paragraph unnamed.
     public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String,
                                  naming: @Sendable (VoiceUnmatchedCrop) -> Range<Int64>? = { _ in nil }) async throws -> Int {
+        let group = UnknownVoiceGroup(crops: try await VoiceUnmatchedStore(db: store.db).excludingIgnored(group.crops))
         let corrections = SpeakerCorrectionStore(db: store.db)
         for crop in group.crops {
             let range = naming(crop) ?? crop.startMediaMs..<crop.endMediaMs
@@ -799,10 +800,15 @@ public actor VoiceRecognitionService {
         return learned
     }
 
-    /// "Not now" or "not one person": the group stops being asked about. New crops of the voice
-    /// may form a new group later.
+    /// Permanently dismiss these clips. Different recordings of a similar voice can still appear.
     public func dismissUnknownVoice(_ group: UnknownVoiceGroup) async throws {
-        try await VoiceUnmatchedStore(db: store.db).remove(ids: group.crops.map(\.id))
+        try await VoiceUnmatchedStore(db: store.db).ignore(group.crops)
+        changed()
+    }
+
+    public func ignoreUnknownClip(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws {
+        try await VoiceUnmatchedStore(db: store.db).ignore(segmentId: segmentId,
+            startMediaMs: startMediaMs, endMediaMs: endMediaMs)
         changed()
     }
 

@@ -52,12 +52,21 @@ import Testing
     var unknown: [UnknownVoiceDisplay] = []
     var namedUnknown: [(String, String, Set<String>?)] = []
     var dismissedUnknown: [String] = []
+    var ignoredClips: [UnknownVoiceClip] = []
+    var failIgnore = false
     func unknownVoices() async -> [UnknownVoiceDisplay] { unknown }
     func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
         namedUnknown.append((id, personId, recordings))
         return recordings?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
     }
-    func dismissUnknownVoice(id: String) async throws { dismissedUnknown.append(id) }
+    func dismissUnknownVoice(id: String) async throws {
+        if failIgnore { throw Failure.unavailable }
+        dismissedUnknown.append(id)
+    }
+    func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
+        if failIgnore { throw Failure.unavailable }
+        ignoredClips.append(clip)
+    }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? { Data(count: 64_000) }
     var contextRequests: [String] = []
     func clipContextAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {

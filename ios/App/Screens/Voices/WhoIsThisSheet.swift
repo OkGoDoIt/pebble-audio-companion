@@ -55,6 +55,15 @@ struct WhoIsThisSheet: View {
                     }
                     .font(AppFont.callout.weight(.semibold)).foregroundStyle(Tokens.tint)
                     .frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
+                    Button("Ignore All Clips") {
+                        Task {
+                            guard await model.ignoreAll(voice) else { return }
+                            onAnswered("Clips ignored")
+                            dismiss()
+                        }
+                    }
+                    .font(AppFont.callout).foregroundStyle(Tokens.tint)
+                    .frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
                 }
             }
             .navigationDestination(isPresented: $splitting) { splitPage }
@@ -183,11 +192,19 @@ struct WhoIsThisSheet: View {
                 if clip.heardAt != nil {
                     Button("Open Conversation", systemImage: "text.bubble") { show(clip) }
                 }
+                Button("Ignore Clip", systemImage: "nosign") {
+                    Task {
+                        guard await model.ignore(clip) else { return }
+                        onAnswered("Clip ignored")
+                        dismiss()
+                    }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundStyle(Tokens.tint)
                     .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("More for this clip")
+            .disabled(model.working)
         }
     }
 
@@ -293,6 +310,22 @@ final class WhoIsThisModel {
     }
 
     func couldNotOpen() { errorMessage = "Couldn’t find this moment in a conversation." }
+
+    func ignore(_ clip: UnknownVoiceClip) async -> Bool {
+        await answer {
+            guard let voices = self.voices else { throw SpeakerEditorError.voiceUnavailable }
+            try await voices.ignoreUnknownClip(clip)
+            return "ignored"
+        } != nil
+    }
+
+    func ignoreAll(_ voice: UnknownVoiceDisplay) async -> Bool {
+        await answer {
+            guard let voices = self.voices else { throw SpeakerEditorError.voiceUnavailable }
+            try await voices.dismissUnknownVoice(id: voice.id)
+            return "ignored"
+        } != nil
+    }
 
     /// The person's display name on success.
     func name(_ voice: UnknownVoiceDisplay, personId: String, recordings: Set<String>? = nil) async -> String? {
