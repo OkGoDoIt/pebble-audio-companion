@@ -43,7 +43,7 @@ import Testing
                     "coreai parakeet",
                     ParakeetTranscriptionProvider(
                         spec: spec, location: location, engine: CoreAIParakeetEngine.shared,
-                        temporaryDirectory: temp, boostQuietAudio: { false })
+                        temporaryDirectory: temp)
                 ))
                 // The TDT decoder's per-step graphs on the CPU (`CoreAIParakeetEngine
                 // .decoderOnCPU`): same encoder, same bundle, a different placement.
@@ -53,16 +53,16 @@ import Testing
                         ParakeetTranscriptionProvider(
                             spec: spec, location: location,
                             engine: CoreAIParakeetEngine(decoderOnCPU: true),
-                            temporaryDirectory: temp, boostQuietAudio: { false })
+                            temporaryDirectory: temp)
                     ))
                 }
-                // The `ParakeetQuietAudioBoost` experiment on the same engine and audio.
-                if env["PEBBLE_ENGINE_COMPARE_BOOST"] != nil {
+                // The same engine and audio as recorded, without the level stage: what it is worth.
+                if env["PEBBLE_ENGINE_COMPARE_UNLEVELED"] != nil {
                     engines.append((
-                        "coreai boost",
+                        "coreai unleveled",
                         ParakeetTranscriptionProvider(
                             spec: spec, location: location, engine: CoreAIParakeetEngine.shared,
-                            temporaryDirectory: temp, boostQuietAudio: { true })
+                            temporaryDirectory: temp, levelsAudio: false)
                     ))
                 }
             }
@@ -170,8 +170,7 @@ import Testing
             let provider = ParakeetTranscriptionProvider(
                 spec: spec,
                 location: FixedLocation(path: URL(fileURLWithPath: bundle, isDirectory: true)),
-                engine: CoreAIParakeetEngine.shared, temporaryDirectory: temp,
-                boostQuietAudio: { false })
+                engine: CoreAIParakeetEngine.shared, temporaryDirectory: temp)
             var withWords = 0
             var gateDecided = 0
             for id in ids {

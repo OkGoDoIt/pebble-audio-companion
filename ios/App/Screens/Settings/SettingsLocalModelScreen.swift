@@ -101,27 +101,6 @@ struct SettingsLocalModelScreen: View {
                     TintActionRow(title: "Debug: simulate failed download") {
                         model.debugFailDownload(settings.localTranscriptionModelId)
                     }
-                    // The quiet-audio boost experiment (`ParakeetQuietAudioBoost`): an App
-                    // Group key, not a setting, and only reachable from a Debug build.
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(Copy.CoreAI.debugBoostTitle)
-                                .font(AppFont.callout)
-                                .foregroundStyle(Tokens.label)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(Copy.CoreAI.debugBoostSubtitle)
-                                .font(AppFont.footnote)
-                                .foregroundStyle(Tokens.meta)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 10)
-                        Toggle(Copy.CoreAI.debugBoostTitle, isOn: $boostQuietAudio)
-                            .labelsHidden()
-                            .tint(Tokens.good)
-                    }
-                    .onChange(of: boostQuietAudio) { _, enabled in
-                        ParakeetQuietAudioBoost.setEnabled(enabled)
-                    }
                 }
             #endif
         }
@@ -130,10 +109,6 @@ struct SettingsLocalModelScreen: View {
         // Re-reading install state is the only thing opening this screen does.
         .task { model.refresh() }
     }
-
-    #if DEBUG
-        @State private var boostQuietAudio = ParakeetQuietAudioBoost.isEnabled()
-    #endif
 
     /// The fallback fact, worded for whether anything is being done about it right now.
     private func fallbackNotice(_ option: LocalModelOption) -> String {

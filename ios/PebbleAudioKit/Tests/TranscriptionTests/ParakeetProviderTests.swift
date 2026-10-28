@@ -159,7 +159,12 @@ private final class FakeEngine: ParakeetNativeEngine, @unchecked Sendable {
         }
         if let transcribeFailure { throw transcribeFailure }
         let peak = (try? Data(contentsOf: URL(fileURLWithPath: wavPath)))
-            .map { ParakeetQuietAudioBoost.peak(of: $0.dropFirst(PcmWav.headerBytes)) } ?? -1
+            .map { wav in
+                let pcm = [UInt8](wav.dropFirst(PcmWav.headerBytes))
+                return stride(from: 0, to: pcm.count - 1, by: 2).reduce(0) {
+                    max($0, abs(Int(Int16(bitPattern: UInt16(pcm[$1]) | UInt16(pcm[$1 + 1]) << 8))))
+                }
+            } ?? -1
         return lock.withLock {
             wavCalls.append(wavPath)
             wavPeaks.append(peak)
@@ -241,7 +246,7 @@ private let coreAISpec = ParakeetModelCatalog.byId(ParakeetModelCatalog.coreAIMo
 
 private func makeProvider(
     installed: Bool = true, engine: FakeEngine, temp: URL, spec: ParakeetModelSpec = defaultSpec,
-    prepared: Bool = true, foreground: Bool = true, boost: Bool = false
+    prepared: Bool = true, foreground: Bool = true
 ) -> ParakeetTranscriptionProvider {
     ParakeetTranscriptionProvider(
         spec: spec,
@@ -250,8 +255,7 @@ private func makeProvider(
         ),
         engine: engine,
         temporaryDirectory: temp,
-        isForeground: { foreground },
-        boostQuietAudio: { boost }
+        isForeground: { foreground }
     )
 }
 
@@ -537,7 +541,7 @@ private func makeProvider(
     ) -> ParakeetTranscriptionProvider {
         ParakeetTranscriptionProvider(
             spec: spec, location: location, engine: engine, temporaryDirectory: temp,
-            nowMs: { clock.now }, isForeground: { foreground }, boostQuietAudio: { false },
+            nowMs: { clock.now }, isForeground: { foreground },
             log: { log.append($0) }
         )
     }
@@ -734,7 +738,7 @@ private func makeProvider(
         let provider = ParakeetTranscriptionProvider(
             spec: defaultSpec,
             location: FakeLocation(path: temp.appendingPathComponent("model")),
-            engine: engine, temporaryDirectory: temp, boostQuietAudio: { false },
+            engine: engine, temporaryDirectory: temp,
             rangeDeadlineMs: { _ in 50 })
         let started = Date()
         do {
@@ -859,27 +863,32 @@ private func makeProvider(
         #expect(engine.discards == 0)
     }
 
-    /// With the boost switch on, the WAV the engine reads peaks at −3 dBFS; off, it is the
-    /// audio as recorded.
-    @Test func theQuietAudioBoostReachesTheStagedWav() async throws {
+    /// Watch speech reaches the engine at speaking level, the way Muse's questions do: quiet
+    /// audio is raised to the level the model expects, loud audio is left where it is.
+    @Test func everyChunkReachesTheEngineAtSpeakingLevel() async throws {
         let temp = try makeTemp()
         defer { try? FileManager.default.removeItem(at: temp) }
-        // A quiet tone: peak 300 clears the voice gate (240) but sits ~40 dB under full scale.
-        var quiet = [Int16]()
-        for index in 0..<(sampleRate * 800 / 1_000) {
-            quiet.append(Int16(300 * sin(Double(index) * 2 * Double.pi * 440 / Double(sampleRate))))
+        func toneAudio(amplitude: Double) -> Data {
+            var samples = [Int16]()
+            for index in 0..<(sampleRate * 800 / 1_000) {
+                samples.append(Int16(amplitude * sin(Double(index) * 2 * Double.pi * 440 / Double(sampleRate))))
+            }
+            return samples.withUnsafeBufferPointer { Data(buffer: $0) }
         }
-        let audio = quiet.withUnsafeBufferPointer { Data(buffer: $0) }
+        // Peak 300 clears the voice gate (240) but sits about 40 dB under full scale, where the
+        // watch's speech does. Raised to its loud end at −22 dBFS: about +22 dB.
+        let quiet = FakeEngine()
+        _ = try await makeProvider(engine: quiet, temp: temp)
+            .transcribe(pcmChunks: chunks(toneAudio(amplitude: 300)), sampleRateHz: sampleRate)
+        let raised = try #require(quiet.stagedPeaks.first)
+        #expect((3_300...4_200).contains(raised))
 
-        let plain = FakeEngine()
-        _ = try await makeProvider(engine: plain, temp: temp, boost: false)
-            .transcribe(pcmChunks: chunks(audio), sampleRateHz: sampleRate)
-        #expect(plain.stagedPeaks == [300])
-
-        let boosted = FakeEngine()
-        _ = try await makeProvider(engine: boosted, temp: temp, boost: true)
-            .transcribe(pcmChunks: chunks(audio), sampleRateHz: sampleRate)
-        #expect(boosted.stagedPeaks == [23_197])
+        let loud = FakeEngine()
+        _ = try await makeProvider(engine: loud, temp: temp)
+            .transcribe(pcmChunks: chunks(toneAudio(amplitude: 12_000)), sampleRateHz: sampleRate)
+        let kept = try #require(loud.stagedPeaks.first)
+        // No gain: only the 80 Hz high-pass touches it, ringing a little where the tone starts.
+        #expect((10_200...13_800).contains(kept), "Already loud enough: not raised")
     }
 }
 

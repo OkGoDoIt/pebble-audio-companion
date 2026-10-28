@@ -28,12 +28,5 @@ extension Copy {
             "Not downloadable yet. To try it, put \(id).zip in Files › On My iPhone › "
                 + "Pebble Audio › models-inbox and choose the model."
         }
-
-        /// Debug-only row on the local-model screen: the quiet-audio boost experiment
-        /// (`ParakeetQuietAudioBoost`). Never shipped as a setting.
-        static let debugBoostTitle = "Debug: boost quiet audio for local models"
-        static let debugBoostSubtitle =
-            "Peak-normalizes each chunk to −3 dBFS before the local engine hears it. "
-            + "An experiment; affects new transcriptions only."
     }
 }

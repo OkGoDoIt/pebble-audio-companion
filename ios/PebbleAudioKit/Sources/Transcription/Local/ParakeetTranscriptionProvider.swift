@@ -367,7 +367,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     private let temporaryDirectory: URL
     private let nowMs: @Sendable () -> Int64
     private let isForeground: @Sendable () -> Bool
-    private let boostQuietAudio: @Sendable () -> Bool
+    private let levelsAudio: Bool
     private let log: @Sendable (String) -> Void
     private let rangeDeadline: @Sendable (Int64) -> Int64
     private let lastUsedMs = LastUsed()
@@ -412,7 +412,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     ///   - isForeground: whether the app is on screen. A Core AI model whose one-time
     ///     specialization pass has not completed (`location.isPrepared`) is `providerUnavailable`
     ///     in the background rather than started cold inside a background pass.
-    ///   - boostQuietAudio: the `ParakeetQuietAudioBoost` switch, read per chunk.
+    ///   - levelsAudio: off only to measure what the level stage is worth (`LocalEngineComparison`).
     ///   - log: the flight recorder. Only model-load trouble is written — never per segment.
     public init(
         spec: ParakeetModelSpec,
@@ -421,7 +421,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         temporaryDirectory: URL = FileManager.default.temporaryDirectory,
         nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
         isForeground: @escaping @Sendable () -> Bool = { true },
-        boostQuietAudio: @escaping @Sendable () -> Bool = { ParakeetQuietAudioBoost.isEnabled() },
+        levelsAudio: Bool = true,
         log: @escaping @Sendable (String) -> Void = { _ in },
         rangeDeadlineMs: @escaping @Sendable (Int64) -> Int64 = { rangeDeadlineMs(forAudioMs: $0) }
     ) {
@@ -433,7 +433,7 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         self.temporaryDirectory = temporaryDirectory
         self.nowMs = nowMs
         self.isForeground = isForeground
-        self.boostQuietAudio = boostQuietAudio
+        self.levelsAudio = levelsAudio
         self.log = log
     }
 
@@ -525,14 +525,11 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
 
         let startedMs = nowMs()
         var pieces: [ParakeetNativeResponse] = []
-        let boost = boostQuietAudio()
         for range in ranges {
             try Task.checkCancellation()
             do {
-                let gain = boost ? try Self.boostGain(from: source, range: range) : 1
                 try Self.writeWav(
-                    from: source, range: range, to: wav, sampleRateHz: sampleRateHz, gain: gain
-                )
+                    from: source, range: range, to: wav, sampleRateHz: sampleRateHz, leveled: levelsAudio)
             } catch {
                 throw TranscriptionError.transcriptionFailed(
                     Self.scratchWriteFailed, underlying: error
@@ -811,19 +808,36 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     /// revisited after its retries run out), never as `audioUnreadable` (given up on for good).
     static let scratchWriteFailed = "local transcription failed: could not write its scratch file"
 
-    /// The `ParakeetQuietAudioBoost` gain for one range: its peak, read in bounded chunks.
-    static func boostGain(from source: FileHandle, range: PcmSpeechRange) throws -> Double {
-        var peak = 0
-        try forEachChunk(of: source, range: range) { peak = max(peak, ParakeetQuietAudioBoost.peak(of: $0)) }
-        return ParakeetQuietAudioBoost.gain(forPeak: peak)
-    }
-
-    /// Writes one range of the raw spool out as a mono 16-bit WAV, copied in bounded chunks,
-    /// with `gain` applied to every sample on the way (1 copies the bytes as they are).
+    /// Writes one range of the raw spool out as a mono 16-bit WAV, brought up to the level the
+    /// model expects the way Muse's questions are (`VoiceNoteLevel`). Watch speech sits about
+    /// 28 dB below the read speech Parakeet learned from, and the quietest of it falls on the
+    /// model's log-mel floor, where it hears a constant instead of speech. On 90 real recordings
+    /// (21.8 h, 2026-10-28) this cut the word error rate by 2.5 points on average, most in the
+    /// quietest; 7 of the 90 came out worse. Only this copy is leveled: re-encoding the stored
+    /// Speex with the gain lost more than it won.
     static func writeWav(
         from source: FileHandle, range: PcmSpeechRange, to destination: URL, sampleRateHz: Int,
-        gain: Double = 1
+        leveled: Bool = true
     ) throws {
+        var samples: [Int16] = []
+        samples.reserveCapacity(range.byteLength / 2)
+        try forEachChunk(of: source, range: range) { chunk in
+            chunk.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                var index = 0
+                while index + 1 < bytes.count {
+                    samples.append(Int16(bitPattern: UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8))
+                    index += 2
+                }
+            }
+        }
+        let staged = leveled ? VoiceNoteLevel.prepare(samples, sampleRateHz: sampleRateHz).pcm : samples
+        var pcm = Data(capacity: staged.count * 2)
+        for sample in staged {
+            let bits = UInt16(bitPattern: sample)
+            pcm.append(UInt8(truncatingIfNeeded: bits))
+            pcm.append(UInt8(truncatingIfNeeded: bits >> 8))
+        }
         let manager = FileManager.default
         try? manager.removeItem(at: destination)
         guard manager.createFile(atPath: destination.path, contents: nil) else {
@@ -831,12 +845,8 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
         }
         let out = try FileHandle(forWritingTo: destination)
         defer { try? out.close() }
-        try out.write(
-            contentsOf: PcmWav.headerMono16(pcmSizeBytes: range.byteLength, sampleRateHz: sampleRateHz)
-        )
-        try forEachChunk(of: source, range: range) { chunk in
-            try out.write(contentsOf: ParakeetQuietAudioBoost.apply(gain, to: chunk))
-        }
+        try out.write(contentsOf: PcmWav.headerMono16(pcmSizeBytes: pcm.count, sampleRateHz: sampleRateHz))
+        try out.write(contentsOf: pcm)
     }
 
     /// Reads `range` of the spool in 64 KiB pieces (sample-aligned, since the range is).
