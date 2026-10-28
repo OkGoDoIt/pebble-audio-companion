@@ -163,14 +163,18 @@ charger), no new crash reports, 20 windows per 10 background slices at 3.7–6.9
 and — once Roger names a voice — the "recordings re-matched" lines and how fast the re-match reaches
 every analysed recording.
 
-**Soniox level A/B: approved (core arms), ready for Roger to run.** `scratchpad/research/tools/
-soniox_ab_run.py` sends the 18 bodies the way the app does (`stt-async-v5`, speaker labels on, no
-language hint; no context, because the app's context is Roger's "About You"), deletes each file and
-transcription after fetching, skips bodies already transcribed, stops on 401/402/403, then runs
-`soniox_ab_score.py`, which prints the fixed decision rule. Dry-run against a local stand-in
-(`soniox_ab_dryrun.py`). The key is typed at a hidden prompt in Roger's own terminal, never in chat.
+**Soniox level A/B: done 2026-10-28 20:22, on the phone with its own key (`1b9cba28`).** All 18
+core bodies transcribed (public LibriSpeech through the simulated watch channel). Pooled WER: A
+(today's Ogg Speex) 8.00%, B (level stage, FLAC) 7.45%, C (FLAC, no stage) 7.70%. Level effect B
+against C: 0.30 points (95% CI −0.04 to +0.68), at most 0.74 on the quietest noisy variant. Under
+the 0.5-point bar fixed in advance: **Soniox is level-insensitive; build nothing for the cloud.**
+A against C is +0.29 points (≈0.8 in the two noisy variants at −53/−47 dBFS): Soniox reads the Ogg
+Speex frames slightly worse than the same audio decoded to FLAC, not worth 15× the upload bytes.
+The hook (`AppComposition+SonioxLevelTest.swift`) runs only with `PEBBLE_SONIOX_LEVEL_TEST=1` at
+launch; the 18 bodies (~130 MB) are still in the app container under
+`diagnostics/soniox-level-test/`. Scored with `research/tools/soniox_ab_score.py`.
 
-**Waiting on Roger:** running that A/B; level-matched playback for clips and samples (the same
+**Waiting on Roger:** level-matched playback for clips and samples (the same
 stage, a product change); and labelling more people across recordings so a watch-domain threshold
 can be calibrated.
 
