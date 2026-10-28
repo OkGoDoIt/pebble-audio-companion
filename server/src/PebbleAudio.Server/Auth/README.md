@@ -8,6 +8,10 @@
   revoked in Who can read, `ApiTokenService`) and OAuth access tokens `oat_…` (`OAuthTokenService`). Both are
   SHA-256 hashes at rest. The principal carries the user id, the client's name, and one `scope` claim per granted
   scope; tool code checks them with `User.HasScope(ArchiveScopes.Write)`.
+- **The Pebble plugin's `/plugin/status` and `/plugin/today`** (`PluginModule.Policy`): the same `Bearer` scheme,
+  personal tokens only (an `oat_…` token's audience is `/mcp`; it gets a 403), with `archive:read`. A plain 401
+  without the MCP challenge. `POST /plugin/link` (anonymous, rate-limited like `POST /link`) exchanges a one-time
+  code from `/connect/pebble-plugin` for a read-only `pat_…` named "Pebble plugin".
 - **The 401 challenge on `/mcp`**: the MCP SDK's `AddMcp` handler answers unauthenticated requests (and unknown,
   expired, revoked, or wrong-audience tokens) with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`
   and serves that metadata document. `Program.cs` also serves it at the root path. `UseMcpChallengeScope` adds

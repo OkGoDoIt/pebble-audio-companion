@@ -49,11 +49,15 @@ Built:
   queue. Other modules call `IEventPublisher`.
 - The site's own pages, passkey-only, one user, in one layout with the round-3 server design: Who can read
   (`/access`: connected assistants, access keys, and event subscriptions), Connect an app (`/connect` and
-  `/connect/{chatgpt,claude,codex,claude-code,cursor,muse,other}`), Link a phone (`/phones`), and Settings
+  `/connect/{chatgpt,claude,claude-code,codex,cursor,gemini,muse,pebble-plugin,grok,other}`), Link a phone (`/phones`), and Settings
   (`/settings`: sync status, passkeys, and the typed limits), beside the viewer at `/`. The old `/admin/*`
   addresses answer 307 to their new pages (`Pages/OldAdminUrls.cs`).
 - The Postgres-backed job queue (`Jobs/`) with a `noop` handler and `clip.transcode`.
 - Typed settings with defaults, editable at `/settings` (`Settings/`).
+- The Pebble plugin's half (`Plugin/`; the plugin is [`../pebble-plugin`](../pebble-plugin), whose README has the
+  endpoints): `GET /plugin/status` (the watch's status the phone reports as the `deviceStatus` batch kind, stale
+  after the *Watch status on Pebble* setting), `GET /plugin/today` (today's conversations, read inside the sharing
+  scope), and `POST /plugin/link`, which exchanges a code from `/connect/pebble-plugin` for a read-only token.
 - The sync half (`Sync/`, the whole of [`docs/sync-protocol.md`](docs/sync-protocol.md)): linking a phone at
   `/phones` (one-time code and QR code), device tokens (`pad_…`, their own scheme, `/link` and `/sync/*`
   only), `PUT /sync/batch`, the request channel and clip uploads, the ffmpeg transcode to m4a, signed clip
@@ -69,13 +73,13 @@ Built:
   that phone.
 - Batches announce a recap whose text changed and a follow-up the phone added (recent ones only) through
   `IEventPublisher`.
+- The conversation viewer (`Pages/View/`, live since 2026-10-21) at `/c/{id}?t=…`, `/d/{day}`, and
+  `/b/week|month/…`, which tool results and event payloads link to, and the MCP Apps widgets (`wwwroot/widgets/`:
+  the conversation card, the day timeline, and the clip player).
 - CI and deploy workflows, mirroring Situ.
 
 The import from a Desktop backup is a Mac tool beside the app, [`ios/Tools/ArchiveImport`](../ios/Tools/ArchiveImport):
 it links like a phone and sends the phone's own payloads.
-
-Not built yet: the MCP Apps widgets and the conversation viewer (tool results and event payloads already link to
-its `/c/{id}?t=…`, `/d/{day}`, and `/b/week|month/…` pages).
 
 ## Layout
 
@@ -91,6 +95,7 @@ server/
 │   ├── Events/                    MCP Events: events/* methods, webhook signing and delivery
 │   ├── Jobs/                      IJobQueue, JobRunner, JobWorker, handlers
 │   ├── Mcp/                       server instructions, tools, the AI-read log
+│   ├── Plugin/                    the Pebble plugin's endpoints and its link codes
 │   ├── Pages/Admin/               Razor Pages for Who can read, Link a phone, Settings, and signing in
 │   ├── Settings/                  ArchiveSettings and SettingsService
 │   ├── Sync/                      linking, device tokens, batches, requests, clips, wipe, status
