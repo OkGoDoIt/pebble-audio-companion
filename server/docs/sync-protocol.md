@@ -23,7 +23,7 @@ Optional fields are sent as an explicit `null`, never left out. An error answer 
    app-site association claims `/link*`); without the app, that page shows the code to type in.
    The app still accepts the older `pebbleaudio://link?code=…&origin=…`. Showing a new code ends
    the previous unused one.
-2. The app calls `POST /link` (no token) with `{ "code": "…", "deviceName": "Roger's iPhone", "appVersion": "…", "appBuild": "…" }`.
+2. The app calls `POST /link` (no token) with `{ "code": "…", "deviceName": "Sam's iPhone", "appVersion": "…", "appBuild": "…" }`.
    Case, spaces and dashes in the code do not matter.
 3. Response `201 { "deviceId": "…", "deviceToken": "pad_…", "userId": "…", "serverTime": "…" }`.
    The app stores the token in the Keychain. `409` if the code is wrong, used or expired. After

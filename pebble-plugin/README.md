@@ -79,7 +79,7 @@ that wants it declares `{ "name": "ReadConversations", "plugin": "dd26acba-10b0-
 in its `usesPermissions`, so the question comes at install.
 
 - `audio/status`, instance `watch`, refreshed every 2 minutes:
-  `name` ("Watch"), `device` (the phone that reports for it, "Roger's iPhone"), `recording` (boolean, and Recording, Paused, Off, No watch,
+  `name` ("Watch"), `device` (the phone that reports for it, "Sam's iPhone"), `recording` (boolean, and Recording, Paused, Off, No watch,
   Offline, Not recording, or Unknown when the phone's last report is too old), `capture` (On, Paused, Off),
   `link` (No watch, Offline, Connecting, Connected, Streaming, Refused; Unknown when too old), `last_audio`
   (timestamp, and "2m ago" as of the read), `watch_battery` (0–100 %), `today_recorded` and `today_lost`
@@ -119,7 +119,7 @@ before the first:
   "lastAudioAtMs": 1791999170000, "watchBatteryPercent": 62, "watchFirmware": "v4.41.0-667",
   "todayRecordedMinutes": 312, "todayQuietMinutes": 95, "todayLostMinutes": 4,
   "storageUsedBytes": 734003200, "phoneBatteryPercent": 81,
-  "receivedAtMs": 1791999176012, "stale": false, "deviceName": "Roger's iPhone"
+  "receivedAtMs": 1791999176012, "stale": false, "deviceName": "Sam's iPhone"
 }
 ```
 
