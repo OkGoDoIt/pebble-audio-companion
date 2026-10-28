@@ -132,6 +132,17 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 - on the phone: Play Longer and Open Conversation on a real clip and on a conversation sample.
 If the pace costs too much or links drop, raise `VoiceBackgroundPace.gapPerBusyMs`.
 
+**Measured 2026-10-28 10:48 (6edbfc14 since 10:18):** cost report PASS (unplugged, ~0.64 CPU-s/min
+backgrounded), no new crash reports, no link drops after the launch reconnect, no VoiceIdentityError.
+Attributions 5 → 68. Overnight on the charger: ~10 slices per 40–80 s, 2.4–5.4 s busy per 10, about
+1,000 audio-minutes checked between 00:00 and 06:00.
+**Finding:** every new human label bumps `corpusRevision`, and `reconcileCorpus` deletes an unfinished
+history run's jobs and attributions and restarts it from the first recording (revisions 6, 9, 12,
+13, 15 on 10-27/28; the current all-recordings plan has 370 queued, 0 done). With ~3,000 15-minute
+recordings and this pace, a history run needs many nights, so with regular labelling it never
+finishes. Proposed: keep each turn's embedding once per (segment, recipe, source revision); a label
+change then re-matches stored vectors, with no diarization or model work. Awaiting Roger.
+
 Later from the plan: quality weighting of exemplars (needs labelled real watch audio to measure; the
 public corpus is read speech through Speex), propagation feedback ("Found Dana in N places"),
 per-person calibration.
