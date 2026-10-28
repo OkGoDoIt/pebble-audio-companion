@@ -154,15 +154,25 @@ receivedAt) puts this recording 15 min early; transcripts/History/moments placem
 
 ## In flight
 
-**On G17 next (installer armed):** `f292fc45` = `6edbfc14` + `89670a08` (ignored clips) + `0cb4ae1e`
+**On G17 since 2026-10-28 16:39:** `f292fc45` = `6edbfc14` + `89670a08` (ignored clips) + `0cb4ae1e`
 (voice prints) + `f292fc45` (local level stage), built from `scratchpad/voice` because main's Focus
-extension can't be signed (Xcode has no account). After it lands: cost report, crash diff, the
-"recordings re-matched" pace lines, `voice_turn_prints` count and DB size, and — once Roger names a
-voice — how fast the re-match reaches every analysed recording.
+extension can't be signed (Xcode has no account). Ten-minute check: cost report PASS (on the
+charger), no new crash reports, 20 windows per 10 background slices at 3.7–6.9 s busy. DB at 16:54:
+33 prints in 26 KB (~790 B each), 108 print sources, recent jobs 246 done / 108 pending, history
+1,645 pending, 75 names (68 before), corpus revision 15. Still to see: the next-morning cost report,
+and — once Roger names a voice — the "recordings re-matched" lines and how fast the re-match reaches
+every analysed recording.
 
-**Waiting on Roger:** the Soniox level A/B (public audio, about $0.32); level-matched playback for clips
-and samples (the same stage, a product change); and labelling more people across recordings so a
-watch-domain threshold can be calibrated.
+**Soniox level A/B: approved (core arms), ready for Roger to run.** `scratchpad/research/tools/
+soniox_ab_run.py` sends the 18 bodies the way the app does (`stt-async-v5`, speaker labels on, no
+language hint; no context, because the app's context is Roger's "About You"), deletes each file and
+transcription after fetching, skips bodies already transcribed, stops on 401/402/403, then runs
+`soniox_ab_score.py`, which prints the fixed decision rule. Dry-run against a local stand-in
+(`soniox_ab_dryrun.py`). The key is typed at a hidden prompt in Roger's own terminal, never in chat.
+
+**Waiting on Roger:** running that A/B; level-matched playback for clips and samples (the same
+stage, a product change); and labelling more people across recordings so a watch-domain threshold
+can be calibrated.
 
 **Verify `f69a8623` + `6edbfc14` on the phone** once G17 is back and main is installed:
 - `./scripts/phone-cost-report.sh --minutes 11`, a systemCrashLogs diff, and the next-morning report;
