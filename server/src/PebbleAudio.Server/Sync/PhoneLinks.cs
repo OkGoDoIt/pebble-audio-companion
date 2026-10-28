@@ -16,7 +16,7 @@ namespace PebbleAudio.Server.Sync;
 public sealed class PhoneLinkService(ArchiveDbContext db, TimeProvider time)
 {
 	/// <summary>No I, L, O, 0, or 1: nothing a person could misread when typing it.</summary>
-	private const string Alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+	internal const string Alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 	public const int NameLength = 80;
 
@@ -150,7 +150,7 @@ public sealed class PhoneLinkService(ArchiveDbContext db, TimeProvider time)
 	public static string InvitationUrl(string code, string publicOrigin) =>
 		$"{publicOrigin}/link?code={Uri.EscapeDataString(code)}";
 
-	private static byte[] Hash(string normalizedCode) => SHA256.HashData(Encoding.UTF8.GetBytes(normalizedCode));
+	internal static byte[] Hash(string normalizedCode) => SHA256.HashData(Encoding.UTF8.GetBytes(normalizedCode));
 
 	private static string? CleanName(string? name) => Clip(name, NameLength);
 

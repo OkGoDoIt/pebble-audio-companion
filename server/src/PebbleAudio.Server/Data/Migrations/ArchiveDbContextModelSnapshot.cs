@@ -767,6 +767,65 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.ToTable("Devices");
                 });
 
+            modelBuilder.Entity("PebbleAudio.Server.Data.DeviceStatus", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Capture")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("LastAudioAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Link")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int?>("PhoneBatteryPercent")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Recording")
+                        .HasColumnType("boolean");
+
+                    b.Property<long?>("StorageUsedBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("TodayLostMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("TodayQuietMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("TodayRecordedMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("WatchBatteryPercent")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("WatchFirmware")
+                        .HasColumnType("text");
+
+                    b.HasKey("DeviceId");
+
+                    b.HasIndex("UserId", "UpdatedAt");
+
+                    b.ToTable("DeviceStatuses");
+                });
+
             modelBuilder.Entity("PebbleAudio.Server.Data.EventSubscription", b =>
                 {
                     b.Property<string>("Id")
@@ -1342,6 +1401,41 @@ namespace PebbleAudio.Server.Data.Migrations
                     b.ToTable("Requests", (string)null);
                 });
 
+            modelBuilder.Entity("PebbleAudio.Server.Data.PluginLinkCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ApiTokenId")
+                        .HasColumnType("uuid");
+
+                    b.Property<byte[]>("CodeHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("UsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CodeHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("PluginLinkCodes");
+                });
+
             modelBuilder.Entity("PebbleAudio.Server.Data.Recap", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -1791,6 +1885,21 @@ namespace PebbleAudio.Server.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("PebbleAudio.Server.Data.DeviceStatus", b =>
+                {
+                    b.HasOne("PebbleAudio.Server.Data.Device", null)
+                        .WithOne()
+                        .HasForeignKey("PebbleAudio.Server.Data.DeviceStatus", "DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("PebbleAudio.Server.Data.EventSubscription", b =>
                 {
                     b.HasOne("PebbleAudio.Server.Data.ApiToken", null)
@@ -1903,6 +2012,15 @@ namespace PebbleAudio.Server.Data.Migrations
                 });
 
             modelBuilder.Entity("PebbleAudio.Server.Data.PhoneRequest", b =>
+                {
+                    b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PebbleAudio.Server.Data.PluginLinkCode", b =>
                 {
                     b.HasOne("PebbleAudio.Server.Auth.ApplicationUser", null)
                         .WithMany()

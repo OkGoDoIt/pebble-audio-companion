@@ -8,8 +8,8 @@ Base URL: `https://pebbleaudio.okgodoit.com`. JSON everywhere except clip bodies
 times are RFC 3339 strings in UTC (`2026-10-14T13:05:09.754Z`); media offsets and durations
 are integer milliseconds. Every request from the phone carries `Authorization: Bearer <device
 token>`. Tokens are opaque, prefixed `pad_`, stored hashed on the server. A device token opens
-`/link` and `/sync/*` only; the `pat_` tokens assistants use open `/mcp` only, and neither works
-on the other's endpoints.
+`/link` and `/sync/*` only; the `pat_` tokens assistants use open `/mcp` (and the Pebble plugin's
+`/plugin/*`, see `pebble-plugin/README.md`) only, and neither works on the other's endpoints.
 
 Optional fields are sent as an explicit `null`, never left out. An error answer carries
 `{ "error": "…" }`, which the phone logs and never shows.
@@ -61,6 +61,7 @@ a separate endpoint (§5).
 | `note` | the note id | see 2.6 |
 | `person` | the person id | `{ "name": "Roger" }` |
 | `coverage` | the logical day key | see 2.7 |
+| `deviceStatus` | the phone's device id (the `deviceId` the batch carries) | see 2.8 |
 
 ### 2.1 `conversation`
 
@@ -225,6 +226,43 @@ one's stage; until then a suggested or skipped follow-up reads as a reminder.
 { "dayKey": "2026-10-14", "timeZone": "…", "spans": [ { "startedAt": "…", "endedAt": "…", "kind": "recorded" }, { "…": "…", "kind": "quiet" }, { "kind": "missing" }, { "kind": "paused" }, { "kind": "off" } ], "recordedMs": 31200000, "quietMs": 9000000, "missingMs": 120000 }
 ```
 
+### 2.8 `deviceStatus`
+
+What the phone last knew about its watch, for the Pebble plugin (`GET /plugin/status`). One per
+linked phone, replaced by every newer version; send it with the regular sync passes, upsert only.
+
+```json
+{
+  "updatedAtMs": 1791999175292,
+  "capture": "active",
+  "link": "streaming",
+  "recording": true,
+  "lastAudioAtMs": 1791999170000,
+  "watchBatteryPercent": 62,
+  "watchFirmware": "v4.41.0-667",
+  "todayRecordedMinutes": 312,
+  "todayQuietMinutes": 95,
+  "todayLostMinutes": 4,
+  "storageUsedBytes": 734003200,
+  "phoneBatteryPercent": 81
+}
+```
+
+- Required: `updatedAtMs` (epoch milliseconds, when the phone took the reading), `capture`
+  (`active`, `paused`, `off`), `link` (`unbound`, `disconnected`, `connecting`, `connected`,
+  `streaming`, `revoked`), and `recording`. Every other field may be `null` (not known).
+- Times are epoch milliseconds here, not RFC 3339, so the plugin can use them without parsing.
+  Numbers may carry a fraction; the server rounds them.
+- A reading that cannot be right (a percentage outside 0 to 100, a negative count) is stored as
+  `null` rather than rejecting the report. An unknown `capture` or `link` value rejects it
+  (`payload: link 'x' is not known`).
+- The server files it under the phone the token names, whatever `id` says, and keeps its version
+  on that row rather than in the archive's ledger: `stale` and `duplicate` work as for any kind.
+  It is not archive content, so the sharing scope does not apply to it. `delete` and `expire` are
+  rejected (`op: device status is only upserted`). Unlinking a phone, or a wipe, removes it.
+- A server from before this kind rejects it (`kind: 'deviceStatus' is not known`) and applies the
+  rest of the batch; deploy the server first.
+
 ## 3. Batches
 
 ### Speaker changes when the phone retains only a conversation's tail
@@ -319,11 +357,13 @@ Response `200`:
 ```
 
 `ignored` reasons are `stale` (older than what the server holds), `duplicate` (the same
-version; a replay), and `outsideScope` (dated before the sharing scope, §5: not stored and not
-recorded, so the same version is taken when the phone sends it again after the scope widens).
-The phone treats all three as held. `rejected` items are the phone's bug to fix;
+version; a replay), `outsideScope` (dated before the sharing scope, §5: not stored and not
+recorded, so the same version is taken when the phone sends it again after the scope widens), and
+`unknownKind` (a `kind` this server does not know, from a phone newer than the server: logged,
+not stored, never a failure; `version` is 0 when the item had none). The phone treats all four as
+held. `rejected` items are the phone's bug to fix;
 the rest of the batch still applies. A reason names the field (`payload: pieces missing`,
-`payload: gaps[2].kind 'x' is not known`, `kind: 'gadget' is not known`); `server: could not
+`payload: gaps[2].kind 'x' is not known`, `kind: missing`); `server: could not
 store it` means the database refused that one item, and the rest still applied. Nothing about a
 rejected item is recorded, so the same version can be sent again once fixed. `400` means the
 body is not JSON or has no `items` array. `401` means the token is gone (unlinked); the app

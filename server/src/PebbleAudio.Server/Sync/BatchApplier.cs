@@ -48,6 +48,27 @@ public sealed class BatchApplier(
 
 			foreach (var element in items.EnumerateArray())
 			{
+				var sentKind = element.ValueKind == JsonValueKind.Object ? String(element, "kind") : null;
+				if (sentKind == DeviceStatusSync.Kind)
+				{
+					await ApplyDeviceStatusAsync(userId, deviceId, element, now, transaction, accepted, ignored, rejected, cancellationToken);
+					continue;
+				}
+
+				// A kind a newer phone knows and this server does not: held, never a failure, so a phone ahead of its
+				// server keeps syncing everything else (§3).
+				if (!string.IsNullOrEmpty(sentKind) && !WireNames.TryParse(sentKind, out SyncKind _))
+				{
+					var unknownId = String(element, "id") ?? "";
+					var unknownVersion = element.TryGetProperty("version", out var sentVersion) && sentVersion.TryGetInt64(out var number) ? number : 0;
+					logger.LogInformation(
+						"Sync item of unknown kind {Kind} ({Id}) ignored; the phone is newer than this server.",
+						sentKind.Length > 40 ? sentKind[..40] : sentKind,
+						unknownId.Length > 80 ? unknownId[..80] : unknownId);
+					ignored.Add(new BatchIgnored(sentKind, unknownId, unknownVersion, UnknownKind));
+					continue;
+				}
+
 				if (!TryReadEnvelope(element, out var item, out var kindText, out var idText, out var error))
 				{
 					rejected.Add(new BatchRejected(kindText, idText, error));
@@ -345,6 +366,95 @@ public sealed class BatchApplier(
 	/// <summary>What ignoring an item outside the sharing scope is called in the batch answer.</summary>
 	public const string OutsideScope = "outsideScope";
 
+	/// <summary>What ignoring an item of a kind this server does not know is called in the batch answer.</summary>
+	public const string UnknownKind = "unknownKind";
+
+	/// <summary>
+	/// Stores the phone's report about its watch (§2.8) under the phone the token names, whatever id the item carries:
+	/// one row per phone, replaced by each newer version. It has its own savepoint, like every item.
+	/// </summary>
+	private async Task ApplyDeviceStatusAsync(
+		Guid userId,
+		Guid deviceId,
+		JsonElement element,
+		DateTimeOffset now,
+		Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+		List<BatchItemRef> accepted,
+		List<BatchIgnored> ignored,
+		List<BatchRejected> rejected,
+		CancellationToken cancellationToken)
+	{
+		const string kind = DeviceStatusSync.Kind;
+		var id = String(element, "id") ?? "";
+		if (id.Length == 0)
+		{
+			rejected.Add(new BatchRejected(kind, id, "id: missing"));
+			return;
+		}
+
+		if (!element.TryGetProperty("version", out var versionElement) || !versionElement.TryGetInt64(out var version))
+		{
+			rejected.Add(new BatchRejected(kind, id, "version: missing"));
+			return;
+		}
+
+		var op = String(element, "op");
+		if (op != SyncOp.Upsert.ToWire())
+		{
+			rejected.Add(new BatchRejected(kind, id, op is null ? "op: missing" : "op: device status is only upserted"));
+			return;
+		}
+
+		var parsed = DeviceStatusSync.Read(element.TryGetProperty("payload", out var payload) ? payload : default);
+		if (parsed.Value is not { } status)
+		{
+			rejected.Add(new BatchRejected(kind, id, payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null ? "payload: missing" : parsed.Error!));
+			return;
+		}
+
+		var held = await db.DeviceStatuses
+			.AsNoTracking()
+			.Where(s => s.DeviceId == deviceId)
+			.Select(s => (long?)s.Version)
+			.SingleOrDefaultAsync(cancellationToken);
+		if (held is { } heldVersion && version <= heldVersion)
+		{
+			ignored.Add(new BatchIgnored(kind, id, version, version < heldVersion ? "stale" : "duplicate"));
+			return;
+		}
+
+		status.DeviceId = deviceId;
+		status.UserId = userId;
+		status.Version = version;
+		status.ReceivedAt = now;
+		await transaction.CreateSavepointAsync("item", cancellationToken);
+		try
+		{
+			if (held is null)
+			{
+				db.DeviceStatuses.Add(status);
+			}
+			else
+			{
+				db.DeviceStatuses.Update(status);
+			}
+
+			await db.SaveChangesAsync(cancellationToken);
+			await transaction.ReleaseSavepointAsync("item", cancellationToken);
+			accepted.Add(new BatchItemRef(kind, id, version));
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			await transaction.RollbackToSavepointAsync("item", cancellationToken);
+			logger.LogWarning(ex, "Device status v{Version} could not be stored.", version);
+			rejected.Add(new BatchRejected(kind, id, "server: could not store it"));
+		}
+		finally
+		{
+			db.ChangeTracker.Clear();
+		}
+	}
+
 	private sealed record RecapText(string? Headline, string? LineSummary, string? ShortText, string? Text);
 
 	/// <param name="Record">The row as stored.</param>
@@ -532,7 +642,8 @@ public sealed record BatchResponse(
 
 public sealed record BatchItemRef(string Kind, string Id, long Version);
 
-/// <param name="Reason"><c>stale</c> (older than what the server holds) or <c>duplicate</c> (the same version).</param>
+/// <param name="Reason"><c>stale</c> (older than what the server holds), <c>duplicate</c> (the same version),
+/// <c>outsideScope</c> (dated before the sharing scope), or <c>unknownKind</c> (a kind this server does not know).</param>
 public sealed record BatchIgnored(string Kind, string Id, long Version, string Reason);
 
 public sealed record BatchRejected(string Kind, string Id, string Reason);

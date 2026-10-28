@@ -141,6 +141,7 @@ builder.Services.AddHostedService<SetupAnnouncer>();
 builder.Services.AddJobQueue()
 	.AddJobHandler<NoopJobHandler>(NoopJobHandler.Type);
 builder.Services.AddSync();
+builder.Services.AddPebblePlugin();
 builder.Services.AddOAuthServer();
 builder.Services.AddMcpEvents();
 builder.Services.AddViewer();
@@ -203,6 +204,7 @@ app.MapGet("/.well-known/oauth-protected-resource", (IOptionsMonitor<McpAuthenti
 
 app.MapMcp("/mcp").RequireAuthorization(ArchiveAuth.McpPolicy).RequireCors(BrowserClients.CorsPolicy);
 app.MapSync();
+app.MapPebblePlugin();
 app.MapOAuthServer();
 app.MapOldAdminUrls();
 

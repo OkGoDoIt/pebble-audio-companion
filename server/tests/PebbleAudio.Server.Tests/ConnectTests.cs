@@ -17,7 +17,7 @@ namespace PebbleAudio.Server.Tests;
 [Collection(ServerCollection.Name)]
 public sealed partial class ConnectTests(ArchiveServerFactory factory)
 {
-	private static readonly string[] HubTools = ["chatgpt", "claude", "claude-code", "codex", "cursor", "gemini", "muse", "grok", "other"];
+	private static readonly string[] HubTools = ["chatgpt", "claude", "claude-code", "codex", "cursor", "gemini", "muse", "pebble-plugin", "grok", "other"];
 
 	[Fact]
 	public async Task Connecting_codex_signs_in_first_and_its_fallback_key_shows_once_and_turns_the_wait_into_a_check()
@@ -110,6 +110,7 @@ public sealed partial class ConnectTests(ArchiveServerFactory factory)
 		Assert.Matches(HubRow("claude-code", "On your Mac"), empty);
 		Assert.Matches(HubRow("gemini", "Not connected"), empty);
 		Assert.Matches(HubRow("muse", "On your watch or in Muse"), empty);
+		Assert.Matches(HubRow("pebble-plugin", "In the Pebble app"), empty);
 		Assert.Matches(HubRow("grok", "Not connected"), empty);
 		Assert.Matches(HubRow("other", "Antigravity and others"), empty);
 		Assert.Equal(HubTools, HubOrder().Matches(empty).Select(m => m.Groups["tool"].Value));

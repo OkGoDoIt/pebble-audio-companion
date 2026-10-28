@@ -129,6 +129,35 @@ public enum FollowUpStage
 }
 
 /// <summary>
+/// Whether the watch is set to capture audio, as the phone last reported it (sync-protocol.md §2.8, <c>deviceStatus</c>).
+/// </summary>
+public enum CaptureSetting
+{
+	Active,
+	Paused,
+	Off,
+}
+
+/// <summary>
+/// The phone's link to the watch's audio service, as the phone last reported it (sync-protocol.md §2.8).
+/// </summary>
+public enum WatchLink
+{
+	/// <summary>No watch is bound to this phone.</summary>
+	Unbound,
+
+	Disconnected,
+	Connecting,
+	Connected,
+
+	/// <summary>Connected, and audio is arriving.</summary>
+	Streaming,
+
+	/// <summary>The watch refused this phone (another receiver holds it, or the binding was forgotten).</summary>
+	Revoked,
+}
+
+/// <summary>
 /// Work the server asks the phone to do (sync-protocol.md §4).
 /// </summary>
 public enum PhoneRequestKind

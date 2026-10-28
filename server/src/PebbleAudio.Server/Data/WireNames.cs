@@ -105,6 +105,23 @@ public static class WireNames
 		SharingScopeKind.LastDays => "lastDays",
 	};
 
+	public static string ToWire(this CaptureSetting capture) => capture switch
+	{
+		CaptureSetting.Active => "active",
+		CaptureSetting.Paused => "paused",
+		CaptureSetting.Off => "off",
+	};
+
+	public static string ToWire(this WatchLink link) => link switch
+	{
+		WatchLink.Unbound => "unbound",
+		WatchLink.Disconnected => "disconnected",
+		WatchLink.Connecting => "connecting",
+		WatchLink.Connected => "connected",
+		WatchLink.Streaming => "streaming",
+		WatchLink.Revoked => "revoked",
+	};
+
 	public static bool TryParse(string? value, out SharingScopeKind kind) => TryParse(value, ToWire, out kind);
 
 	public static bool TryParse(string? value, out SyncKind kind) => TryParse(value, ToWire, out kind);
@@ -128,6 +145,10 @@ public static class WireNames
 	public static bool TryParse(string? value, out ContentOrigin origin) => TryParse(value, ToWire, out origin);
 
 	public static bool TryParse(string? value, out FollowUpStage stage) => TryParse(value, ToWire, out stage);
+
+	public static bool TryParse(string? value, out CaptureSetting capture) => TryParse(value, ToWire, out capture);
+
+	public static bool TryParse(string? value, out WatchLink link) => TryParse(value, ToWire, out link);
 
 	private static bool TryParse<T>(string? value, Func<T, string> toWire, out T result)
 		where T : struct, Enum

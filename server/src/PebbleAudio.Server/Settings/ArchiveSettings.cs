@@ -59,6 +59,12 @@ public sealed record ArchiveSettings
 	/// <summary>How long an MCP Events subscription lasts: the default, and the longest an assistant may ask for.</summary>
 	public int EventSubscriptionHours { get; init; } = 72;
 
+	/// <summary>
+	/// The Pebble plugin reads the watch's status as unknown once the phone's last report is this old. The phone
+	/// reports with its sync passes, so this is a little over the longest gap between background passes.
+	/// </summary>
+	public int PluginStaleMinutes { get; init; } = 35;
+
 	public TimeSpan ClipMaxDuration => TimeSpan.FromMinutes(ClipMaxMinutes);
 
 	public TimeSpan RequestTtl => TimeSpan.FromHours(RequestTtlHours);
@@ -72,6 +78,8 @@ public sealed record ArchiveSettings
 	public TimeSpan OAuthRefreshTokenLifetime => TimeSpan.FromDays(OAuthRefreshTokenDays);
 
 	public TimeSpan EventSubscriptionLifetime => TimeSpan.FromHours(EventSubscriptionHours);
+
+	public TimeSpan PluginStaleAfter => TimeSpan.FromMinutes(PluginStaleMinutes);
 }
 
 /// <summary>
@@ -216,5 +224,14 @@ public sealed record SettingDefinition(
 			720,
 			s => s.EventRecentHours,
 			(s, v) => s with { EventRecentHours = v }),
+		new(
+			nameof(ArchiveSettings.PluginStaleMinutes),
+			"Watch status on Pebble",
+			"The Pebble plugin shows the watch as unknown once your phone hasn't reported for this long.",
+			"minutes",
+			5,
+			1440,
+			s => s.PluginStaleMinutes,
+			(s, v) => s with { PluginStaleMinutes = v }),
 	];
 }

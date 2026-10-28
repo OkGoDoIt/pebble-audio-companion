@@ -72,7 +72,7 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.UpgradeRequired, tooOld.StatusCode);
 		Assert.Equal(1, JsonDocument.Parse(await tooOld.Content.ReadAsStringAsync()).RootElement.GetProperty("minimum").GetInt32());
 
-		// One batch of every kind, as the phone builds it, with two items the phone got wrong.
+		// One batch of every kind, as the phone builds it, with an item the phone got wrong and a kind from a newer phone.
 		var conversationId = $"conv-seg-{Guid.NewGuid():N}";
 		var broken = Wire.Conversation("No pieces");
 		broken.Remove("pieces");
@@ -91,9 +91,11 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		];
 		var answer = await phone.BatchAsync(batch);
 		Assert.Equal(8, answer.GetProperty("accepted").GetArrayLength());
-		Assert.Equal(0, answer.GetProperty("ignored").GetArrayLength());
+		// A kind this server does not know is held, never a failure: the phone may be newer than its server.
+		Assert.Equal(["gadget:g-1"], Phone.Ids(answer, "ignored"));
+		Assert.Equal(BatchApplier.UnknownKind, answer.GetProperty("ignored")[0].GetProperty("reason").GetString());
 		var rejected = answer.GetProperty("rejected").EnumerateArray().ToList();
-		Assert.Equal(["conversation:conv-broken", "gadget:g-1"], Phone.Ids(answer, "rejected"));
+		Assert.Equal(["conversation:conv-broken"], Phone.Ids(answer, "rejected"));
 		Assert.Equal("payload: pieces missing", rejected[0].GetProperty("reason").GetString());
 		Assert.Equal(0, answer.GetProperty("pendingRequests").GetInt32());
 		Assert.EndsWith("Z", answer.GetProperty("serverTime").GetString());
@@ -133,9 +135,11 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		// The same batch again: every item is already held, nothing is written.
 		var replay = await phone.BatchAsync(batch);
 		Assert.Equal(0, replay.GetProperty("accepted").GetArrayLength());
-		Assert.Equal(8, replay.GetProperty("ignored").GetArrayLength());
-		Assert.All(replay.GetProperty("ignored").EnumerateArray(), i => Assert.Equal("duplicate", i.GetProperty("reason").GetString()));
-		Assert.Equal(2, replay.GetProperty("rejected").GetArrayLength());
+		Assert.Equal(9, replay.GetProperty("ignored").GetArrayLength());
+		Assert.All(replay.GetProperty("ignored").EnumerateArray(), i => Assert.Equal(
+			i.GetProperty("kind").GetString() == "gadget" ? BatchApplier.UnknownKind : "duplicate",
+			i.GetProperty("reason").GetString()));
+		Assert.Equal(1, replay.GetProperty("rejected").GetArrayLength());
 
 		// An older version is stale; a newer one replaces the row and its search terms.
 		var stale = await phone.BatchAsync(Wire.Item("conversation", conversationId, V - 5, payload: Wire.Conversation("An older title")));

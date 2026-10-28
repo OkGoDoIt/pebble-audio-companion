@@ -97,6 +97,8 @@ public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConne
 		await db.Devices
 			.Where(d => d.Id == deviceId && d.UserId == userId && d.UnlinkedAt == null)
 			.ExecuteUpdateAsync(s => s.SetProperty(d => d.UnlinkedAt, now), cancellationToken);
+		// What it last said about its watch goes with it: the Pebble plugin reads linked phones only.
+		await db.DeviceStatuses.Where(s => s.DeviceId == deviceId && s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 	}
 
 	private async Task DeleteArchiveAsync(Guid userId, CancellationToken cancellationToken)
@@ -123,5 +125,7 @@ public sealed class ArchiveWipe(ArchiveDbContext db, ClipStorage storage, IConne
 		await db.CoverageDays.Where(c => c.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.SyncItems.Where(s => s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 		await db.AiReads.Where(a => a.UserId == userId).ExecuteDeleteAsync(cancellationToken);
+		// Its day totals describe the archive that just went; the phone sends a fresh report on its next pass.
+		await db.DeviceStatuses.Where(s => s.UserId == userId).ExecuteDeleteAsync(cancellationToken);
 	}
 }

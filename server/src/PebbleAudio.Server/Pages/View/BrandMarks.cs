@@ -43,6 +43,12 @@ public static class BrandMarks
 			: n.Contains("openai", StringComparison.Ordinal) ? ("on-white", OpenAi, "#000000")
 			: (null, null, null);
 		var size = large ? " lg" : null;
+		if (path is null && n.Contains("pebble", StringComparison.Ordinal))
+		{
+			// The Pebble plugin is ours, on the watch: the site's own watch glyph, as Link a phone draws a phone.
+			return new HtmlString($"<span class=\"itile{size}\" aria-hidden=\"true\">{SiteIcons.Watch}</span>");
+		}
+
 		if (path is null)
 		{
 			return new HtmlString($"<span class=\"itile{size}\" aria-hidden=\"true\">{WebUtility.HtmlEncode(Initials(name))}</span>");

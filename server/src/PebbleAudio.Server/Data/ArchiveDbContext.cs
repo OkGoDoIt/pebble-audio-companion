@@ -37,6 +37,10 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 
 	public DbSet<LinkCode> LinkCodes => Set<LinkCode>();
 
+	public DbSet<DeviceStatus> DeviceStatuses => Set<DeviceStatus>();
+
+	public DbSet<PluginLinkCode> PluginLinkCodes => Set<PluginLinkCode>();
+
 	public DbSet<PhoneRequest> Requests => Set<PhoneRequest>();
 
 	public DbSet<Clip> Clips => Set<Clip>();
@@ -149,6 +153,19 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 			entity.HasIndex(l => l.UserId);
 		});
 
+		builder.Entity<DeviceStatus>(entity =>
+		{
+			entity.HasKey(s => s.DeviceId);
+			entity.HasIndex(s => new { s.UserId, s.UpdatedAt });
+			entity.HasOne<Device>().WithOne().HasForeignKey<DeviceStatus>(s => s.DeviceId).OnDelete(DeleteBehavior.Cascade);
+		});
+
+		builder.Entity<PluginLinkCode>(entity =>
+		{
+			entity.HasIndex(l => l.CodeHash).IsUnique();
+			entity.HasIndex(l => l.UserId);
+		});
+
 		builder.Entity<PhoneRequest>(entity =>
 		{
 			entity.ToTable("Requests");
@@ -204,6 +221,8 @@ public sealed partial class ArchiveDbContext(DbContextOptions<ArchiveDbContext> 
 		ConfigureOwner<SyncPreferences>(builder);
 		ConfigureOwner<Device>(builder);
 		ConfigureOwner<LinkCode>(builder);
+		ConfigureOwner<DeviceStatus>(builder);
+		ConfigureOwner<PluginLinkCode>(builder);
 		ConfigureOwner<PhoneRequest>(builder);
 		ConfigureOwner<Clip>(builder);
 		ConfigureOwner<ApiToken>(builder);

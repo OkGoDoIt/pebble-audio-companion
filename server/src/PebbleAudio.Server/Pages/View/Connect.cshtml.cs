@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 using PebbleAudio.Server.Auth;
 using PebbleAudio.Server.Data;
+using PebbleAudio.Server.Plugin;
 using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Pages.View;
@@ -24,6 +25,9 @@ public enum ConnectKind
 	/// signs in here like the others.
 	/// </summary>
 	Muse,
+
+	/// <summary>The Pebble Audio plugin in the Pebble app, which takes a one-time code shown on its page.</summary>
+	Pebble,
 
 	/// <summary>Any other assistant that can add a custom connector, or use an access key.</summary>
 	Other,
@@ -50,7 +54,7 @@ public sealed record ConnectTool(
 		!(Excludes ?? []).Any(m => name.Contains(m, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>Its page waits for it to show up in Who can read, and says so.</summary>
-	public bool Waits => Kind is ConnectKind.Web or ConnectKind.Mac or ConnectKind.Muse;
+	public bool Waits => Kind is ConnectKind.Web or ConnectKind.Mac or ConnectKind.Muse or ConnectKind.Pebble;
 
 	/// <summary>
 	/// This assistant, connected: signed in with the passkey, or holding an access key it has used. A key nobody has
@@ -73,6 +77,7 @@ public sealed record ConnectTool(
 public sealed class ConnectModel(
 	IConnectedAssistants assistants,
 	ApiTokenService tokens,
+	PluginLinkService pluginLinks,
 	SharingScopes scopes,
 	IOptions<PebbleAudioOptions> options,
 	TimeProvider time) : PageModel
@@ -87,6 +92,7 @@ public sealed class ConnectModel(
 		new("cursor", "Cursor", ConnectKind.Mac, "On your Mac", "Cursor on Mac", ["cursor"]),
 		new("gemini", "Gemini", ConnectKind.Web, "Not connected", "Gemini", ["gemini"], ["gemini cli", "gemini-cli", "antigravity"]),
 		new("muse", "Muse", ConnectKind.Muse, "On your watch or in Muse", "Muse", ["muse", "meta ai"]),
+		new("pebble-plugin", "Pebble plugin", ConnectKind.Pebble, "In the Pebble app", PluginLinkService.TokenName, ["pebble plugin"]),
 		new("grok", "Grok", ConnectKind.Web, "Not connected", "Grok", ["grok"]),
 		new("other", "Another assistant", ConnectKind.Other, "Antigravity and others", "Another assistant", []),
 	];
@@ -162,6 +168,11 @@ public sealed class ConnectModel(
 	/// <summary>The access key just made, for this response only.</summary>
 	public string? Key { get; private set; }
 
+	/// <summary>The Pebble plugin's one-time code just minted, shown once, and when it stops working.</summary>
+	public MintedCode? PluginCode { get; private set; }
+
+	public DateTimeOffset Now => time.GetUtcNow();
+
 	/// <summary>Another assistant's access key: what to call it, and whether it may add follow-ups and notes.</summary>
 	[BindProperty]
 	public KeyInput Input { get; set; } = new();
@@ -177,8 +188,9 @@ public sealed class ConnectModel(
 	public bool OnIPhone => Request.Headers.UserAgent.ToString().Contains("iPhone", StringComparison.Ordinal);
 
 	/// <summary>The waiting row's words, before the assistant shows up.</summary>
-	public string WaitingLine => Key is null
-		? $"Waiting for {Tool.Name}. It shows up here and in Pebble Audio once you sign in."
+	public string WaitingLine =>
+		Tool.Kind == ConnectKind.Pebble ? $"Waiting for the {Tool.Name}. It shows up here and in Pebble Audio once you enter the code."
+		: Key is null ? $"Waiting for {Tool.Name}. It shows up here and in Pebble Audio once you sign in."
 		: $"Waiting for {Tool.Name}. It shows up here and in Pebble Audio once it reads.";
 
 	public async Task<IActionResult> OnGetAsync(string tool, CancellationToken cancellationToken)
@@ -212,7 +224,7 @@ public sealed class ConnectModel(
 	/// <summary>The fallback: an access key for this assistant, shown in this response and nowhere else.</summary>
 	public async Task<IActionResult> OnPostKeyAsync(string tool, CancellationToken cancellationToken)
 	{
-		if (Find(tool) is not { } found || found.Kind is ConnectKind.Muse)
+		if (Find(tool) is not { } found || found.Kind is ConnectKind.Muse or ConnectKind.Pebble)
 		{
 			return NotFound();
 		}
@@ -233,6 +245,23 @@ public sealed class ConnectModel(
 		Key = secret;
 		ModelState.Clear();
 		Input = new KeyInput();
+		Since = time.GetUtcNow().ToUnixTimeMilliseconds();
+		await LoadWhoAsync(cancellationToken);
+		Response.Headers.CacheControl = "no-store";
+		return Page();
+	}
+
+	/// <summary>The Pebble plugin's one-time code, shown in this response only. A new one ends the last.</summary>
+	public async Task<IActionResult> OnPostCodeAsync(string tool, CancellationToken cancellationToken)
+	{
+		if (Find(tool) is not { Kind: ConnectKind.Pebble } found)
+		{
+			return NotFound();
+		}
+
+		Tool = found;
+		var userId = User.UserId() ?? throw new InvalidOperationException("The connect page requires a signed-in user.");
+		PluginCode = await pluginLinks.MintAsync(userId, cancellationToken);
 		Since = time.GetUtcNow().ToUnixTimeMilliseconds();
 		await LoadWhoAsync(cancellationToken);
 		Response.Headers.CacheControl = "no-store";
