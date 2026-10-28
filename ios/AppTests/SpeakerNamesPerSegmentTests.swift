@@ -200,8 +200,8 @@ struct SpeakerNamesPerSegmentTests {
         #expect(selected.sourceEndMs == 201)
         let named = render(SpeakerIdentitySnapshot(corrections: [SpeakerCorrection(id: "c", segmentId: "s",
             startMediaMs: try #require(selected.sourceStartMs), endMediaMs: try #require(selected.sourceEndMs),
-            person: Person(id: "kevin", name: "Kevin"), createdAtMs: 0)]))
-        #expect(named.map(\.name) == ["Kevin", "Speaker 2"])
+            person: Person(id: "dana", name: "Dana"), createdAtMs: 0)]))
+        #expect(named.map(\.name) == ["Dana", "Speaker 2"])
         #expect(named.map(\.text) == ["First Paris.", "Next."])
         #expect(named.first?.sourceEndMs == selected.sourceEndMs)
     }

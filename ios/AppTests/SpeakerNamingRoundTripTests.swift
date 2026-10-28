@@ -35,7 +35,7 @@ struct SpeakerNamingRoundTripTests {
         #expect(picked.allSatisfy { $0.canIdentifyPassage })
         #expect(picked.last?.sourceEndMs == 7_860) // Letters, not the separately timed period.
         let db = try AppDatabase.inMemory()
-        let person = try await PeopleStore(db: db).createPerson(name: "Kevin")
+        let person = try await PeopleStore(db: db).createPerson(name: "Dana")
         let store = SpeakerCorrectionStore(db: db)
         for turn in picked {
             try await store.set(segmentId: id, startMediaMs: try #require(turn.sourceStartMs),
@@ -44,13 +44,13 @@ struct SpeakerNamingRoundTripTests {
         let saved = try await store.snapshot(segmentIds: [id])
         let renamed = await render(saved)
         let turns = renamed.compactMap { if case .turn(let turn) = $0 { turn } else { nil } }
-        #expect(turns.dropLast().allSatisfy { $0.name == "Kevin" && $0.personId == person.id })
+        #expect(turns.dropLast().allSatisfy { $0.name == "Dana" && $0.personId == person.id })
         #expect(turns.last?.name == "Speaker 2")
         #expect(turns.map(\.text).joined(separator: " ") == text + " Neighbor.")
         let export = ArchiveExport.transcript(conversationId: "conversation",
             pieces: [.init(member: member, meta: meta, transcript: transcript)], gaps: [],
             speakerNames: [:], sourceHash: "test", identity: saved)
-        #expect(export.text.contains("Kevin: " + text))
+        #expect(export.text.contains("Dana: " + text))
         #expect(export.text.contains("Speaker 2: Neighbor."))
 
         for turn in turns.dropLast() {
