@@ -100,6 +100,25 @@ Living notes for whichever agent continues this. Newest state first. The design 
   prepares the roster once; a test checks it decides exactly as `SpeakerMatcher.match`. Names are always
   matched from the saved half-precision print, so a re-read decides as the first reading did.
   `pendingRecordings` counts recordings waiting to be re-matched. Recent run IDs drop the corpus revision.
+- **Level research (2026-10-28, offline on the 10:05 backup; reports in the session scratchpad,
+  `research/voice-id-level.md` and `research/transcript-level.md`).** Roger asked whether boosting the
+  recording would help voice ID or transcripts.
+  - *Voice ID: no.* The Cactus front end is log-mel then per-crop mean subtraction, so gain cancels
+    exactly (re-embedded crops: cosine 0.99997 to the raw crop). The segmentation's second instance
+    norm makes the detector level-invariant down to about −65 dBFS; DetectionGain measurably does
+    nothing (keep it: removing it would bump the recipe and orphan every example). The low naming rate
+    (68 named vs 1,327 unnamed on G17) is the 0.55 threshold: the wearer's own cross-recording score is
+    median 0.43 (95% CI 0.385–0.452) and rises with examples (0.25 → 0.43 for 2 → 12). A lower
+    threshold can't be checked yet: only 9 turns of two other labelled people.
+  - *Local Parakeet: yes, small.* `2fc07485` levels every ≤ 45 s chunk with `VoiceNoteLevel` before the
+    engine (−2.5 WER points, 60 better / 7 worse of 90 segments); `ParakeetQuietAudioBoost` and its Debug
+    row are gone; `LocalEngineComparison` has a `PEBBLE_ENGINE_COMPARE_UNLEVELED` arm to confirm it on the
+    real Core AI bundle (the research used the same weights in PyTorch).
+  - *Soniox: unknown.* 1,248 of 1,256 transcripts since 10-01. Uploads are the watch's Speex frames
+    (4% of WAV); a boosted upload means FLAC (15×) or AAC (3.1×, loses most of the gain), and a Speex
+    re-encode is worse than none. A public-audio A/B (LibriSpeech through the simulated watch channel,
+    18 uploads, about $0.32) is built in `research/soniox-ab/` with its decision rule; needs Roger's OK.
+  - *Never at arrival:* re-encoding stored Speex with gain costs 3.7–4.1 points.
 - (superseded) three directions for the question UI — A queue in People & voices, B one question on
   Today, C a hint inside the conversation with per-recording Yes/No — in
   `docs/redesign/voice-naming-mockups/who-is-this.html`, published at
@@ -134,6 +153,16 @@ gives (watch-clock lag + delivery delay); translate the phone window by it, pad 
 receivedAt) puts this recording 15 min early; transcripts/History/moments placement inherit it.
 
 ## In flight
+
+**On G17 next (installer armed):** `f292fc45` = `6edbfc14` + `89670a08` (ignored clips) + `0cb4ae1e`
+(voice prints) + `f292fc45` (local level stage), built from `scratchpad/voice` because main's Focus
+extension can't be signed (Xcode has no account). After it lands: cost report, crash diff, the
+"recordings re-matched" pace lines, `voice_turn_prints` count and DB size, and — once Roger names a
+voice — how fast the re-match reaches every analysed recording.
+
+**Waiting on Roger:** the Soniox level A/B (public audio, about $0.32); level-matched playback for clips
+and samples (the same stage, a product change); and labelling more people across recordings so a
+watch-domain threshold can be calibrated.
 
 **Verify `f69a8623` + `6edbfc14` on the phone** once G17 is back and main is installed:
 - `./scripts/phone-cost-report.sh --minutes 11`, a systemCrashLogs diff, and the next-morning report;
