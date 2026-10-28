@@ -26,6 +26,10 @@ import UIKit
 // about URL *schemes*, needs an `LSApplicationQueriesSchemes` entry to answer at all, and is
 // deprecated in iOS 27, so this app does not use it and declares no query schemes.
 //
+// That signal is weaker than documented: on the iOS 27 simulator with no Pebble app installed
+// (2026-10-28), the menu still appears, offering only Save to Files and More, and the call returns
+// `true`. So `.noOpener` is what iOS says when it says it, never proof that the Pebble app is here.
+//
 // A general share sheet would work on a good day, but Apple has been deliberately narrowing
 // file→app hand-off since iOS 16 (a share extension can suppress an app's Open In row; iOS 17
 // stopped AirDrop handing files straight to declared handlers, which DTS confirmed is

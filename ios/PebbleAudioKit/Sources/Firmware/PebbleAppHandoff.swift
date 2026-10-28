@@ -101,7 +101,9 @@ public enum PebbleAppHandoff {
     ///
     /// Unlike firmware, the plugin's hand-off names this type on the document interaction (never
     /// in this app's `Info.plist`): while the Pebble app is installed it is the same type the
-    /// extension maps to, and when it is not, an undeclared type matches no app at all, so the menu
-    /// reports that nothing can open it instead of offering whichever apps take any file.
+    /// extension maps to, and when it is not, an undeclared type matches no app, so the menu offers
+    /// no unrelated app that takes any file. It does not make the menu say that nothing can open
+    /// the file: on iOS 27 (simulator, 2026-10-28, no Pebble app) the menu still appears, with
+    /// only Save to Files and More, and `presentOpenInMenu` returns true.
     public static let appTypeIdentifier = "coredevices.coreapp.PebbleApp"
 }
