@@ -116,6 +116,13 @@ final class AppComposition {
     let runtime: CompanionRuntime
     /// The Pebble Audio archive sync. Does nothing at all until a server is linked.
     let archiveSync: ArchiveSyncService
+    /// What the archive server is told about the watch (is it recording, the link, both
+    /// batteries, today's minutes), for the Pebble plugin's watchfaces. Written only when it
+    /// changed, or a quarter hour on, at moments the app is awake anyway.
+    let deviceStatus: ArchiveDeviceStatusReporter
+    /// The phone's battery as last read on the main actor (where UIKit wants it): at install,
+    /// then by the minute heartbeat, which is already there. The device status reads it here.
+    private let phoneBatteryPercent: OSAllocatedUnfairLock<Int?>
     /// "Is startup recovery still running?", for the screens. See `StartupActivity`.
     let startup: StartupActivity
     /// The background `URLSession` transport, held so `handleEventsForBackgroundURLSession` can
@@ -1237,6 +1244,40 @@ final class AppComposition {
         )
         self.archiveSync = archiveSync
 
+        // The device status reads only what is already in memory — the receiver's published
+        // state, the settings mirror, the widget's last snapshot — and lists the segments only
+        // for a reading it is about to write.
+        let phoneBattery = OSAllocatedUnfairLock<Int?>(initialState: nil)
+        self.phoneBatteryPercent = phoneBattery
+        let deviceStatus = ArchiveDeviceStatusReporter(
+            ArchiveDeviceStatusReporter.Dependencies(
+                outbox: ArchiveOutbox(db: database),
+                settings: { settingsBox.archiveSync },
+                inputs: {
+                    ArchiveDeviceStatusInputs(
+                        nowMs: clock.nowMs,
+                        captureIntent: settingsBox.captureIntent,
+                        receiverState: receiver.state.value,
+                        // The link remembers the watch it was bound to, across launches.
+                        watchBound: receiver.deviceName.value != nil,
+                        lastAudioAtMs: receiver.streamEvidence.value.lastAudioAtMs,
+                        watchBatteryPercent: receiver.watchBatteryPercent.value,
+                        watchFirmware: receiver.watchFirmwareRevision.value,
+                        coverage: await snapshots.latest,
+                        phoneBatteryPercent: phoneBattery.withLock { $0 })
+                },
+                // The recordings on the phone, counted as Settings → Storage counts them.
+                storageUsedBytes: {
+                    StoragePlanner.overview(
+                        metas: await store.listSegments(), footprint: nil, cold: nil
+                    ).audioOnPhoneBytes
+                },
+                clock: clock,
+                log: AppRuntimeLog.runtimeLog
+            )
+        )
+        self.deviceStatus = deviceStatus
+
         let runtime = CompanionRuntime(
             environment: CompanionRuntimeEnvironment(
                 database: database,
@@ -1260,7 +1301,8 @@ final class AppComposition {
                 audioContent: audioContent,
                 coldStorage: coldStorage,
                 archiveSync: archiveSync,
-                voiceRecognition: voiceRecognition
+                voiceRecognition: voiceRecognition,
+                deviceStatus: deviceStatus
             ),
             wake: wake
         )
@@ -1441,6 +1483,9 @@ final class AppComposition {
         }
         power.start()
         foregroundState.devicePower = power.snapshot
+        // The device status's first reading comes before the first heartbeat.
+        let phoneBatteryNow = HeartbeatTelemetry.phoneBatteryPercent()
+        phoneBatteryPercent.withLock { $0 = phoneBatteryNow }
 
         // Nothing can suspend us in the foreground, so the assertion is pure liability there —
         // a leaked background task is a 0x8badf00d kill. Dropped on activation, and left to the
@@ -1489,6 +1534,8 @@ final class AppComposition {
         let residency = self.residency
         let clock = self.clock
         let telemetry = self.telemetry
+        let deviceStatus = self.deviceStatus
+        let phoneBatteryPercent = self.phoneBatteryPercent
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
@@ -1511,7 +1558,10 @@ final class AppComposition {
                 }
                 let cost = telemetry.sample(
                     controlWrites: receiver.outboundControlCount.value, backgrounded: backgrounded)
-                let phone = await MainActor.run { HeartbeatTelemetry.phoneBattery() }
+                let (phone, phonePercent) = await MainActor.run {
+                    (HeartbeatTelemetry.phoneBattery(), HeartbeatTelemetry.phoneBatteryPercent())
+                }
+                phoneBatteryPercent.withLock { $0 = phonePercent }
                 let watchBattery = receiver.watchBatteryPercent.value
                     .map { "\($0)%" } ?? "?"
                 AppRuntimeLog.shared.flightRecorder?.recordHeartbeat(
@@ -1520,6 +1570,9 @@ final class AppComposition {
                         + "audio=\(audioAge) app=\(backgrounded ? "bg" : "fg") \(cost) "
                         + "phone=\(phone) watchbatt=\(watchBattery)"
                 )
+                // An awake moment: the device status takes a reading if anything moved, or a
+                // quarter hour has passed since the last one it wrote.
+                await deviceStatus.poke()
             }
         }
     }
@@ -2156,5 +2209,12 @@ final class HeartbeatTelemetry: @unchecked Sendable {
         default: state = "unknown"
         }
         return "\(Int((level * 100).rounded()))%/\(state)"
+    }
+
+    /// The level alone, nil when monitoring is off, for the archive's device status.
+    @MainActor
+    static func phoneBatteryPercent() -> Int? {
+        let level = UIDevice.current.batteryLevel
+        return level >= 0 ? Int((level * 100).rounded()) : nil
     }
 }
