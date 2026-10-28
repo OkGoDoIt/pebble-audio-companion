@@ -78,11 +78,14 @@ public enum StatusAction: Sendable, Equatable {
     /// Opens Diagnostics, which names the step that is failing and its error. A helper, not a
     /// fix: nothing on this card can make a failing transcription step succeed.
     case openDiagnostics
+    /// Opens the audio-firmware install for a watch that answered without the audio service,
+    /// or with one too old to talk to this app.
+    case installFirmware
 
     /// Filled = tapping it resolves the state; bordered = it helps.
     public var isFilled: Bool {
         switch self {
-        case .start, .resume, .openSettings, .setUpTranscripts: return true
+        case .start, .resume, .openSettings, .setUpTranscripts, .installFirmware: return true
         case .stop, .findWatch, .tryAgain, .troubleshoot, .setUpAgain, .openDiagnostics:
             return false
         }
@@ -99,6 +102,7 @@ public enum StatusAction: Sendable, Equatable {
         case .setUpTranscripts: return StatusCopy.setUpTranscripts
         case .tryAgain: return StatusCopy.tryAgain
         case .openDiagnostics: return StatusCopy.seeDetails
+        case .installFirmware: return StatusCopy.installFirmware
         case .troubleshoot, .setUpAgain: return nil
         }
     }
@@ -299,6 +303,11 @@ public enum StatusCopy {
     public static let connectionInterrupted = "Connection interrupted"
     public static let connectionInterruptedLine =
         "Trying to reconnect. If this keeps up, turn Bluetooth off and back on."
+    /// The watch answered without the audio service — stock PebbleOS, or an official update that
+    /// replaced the audio firmware. Not a connection problem, so it must not read as one.
+    public static let needsAudioFirmware = "Your Pebble needs the audio firmware"
+    public static let needsAudioFirmwareLine = "Install it to record from your watch again."
+    public static let installFirmware = "Install Firmware"
 
     // Watch-refusal copy (`WatchLinkFault`). The watch names its refusals precisely; these are
     // those names in the user's words. Each line ends where the reader's next move is, and the
@@ -708,6 +717,14 @@ func connectionFailedStatus(_ kind: ConnectFailureKind) -> StatusModel {
             detail: StatusCopy.linkRejectedLine,
             dot: .attention,
             action: .findWatch
+        )
+    case .audioServiceMissing:
+        return StatusModel(
+            family: .needsAttention,
+            headline: StatusCopy.needsAudioFirmware,
+            detail: StatusCopy.needsAudioFirmwareLine,
+            dot: .attention,
+            action: .installFirmware
         )
     case .unknown:
         return StatusModel(

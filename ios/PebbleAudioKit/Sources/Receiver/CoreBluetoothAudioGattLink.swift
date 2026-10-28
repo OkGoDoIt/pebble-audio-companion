@@ -783,10 +783,12 @@ public final class CoreBluetoothAudioGattLink: NSObject, AudioGattLink, @uncheck
 
     /// Bluetooth-off/unauthorized/unavailable have their own recovery signal (`didUpdateState`),
     /// and `linkRejected` cannot clear by retrying the same cached handles — retrying either just
-    /// burns battery. Everything else is a transient the app should heal from on its own.
+    /// burns battery. Everything else is a transient the app should heal from on its own — a
+    /// missing audio service included, because a watch mid-install comes back with it, and the
+    /// backoff's two-minute ceiling keeps the cost of asking small.
     private static func isRetryable(_ kind: ConnectFailureKind) -> Bool {
         switch kind {
-        case .watchUnreachable, .unknown:
+        case .watchUnreachable, .audioServiceMissing, .unknown:
             return true
         case .bluetoothOff, .bluetoothUnauthorized, .bluetoothUnavailable, .linkRejected:
             return false
@@ -1278,7 +1280,11 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
         }) else {
             let found = peripheral.services?.map { $0.uuid.uuidString } ?? []
             log("didDiscoverServices: companion service missing; found=\(found)")
-            failAndReset(.unknown, "Audio Companion service not found")
+            // Whatever build was read before is not on the watch any more (an official update
+            // replaced it, typically), and this watch's Device Information is not read on this
+            // path. Unknown is honest; a stale audio-firmware version is not.
+            if watchFirmwareRevision.value != nil { watchFirmwareRevision.value = nil }
+            failAndReset(.audioServiceMissing, "Audio Companion service not found")
             return
         }
         log("didDiscoverServices ok; discovering characteristics")
@@ -1410,7 +1416,7 @@ extension CoreBluetoothAudioGattLink: CBPeripheralDelegate {
               let data = dataCharacteristic
         else {
             log("didDiscoverCharacteristics: missing one of info/control/data")
-            failAndReset(.unknown, "Audio Companion characteristics not found")
+            failAndReset(.audioServiceMissing, "Audio Companion characteristics not found")
             return
         }
         log("didDiscoverCharacteristics ok; subscribing notifications")

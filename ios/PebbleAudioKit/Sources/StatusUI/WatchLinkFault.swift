@@ -236,7 +236,11 @@ extension WatchLinkFault {
             return .tryAgain
         case .captureOffOnWatch:
             return .start
-        case .appTooOldForWatch, .watchFirmwareTooOld, .versionMismatch, .watchTrouble,
+        case .watchFirmwareTooOld:
+            // Its line says "Update your Pebble to the current audio firmware", and the app can
+            // do exactly that.
+            return .installFirmware
+        case .appTooOldForWatch, .versionMismatch, .watchTrouble,
             .appSentSomethingUnexpected, .unknown:
             return .troubleshoot
         }

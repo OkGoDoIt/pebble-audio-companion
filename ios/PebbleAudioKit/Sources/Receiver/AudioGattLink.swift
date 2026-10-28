@@ -37,6 +37,12 @@ public enum ConnectFailureKind: Sendable, Equatable {
     /// cached handles.
     case linkRejected
 
+    /// The watch answered, but it does not offer the audio-companion service (or its
+    /// characteristics): stock PebbleOS, or an official update that replaced the audio firmware.
+    /// Retrying keeps its usual backoff, so a watch that has just been flashed is picked up again
+    /// on its own; the fix the person can make is installing the audio firmware.
+    case audioServiceMissing
+
     /// Anything not otherwise classified.
     case unknown
 }

@@ -614,10 +614,20 @@ private struct SplitMix64: RandomNumberGenerator {
         )
         #expect(linkRejected.action == .findWatch) // the manual-reconnect affordance
 
+        // A watch without the audio service is not a connection problem: it must say firmware,
+        // never "interrupted", and its one action is the install.
+        let noService = statusModel(
+            state: .connectionFailed(kind: .audioServiceMissing, detail: "service not found"),
+            intent: .active
+        )
+        #expect(noService.headline == StatusCopy.needsAudioFirmware)
+        #expect(noService.action == .installFirmware)
+        #expect(noService.action?.isFilled == true)
+
         // Every failure kind must produce non-empty, plain-language copy plus a recovery action.
         let kinds: [ConnectFailureKind] = [
             .bluetoothOff, .bluetoothUnauthorized, .bluetoothUnavailable,
-            .watchUnreachable, .linkRejected, .unknown,
+            .watchUnreachable, .linkRejected, .audioServiceMissing, .unknown,
         ]
         for kind in kinds {
             let status = statusModel(
