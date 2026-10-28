@@ -36,7 +36,8 @@ enum LiveSettingsDataSources {
             aiModels: AiModels.all.map {
                 AiModelOption(id: $0.id, displayName: $0.displayName)
             },
-            assistants: LiveAssistantsSource(composition: composition)
+            assistants: LiveAssistantsSource(composition: composition),
+            plugin: LivePluginInstallSource(composition: composition)
         )
     }
 }
@@ -199,6 +200,33 @@ final class LiveAssistantsSource: AssistantsSource {
 
     func titles(conversationIds: [String]) async -> [String: String] {
         (try? await ArchiveReadTitles.load(conversationIds, in: composition.database)) ?? [:]
+    }
+}
+
+// MARK: - Pebble plugin
+
+/// The plugin's two requests, through the archive sync, which owns the server's address and this
+/// phone's token. Nothing runs here unless Settings › Watch asks.
+@MainActor
+final class LivePluginInstallSource: PluginInstallSource {
+    private let composition: AppComposition
+
+    init(composition: AppComposition) {
+        self.composition = composition
+    }
+
+    var archiveLinked: Bool {
+        guard composition.settings.archiveSync.isLinked else { return false }
+        if case .revoked = composition.archiveSync.status.value.link { return false }
+        return true
+    }
+
+    func mintCode() async -> Result<ArchivePluginCode, ArchivePluginFailure> {
+        await composition.archiveSync.mintPluginCode()
+    }
+
+    func connection() async -> Result<ArchivePluginConnection, ArchivePluginFailure> {
+        await composition.archiveSync.pluginConnection()
     }
 }
 

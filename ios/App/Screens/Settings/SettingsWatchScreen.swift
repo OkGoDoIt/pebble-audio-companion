@@ -2,8 +2,8 @@ import Firmware
 import SwiftUI
 
 /// Settings · Watch (artboard 2.10): device card w/ battery, what the watch itself reports,
-/// Reconnect (inline progress, NO capture side effects — anti-B3), destructive forget with
-/// confirmation.
+/// the Pebble App Plugin (install and connect, `WatchPluginSection`), Reconnect (inline progress,
+/// NO capture side effects — anti-B3), destructive forget with confirmation.
 struct SettingsWatchScreen: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
@@ -30,11 +30,15 @@ struct SettingsWatchScreen: View {
     @State private var handoffNote: String?
     /// The watch answered without the audio service: the same install onboarding runs.
     @State private var showFirmwareInstall = false
+    /// The Pebble App Plugin section's state, kept across pushes to the Firmware screen so a code
+    /// already shown is not ended by coming back.
+    @State private var plugin = PluginInstallModel(source: SettingsDataSources.current.plugin)
 
     var body: some View {
         SettingsScroll {
             deviceCard
             infoCard
+            WatchPluginSection(model: plugin)
             focusCard
             ListCard {
                 TintActionRow(

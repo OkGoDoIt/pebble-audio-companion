@@ -103,6 +103,9 @@ struct LiveMockConformanceTests {
         Pair(
             protocolName: "AssistantsSource", live: "LiveAssistantsSource",
             mock: "MockAssistantsSource"),
+        Pair(
+            protocolName: "PluginInstallSource", live: "LivePluginInstallSource",
+            mock: "MockPluginInstallSource"),
     ]
 
     // MARK: - Exemptions

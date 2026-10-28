@@ -1507,6 +1507,93 @@ final class MockAssistantsSource: AssistantsSource {
     }
 }
 
+// MARK: - Pebble plugin
+
+/// Settings › Watch › Pebble App Plugin: the server's half of putting the Pebble Audio plugin in
+/// the Pebble app. Whether a server is linked, a one-time code for the plugin's settings page, and
+/// whether the plugin has connected. `PluginInstallModel` holds what the section shows; this is
+/// only what the server answers.
+@MainActor
+protocol PluginInstallSource: AnyObject {
+    /// A Pebble Audio server is linked and has not stopped accepting this phone.
+    var archiveLinked: Bool { get }
+    /// A new code. It ends the one before it.
+    func mintCode() async -> Result<ArchivePluginCode, ArchivePluginFailure>
+    func connection() async -> Result<ArchivePluginConnection, ArchivePluginFailure>
+}
+
+/// Previews, `-demo-data`, the tests, and the review renders (`-pluginDemo <state>`): a server
+/// that answers at once with synthetic codes.
+@MainActor
+final class MockPluginInstallSource: PluginInstallSource {
+    var archiveLinked = true
+    var connected = false
+    var lastUsedAtMs: Int64?
+    var reachable = true
+    /// Handed out in turn; the last repeats.
+    var codes = ["K7QM-3XWD", "R4TN-8WPX", "H2CV-6MJB"]
+    var codeLifetimeMs: Int64 = 600_000
+    var nowMs: () -> Int64
+    private(set) var minted = 0
+    private(set) var checks = 0
+
+    init(
+        state: PluginInstallDemo.State? = PluginInstallDemo.state,
+        nowMs: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+    ) {
+        self.nowMs = nowMs
+        switch state {
+        case .needsServer: archiveLinked = false
+        case .unreachable: reachable = false
+        case .connected:
+            connected = true
+            lastUsedAtMs = nowMs() - 2 * 60_000
+        case .notConnected, .expired, .none: break
+        }
+        if state == .expired { codeLifetimeMs = 0 }
+    }
+
+    func mintCode() async -> Result<ArchivePluginCode, ArchivePluginFailure> {
+        guard archiveLinked else { return .failure(.notLinked) }
+        guard reachable else { return .failure(.unavailable) }
+        let code = codes[min(minted, codes.count - 1)]
+        minted += 1
+        return .success(ArchivePluginCode(code: code, expiresAtMs: nowMs() + codeLifetimeMs))
+    }
+
+    func connection() async -> Result<ArchivePluginConnection, ArchivePluginFailure> {
+        checks += 1
+        guard archiveLinked else { return .failure(.notLinked) }
+        guard reachable else { return .failure(.unavailable) }
+        return .success(
+            ArchivePluginConnection(connected: connected, lastUsedAtMs: connected ? lastUsedAtMs : nil))
+    }
+}
+
+/// DEBUG builds read `-pluginDemo <state>` with `-demo-data`, so each state of the section can be
+/// rendered without a server. (With no Pebble app on a simulator, Install shows its own state.)
+enum PluginInstallDemo {
+    enum State: String {
+        case notConnected, connected, needsServer, unreachable, expired
+    }
+
+    static var state: State? {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-pluginDemo"), index + 1 < args.count {
+            return State(rawValue: args[index + 1])
+        }
+        #endif
+        return nil
+    }
+
+    #if DEBUG
+    /// Review renders through `ImageRenderer`, which draws the Open In menu's UIKit anchor as a
+    /// placeholder over the install button, turn the anchor off. Never set in the app.
+    @MainActor static var rendersWithoutMenuAnchor = false
+    #endif
+}
+
 // MARK: - Holder
 
 /// Swap point for the real services; screens resolve through `current` (defaults to mocks).
@@ -1525,6 +1612,7 @@ final class SettingsDataSources {
     let apiKeys: ApiKeyChecking
     let aiModels: [AiModelOption]
     let assistants: AssistantsSource
+    let plugin: PluginInstallSource
 
     init(
         capture: CaptureControlling? = nil,
@@ -1537,7 +1625,8 @@ final class SettingsDataSources {
         processing: ProcessingModeSource? = nil,
         apiKeys: ApiKeyChecking? = nil,
         aiModels: [AiModelOption]? = nil,
-        assistants: AssistantsSource? = nil
+        assistants: AssistantsSource? = nil,
+        plugin: PluginInstallSource? = nil
     ) {
         self.capture = capture ?? MockCaptureControl()
         self.watch = watch ?? MockWatchStatusSource()
@@ -1549,6 +1638,7 @@ final class SettingsDataSources {
         self.processing = processing ?? MockProcessingModeSource()
         self.apiKeys = apiKeys ?? MockApiKeyChecker()
         self.assistants = assistants ?? AssistantsDemo.makeSource()
+        self.plugin = plugin ?? MockPluginInstallSource()
         self.aiModels = aiModels ?? [
             .init(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
             .init(id: "gpt-5.6-mini", displayName: "GPT-5.6 Mini"),
