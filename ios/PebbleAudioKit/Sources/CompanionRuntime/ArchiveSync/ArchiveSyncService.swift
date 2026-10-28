@@ -430,6 +430,35 @@ public actor ArchiveSyncService {
         return true
     }
 
+    /// One of the Pebble plugin's two requests (`ArchivePlugin.swift`). A 401 means what it means
+    /// everywhere else: the server stopped accepting this phone, and the link reads as revoked.
+    func pluginRequest<Answer: Decodable>(
+        _ method: String, _ path: String
+    ) async -> Result<Answer, ArchivePluginFailure> {
+        let settings = deps.settings()
+        guard settings.isLinked, state.revokedDeviceId != settings.deviceId, let endpoint = endpoint()
+        else { return .failure(.notLinked) }
+        let response: ArchiveHTTPResponse
+        do {
+            response = try await deps.http.send(endpoint.request(method, path, json: false))
+        } catch {
+            return .failure(.unavailable)
+        }
+        if response.status == 401 {
+            state.revokedDeviceId = endpoint.deviceId
+            save()
+            await publish(refreshCounts: false)
+            return .failure(.notLinked)
+        }
+        guard (200..<300).contains(response.status),
+            let answer = try? JSONDecoder().decode(Answer.self, from: response.body)
+        else {
+            deps.log.write("archive sync: \(path) answered \(response.status)")
+            return .failure(.unavailable)
+        }
+        return .success(answer)
+    }
+
     static func pathSegment(_ text: String) -> String {
         text.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/"])) ?? text
     }

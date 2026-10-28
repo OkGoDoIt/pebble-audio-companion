@@ -91,4 +91,17 @@ public enum PebbleAppHandoff {
     /// also that their declaration conforms the type to `public.text`, which a ZIP archive is
     /// not; copying that would be copying a mistake.
     public static let firmwareTypeIdentifier = "coredevices.coreapp.PebbleFirmware"
+
+    /// The uniform type identifier the official app declares for `.pbw`, apps and plugins: owned
+    /// by it (`CFBundleDocumentTypes`, `LSHandlerRank = Owner`) and mapped to the `pbw` extension
+    /// by its own imported declaration (`mobileapp/iosApp/iosApp/Info.plist`). An opened `.pbw`
+    /// reaches `RealPebbleDeepLinkHandler.handleApp`, routed by the file name's `.pbw` suffix like
+    /// firmware, and `sideloadApp` registers a plugin-only one as a plugin once plugins are on in
+    /// that app.
+    ///
+    /// Unlike firmware, the plugin's hand-off names this type on the document interaction (never
+    /// in this app's `Info.plist`): while the Pebble app is installed it is the same type the
+    /// extension maps to, and when it is not, an undeclared type matches no app at all, so the menu
+    /// reports that nothing can open it instead of offering whichever apps take any file.
+    public static let appTypeIdentifier = "coredevices.coreapp.PebbleApp"
 }
