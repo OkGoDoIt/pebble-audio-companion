@@ -53,41 +53,26 @@ import Testing
         #expect(plan.toMs == 99_000 && !plan.discoveryComplete)
     }
 
-    @Test func corpusChangeDuringInferenceRestartsFullyDiscoveredCancelledWork() async throws {
+    /// A new sample used to restart the whole scan from the first recording, so a library long
+    /// enough to need several nights never finished while voices were still being named.
+    @Test func newVoicesKeepAHistoryRunsPlaceAndItsQueuedWork() async throws {
         let db = try AppDatabase.inMemory()
         let voice = VoiceIdentityStore(db: db), plans = VoiceHistoryPlanStore(db: db)
         try await voice.setMode(.local)
         _ = try await voice.prepareSource(segmentId: "s", revision: "r")
         try await plans.create(runID: "scan", fromMs: 0, toMs: 9_000)
+        try await plans.create(runID: "unfinished", fromMs: 100, toMs: 900)
         try await voice.enqueueJob(runID: "scan", segmentId: "s", startMediaMs: 0,
             endMediaMs: 9_000, recipeID: "recipe")
         try await plans.advance(runID: "scan", startMs: 1, segmentId: "s", queued: true, complete: true)
-        _ = try #require(try await voice.claimNextJob())
+        try await plans.advance(runID: "unfinished", startMs: 200, segmentId: "s", queued: false)
+        let job = try #require(try await voice.claimNextJob())
+        // Forgetting even an empty profile changes the voices.
         try await voice.forgetProfile(personId: "changed")
-        // The worker can cancel stale jobs before the next discovery pass sees the corpus change.
-        #expect(try await voice.claimNextJob() == nil)
-        #expect(try await voice.jobs(runID: "scan").first?.state == .cancelled)
-        _ = try await plans.reconcileCorpus()
-        let plan = try #require(try await plans.plans().first)
-        #expect(!plan.discoveryComplete && plan.cursorStartMs == Int64.min)
-        #expect(try await voice.jobs(runID: "scan").isEmpty)
-    }
-
-    @Test func newHumanEvidenceRestartsOnlyUnfinishedScope() async throws {
-        let db = try AppDatabase.inMemory()
-        let voice = VoiceIdentityStore(db: db), plans = VoiceHistoryPlanStore(db: db)
-        try await voice.setMode(.local)
-        for run in ["unfinished", "finished"] {
-            try await plans.create(runID: run, fromMs: 100, toMs: 900)
-            try await plans.advance(runID: run, startMs: 200, segmentId: "s", queued: false)
-        }
-        try await plans.finishDiscovery(runID: "finished")
-        // Forgetting even an empty profile changes the corpus, invalidating work tokens.
-        try await voice.forgetProfile(personId: "no-profile")
-        _ = try await plans.reconcileCorpus()
+        try await voice.releaseJob(id: job.id)
+        #expect(try await voice.claimNextJob()?.id == job.id)
         let result = try await plans.plans()
-        #expect(result.first(where: { $0.runID == "unfinished" })?.cursorStartMs == Int64.min)
-        #expect(result.first(where: { $0.runID == "finished" })?.cursorStartMs == 200)
-        #expect(result.first(where: { $0.runID == "finished" })?.discoveryComplete == true)
+        #expect(result.first(where: { $0.runID == "scan" })?.discoveryComplete == true)
+        #expect(result.first(where: { $0.runID == "unfinished" })?.cursorStartMs == 200)
     }
 }

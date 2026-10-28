@@ -69,6 +69,11 @@ public struct VoiceIdentityStore: Sendable {
         try await db.reader.read { try Self.examples($0, personId: personId) }
     }
 
+    /// The voices as one consistent read: the configuration names the revision they are.
+    public func corpus() async throws -> (configuration: VoiceRecognitionConfiguration, examples: [VoiceConfirmedExample]) {
+        try await db.reader.read { d in (try Self.configuration(d), try Self.examples(d, personId: nil)) }
+    }
+
     public func automaticSegmentIds(personId: String? = nil, runID: String? = nil) async throws -> [String] {
         try await db.reader.read { d in
             try String.fetchAll(d, sql: """
@@ -275,6 +280,7 @@ public struct VoiceIdentityStore: Sendable {
                     enabledAtMs = CASE WHEN mode = 'local' THEN ? ELSE enabledAtMs END WHERE id = 1;
                 UPDATE voice_jobs SET state = 'cancelled' WHERE state IN ('pending','running');
                 UPDATE voice_history_plans SET state = 'cancelled' WHERE state = 'active';
+                UPDATE voice_print_sources SET matchedCorpus = \(VoicePrintStore.frozenCorpus);
                 """, arguments: [nowMs])
         }
     }
@@ -287,6 +293,13 @@ public struct VoiceIdentityStore: Sendable {
     static func source(_ d: Database, segmentId: String) throws -> VoiceSourceState? {
         try Row.fetchOne(d, sql: "SELECT * FROM voice_sources WHERE segmentId = ? AND state = 'ready'", arguments: [segmentId])
             .map { VoiceSourceState(segmentId: $0["segmentId"], revision: $0["revision"], generation: $0["generation"]) }
+    }
+    /// Analysis of this audio is still wanted, whatever voices were learned since.
+    static func validWork(_ d: Database, segmentId: String, token: VoiceWorkToken) throws -> Bool {
+        let config = try configuration(d)
+        guard config.mode == .local, config.generation == token.configGeneration,
+              let source = try source(d, segmentId: segmentId) else { return false }
+        return source.generation == token.sourceGeneration && source.revision == token.sourceRevision
     }
     static func valid(_ d: Database, segmentId: String, token: VoiceWorkToken, requiresEnabled: Bool = true) throws -> Bool {
         let config = try configuration(d)

@@ -114,4 +114,49 @@ import Testing
         SpeakerEvaluationProbe(id: id, sessionID: "held-out", personID: truth,
             labelConfirmationID: "human-\(id)", condition: "synthetic", embedding: try vector(values))
     }
+
+    /// Re-reading a library names thousands of turns against one roster; the prepared roster
+    /// must decide every one of them exactly as the single-turn matcher does.
+    @Test func aPreparedRosterDecidesExactlyAsTheSingleTurnMatcher() throws {
+        let wide = SpeakerEmbeddingRecipe(modelID: "test", modelRevision: "1", weightsSHA256: "test",
+            runtimeID: "test", preprocessingID: "test", dimensions: 8)
+        var seed: UInt64 = 0x5EED
+        func next() -> Float {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Float(Int64(bitPattern: seed >> 11) % 2_000 - 1_000) / 1_000
+        }
+        func vector() throws -> SpeakerEmbedding {
+            var values: [Float] = []
+            while values.allSatisfy({ $0 == 0 }) { values = (0..<8).map { _ in next() } }
+            return try SpeakerEmbedding(recipe: wide, values: values)
+        }
+        let people = (1...4).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
+        var examples: [ConfirmedSpeakerExample] = []
+        for (index, person) in people.enumerated() {
+            for crop in 0..<(index + 1) {
+                examples.append(ConfirmedSpeakerExample(id: "\(index)-\(crop)", personID: person,
+                    confirmationID: "human-\(index)-\(crop)", sessionID: "session",
+                    embedding: try vector(), embeddingVariants: crop.isMultiple(of: 2) ? [try vector()] : []))
+            }
+        }
+        // A crop of another model is never compared.
+        examples.append(ConfirmedSpeakerExample(id: "other-model", personID: people[0], confirmationID: "human-x",
+            sessionID: "session", embedding: try self.vector([1, 0])))
+        for policy in [SpeakerMatchPolicy(minimumSimilarity: 0.2, minimumMargin: 0.05, minimumExamples: 2,
+                                          calibrationID: "synthetic"), policy] {
+            let roster = try SpeakerMatchRoster(examples: examples, policy: policy)
+            var named = 0
+            for _ in 0..<500 {
+                let query = try vector()
+                let single = try SpeakerMatcher.match(query, examples: examples, policy: policy)
+                #expect(try roster.match(query) == single)
+                if single.personID != nil { named += 1 }
+            }
+            // Both outcomes are exercised, not only abstentions.
+            if policy.minimumExamples == 2 { #expect(named > 0) }
+        }
+        let narrowQuery = try self.vector([0, 1])
+        #expect(try SpeakerMatchRoster(examples: examples, policy: policy).match(narrowQuery)
+                == SpeakerMatcher.match(narrowQuery, examples: examples, policy: policy))
+    }
 }

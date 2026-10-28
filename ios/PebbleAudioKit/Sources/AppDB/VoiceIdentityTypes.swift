@@ -27,6 +27,12 @@ public struct VoiceWorkToken: Equatable, Sendable {
         self.configGeneration = configGeneration; self.corpusRevision = corpusRevision
         self.sourceGeneration = sourceGeneration; self.sourceRevision = sourceRevision
     }
+    /// The same audio under the same switch-on, whatever voices were learned since: analysis
+    /// stays valid when the voices change; only the names drawn from it depend on them.
+    public func sameWork(as other: VoiceWorkToken) -> Bool {
+        configGeneration == other.configGeneration && sourceGeneration == other.sourceGeneration
+            && sourceRevision == other.sourceRevision
+    }
 }
 
 /// An explicit human-confirmed crop. JSON preserves the complete embedding recipe and values;

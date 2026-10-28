@@ -51,6 +51,7 @@ public actor VoiceRecognitionService {
         calibrationID: "public-read-speech-cactus-f145212-codec-variants-v2")
     private let store: VoiceIdentityStore
     private let history: VoiceHistoryPlanStore
+    private let prints: VoicePrintStore
     private let files: SegmentFileReader
     private let models: any VoiceModelManaging
     private let analyzer: any SpeakerSpeechAnalyzing
@@ -64,7 +65,6 @@ public actor VoiceRecognitionService {
     private var resumed = false
     private var lastMessage: String?
     private var discoveryAtMs: Int64 = 0
-    private var discoveryCorpus: Int64 = -1
     private var discovered = Set<String>()
     private var changedSegments = Set<String>()
     private nonisolated let enrollmentGeneration = Mutex<UInt64>(0)
@@ -74,6 +74,7 @@ public actor VoiceRecognitionService {
                 protector: any VoiceProfileProtecting = VoiceProfileCipher()) {
         store = VoiceIdentityStore(db: database)
         history = VoiceHistoryPlanStore(db: database)
+        prints = VoicePrintStore(db: database)
         self.files = files; self.models = models; self.policy = policy
         analyzer = LocalSpeakerDiarizer(embeddingModelDirectory: models.embeddingDirectory,
                                        segmentationModelDirectory: models.segmentationDirectory)
@@ -86,6 +87,7 @@ public actor VoiceRecognitionService {
                 recipeID: String, protector: any VoiceProfileProtecting = VoiceProfileCipher()) {
         store = VoiceIdentityStore(db: database)
         history = VoiceHistoryPlanStore(db: database)
+        prints = VoicePrintStore(db: database)
         self.files = files; self.models = models; self.analyzer = analyzer
         self.policy = policy; self.recipeID = recipeID; self.protector = protector
     }
@@ -158,26 +160,23 @@ public actor VoiceRecognitionService {
 
     /// The pipeline pass calls this; no timer or scan loop of its own. New recordings are found
     /// and queued on every call; the models run only while `mayAnalyze` holds, which is
-    /// re-read between windows so unplugging stops at the next one.
+    /// re-read between windows so unplugging stops at the next one. Recordings already analysed
+    /// are named again from their prints first when the voices have changed (`renamed`).
     public func pass(segmentStore: SegmentStore,
-                     mayAnalyze: @escaping @Sendable () -> Bool) async -> (didWork: Bool, windows: Int) {
+                     mayAnalyze: @escaping @Sendable () -> Bool) async -> (didWork: Bool, windows: Int, renamed: Int) {
         do { try await reconcileProfileProtection() }
-        catch { lastMessage = error.localizedDescription; return (false, 0) }
+        catch { lastMessage = error.localizedDescription; return (false, 0, 0) }
         guard let config = try? await store.configuration(), config.mode == .local,
               await models.isInstalled(), let examples = try? await store.examples(), !examples.isEmpty,
-              let enabledAt = config.enabledAtMs else { return (false, 0) }
+              let enabledAt = config.enabledAtMs else { return (false, 0, 0) }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         var queued = false
-        changedSegments.formUnion((try? await history.reconcileCorpus()) ?? [])
         let plans = (try? await history.plans()) ?? []
         var metas: [SegmentMeta]?
         if plans.contains(where: { $0.state == "active" && !$0.discoveryComplete }) {
             metas = await segmentStore.listSegments()
             do { queued = try await fillHistory(plans: plans, metas: metas!) }
             catch { lastMessage = error.localizedDescription; changed() }
-        }
-        if discoveryCorpus != config.corpusRevision {
-            discoveryCorpus = config.corpusRevision; discovered.removeAll(); discoveryAtMs = 0
         }
         if now - discoveryAtMs >= 30_000 {
             let currentMetas: [SegmentMeta]
@@ -195,9 +194,48 @@ public actor VoiceRecognitionService {
             // A large catch-up is still bounded at two new segment jobs per pass.
             if attempted < 2 { discoveryAtMs = now }
         }
-        guard mayAnalyze() else { return (queued, 0) }
+        guard mayAnalyze() else { return (queued, 0, 0) }
+        let renamed = await renameFromPrints()
         let slice = await analyzePending(mayRun: mayAnalyze)
-        return (slice.didWork || queued, slice.windows)
+        return (slice.didWork || queued || renamed > 0, slice.windows, renamed)
+    }
+
+    /// Names recordings already analysed against the current voices from their saved prints: a
+    /// new or removed sample reaches every analysed recording here, without the models. At most
+    /// about `maxPrints` per call; returns how many recordings were read.
+    @discardableResult func renameFromPrints(maxPrints: Int = 2_000) async -> Int {
+        do {
+            let (config, examples) = try await store.corpus()
+            guard config.mode == .local else { return 0 }
+            let sources = try await prints.stale(corpusRevision: config.corpusRevision,
+                                                 maxPrints: maxPrints, maxSources: 64)
+            guard !sources.isEmpty else { return 0 }
+            let policy = policy, protector = protector
+            // Thousands of comparisons: off this actor, so status reads don't wait on them.
+            let updates = try await Task.detached(priority: .utility) {
+                var rosters: [String: SpeakerMatchRoster] = [:]
+                return try sources.map { source -> (source: VoicePrintSource, names: [VoiceAutomaticAttribution]) in
+                    if rosters[source.recipeID] == nil {
+                        rosters[source.recipeID] = try Self.roster(examples: examples, recipeID: source.recipeID,
+                                                                   policy: policy, protector: protector)
+                    }
+                    // A print that no longer opens is left unnamed rather than holding up the rest.
+                    let opened = source.prints.compactMap { print in
+                        (try? Self.open(print, protector: protector)).map { (record: print, embedding: $0) }
+                    }
+                    return (source, try Self.names(opened, roster: rosters[source.recipeID]!,
+                        segmentId: source.segmentId, sourceRevision: source.sourceRevision, recipeID: source.recipeID))
+                }
+            }.value
+            let renamed = try await prints.commitNames(updates, corpusRevision: config.corpusRevision,
+                                                       configGeneration: config.generation)
+            changedSegments.formUnion(renamed)
+            if !renamed.isEmpty { changed() }
+            return sources.count
+        } catch {
+            lastMessage = error.localizedDescription
+            return 0
+        }
     }
 
     public func takeChangedSegmentIds() -> [String] {
@@ -521,7 +559,7 @@ public actor VoiceRecognitionService {
         let source = try await load(segmentId)
         guard !source.meta.isOpen, source.endMediaMs >= 2_000 else { return }
         _ = try await store.prepareSource(segmentId: segmentId, revision: source.revision)
-        try await store.enqueueJob(runID: "recent:\(segmentId):\(config.generation):\(config.corpusRevision):\(source.revision)", segmentId: segmentId,
+        try await store.enqueueJob(runID: "recent:\(segmentId):\(config.generation):\(source.revision)", segmentId: segmentId,
             startMediaMs: 0, endMediaMs: source.endMediaMs, recipeID: recipeID)
         changedSegments.insert(segmentId)
         changed()
@@ -611,11 +649,14 @@ public actor VoiceRecognitionService {
         processing = true; changed()
         var didWork = false
         var windows = 0
+        var steps = 0
         var cached: VoiceAudioSource?
         do {
             if !resumed { try await store.resumeInterruptedJobs(); resumed = true }
             await analyzer.setEnabled(true)
-            for _ in 0..<min(maxWindows, 2) {
+            // Audio already analysed costs no model time, so it doesn't count against the windows.
+            while windows < min(maxWindows, 2), steps < 64 {
+                steps += 1
                 try Task.checkCancellation()
                 guard mayRun() else { break }
                 guard let job = try await store.claimNextJob() else { break }
@@ -625,27 +666,46 @@ public actor VoiceRecognitionService {
                     else { source = try await load(job.segmentId); cached = source }
                     guard source.revision == job.token.sourceRevision,
                           let context = try await store.workContext(segmentId: job.segmentId),
-                          context.token == job.token else { throw VoiceEnrollmentError.changedDuringProcessing }
+                          context.token.sameWork(as: job.token) else { throw VoiceEnrollmentError.changedDuringProcessing }
+                    let analyzed = try await prints.analyzed(segmentId: job.segmentId, recipeID: job.recipeID, token: job.token)
+                    if let covered = analyzed.first(where: { $0.contains(job.cursorMediaMs) }) {
+                        // Its prints are named for this run by the next `renameFromPrints`.
+                        try await store.adoptAnalyzed(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
+                                                      nextCursorMediaMs: min(covered.upperBound, job.endMediaMs))
+                        didWork = true; changed()
+                        continue
+                    }
+                    // Up to the next stretch already analysed, if there is one.
+                    let limit = analyzed.first(where: { $0.lowerBound > job.cursorMediaMs })
+                        .map { min($0.lowerBound, job.endMediaMs) } ?? job.endMediaMs
                     var attributions: [VoiceAutomaticAttribution] = []
                     var unmatched: [VoiceUnmatchedCrop] = []
+                    var saved: [VoiceTurnPrint] = []
+                    var window: Range<Int64>?
                     let next: Int64
-                    if let range = source.nextRange(afterMediaMs: job.cursorMediaMs, throughMediaMs: job.endMediaMs) {
+                    if let range = source.nextRange(afterMediaMs: job.cursorMediaMs, throughMediaMs: limit) {
                         let pcm = try await Task.detached(priority: .utility) {
                             try source.pcm(startMediaMs: range.lowerBound, endMediaMs: range.upperBound)
                         }.value
                         let analysis = try await analyzer.analyze(SpeakerAnalysisAudio(
                             pcm16LE: pcm, sourceID: job.segmentId, sourceRevision: source.revision,
                             sessionID: job.segmentId, sourceStartSample: Int(range.lowerBound) * 16))
-                        attributions = try Self.match(analysis, job: job, examples: context.examples,
-                                                      policy: policy, window: range, protector: protector)
+                        let turns = try Self.prints(analysis, window: range, runID: job.runID, protector: protector)
+                        let roster = try Self.roster(examples: context.examples, recipeID: analysis.recipeID,
+                                                     policy: policy, protector: protector)
+                        attributions = try Self.names(turns, roster: roster, segmentId: job.segmentId,
+                            sourceRevision: job.token.sourceRevision, recipeID: analysis.recipeID)
                         unmatched = try Self.unmatched(analysis, job: job, named: attributions,
                                                        window: range, protector: protector)
+                        saved = turns.map(\.record)
+                        window = range
                         next = range.upperBound
                         windows += 1
-                    } else { next = job.endMediaMs }
+                    } else { next = limit }
                     try Task.checkCancellation()
                     let committed = try await store.advanceJob(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
-                        nextCursorMediaMs: next, attributions: attributions, unmatched: unmatched)
+                        nextCursorMediaMs: next, attributions: attributions, unmatched: unmatched,
+                        window: window, prints: saved, matchedCorpus: context.configuration.corpusRevision)
                     if committed && !attributions.isEmpty { changedSegments.insert(job.segmentId) }
                     didWork = true; changed()
                 } catch {
@@ -668,24 +728,53 @@ public actor VoiceRecognitionService {
     static func match(_ analysis: SpeakerAnalysis, job: VoiceRecognitionJob,
                       examples: [VoiceConfirmedExample], policy: SpeakerMatchPolicy,
                       window: Range<Int64>, protector: any VoiceProfileProtecting) throws -> [VoiceAutomaticAttribution] {
-        let corpus = try examples.compactMap { example -> ConfirmedSpeakerExample? in
-            guard example.recipeID == analysis.recipeID,
-                  let person = UUID(uuidString: example.personId) else { return nil }
+        try names(prints(analysis, window: window, runID: job.runID, protector: protector),
+                  roster: roster(examples: examples, recipeID: analysis.recipeID, policy: policy, protector: protector),
+                  segmentId: job.segmentId, sourceRevision: job.token.sourceRevision, recipeID: analysis.recipeID)
+    }
+
+    /// The confirmed voices of one recipe, opened once for every turn they are matched against.
+    static func roster(examples: [VoiceConfirmedExample], recipeID: String, policy: SpeakerMatchPolicy,
+                       protector: any VoiceProfileProtecting) throws -> SpeakerMatchRoster {
+        try SpeakerMatchRoster(examples: examples.compactMap { example -> ConfirmedSpeakerExample? in
+            guard example.recipeID == recipeID, let person = UUID(uuidString: example.personId) else { return nil }
             let embedding = try StoredEnrollmentEmbedding.decode(protector.open(example.embeddingJSON))
             return ConfirmedSpeakerExample(id: example.id, personID: person,
                 confirmationID: example.confirmationID, sessionID: example.sessionID,
                 embedding: embedding.primary, embeddingVariants: embedding.variants)
-        }
+        }, policy: policy)
+    }
+
+    /// The turns of a window that can be named, each with the print saved for it. Names always
+    /// come from the saved print, so naming it again later decides exactly as this did.
+    static func prints(_ analysis: SpeakerAnalysis, window: Range<Int64>, runID: String,
+                       protector: any VoiceProfileProtecting) throws -> [(record: VoiceTurnPrint, embedding: SpeakerEmbedding)] {
+        let encoder = JSONEncoder()
         return try analysis.turns.compactMap { turn in
             guard !turn.overlap, turn.speechConfidence >= 0.7, let embedding = turn.embedding,
-                  turn.startSample >= Int(window.lowerBound) * 16,
-                  turn.endSample <= Int(window.upperBound) * 16 else { return nil }
-            let match = try SpeakerMatcher.match(embedding, examples: corpus, policy: policy)
+                  turn.startSample >= Int(window.lowerBound) * 16, turn.endSample <= Int(window.upperBound) * 16,
+                  turn.endSample / 16 > turn.startSample / 16 else { return nil }
+            let print = try VoicePrintCodec.save(embedding)
+            return (VoiceTurnPrint(startMediaMs: Int64(turn.startSample / 16), endMediaMs: Int64(turn.endSample / 16),
+                speechConfidence: turn.speechConfidence, runID: runID, recipeJSON: try encoder.encode(embedding.recipe),
+                sealedEmbedding: try protector.seal(print.bytes)), print.embedding)
+        }
+    }
+
+    static func open(_ print: VoiceTurnPrint, protector: any VoiceProfileProtecting) throws -> SpeakerEmbedding {
+        try VoicePrintCodec.open(protector.open(print.sealedEmbedding),
+                                 recipe: JSONDecoder().decode(SpeakerEmbeddingRecipe.self, from: print.recipeJSON))
+    }
+
+    static func names(_ prints: [(record: VoiceTurnPrint, embedding: SpeakerEmbedding)], roster: SpeakerMatchRoster,
+                      segmentId: String, sourceRevision: String, recipeID: String) throws -> [VoiceAutomaticAttribution] {
+        try prints.compactMap { print in
+            let match = try roster.match(print.embedding)
             guard let person = match.personID, let score = match.score else { return nil }
-            return VoiceAutomaticAttribution(personId: person.uuidString.lowercased(), segmentId: job.segmentId,
-                startMediaMs: Int64(turn.startSample / 16), endMediaMs: Int64(turn.endSample / 16),
-                sourceRevision: job.token.sourceRevision, recipeID: analysis.recipeID, score: score,
-                margin: match.margin, calibrationID: match.calibrationID, runID: job.runID)
+            return VoiceAutomaticAttribution(personId: person.uuidString.lowercased(), segmentId: segmentId,
+                startMediaMs: print.record.startMediaMs, endMediaMs: print.record.endMediaMs,
+                sourceRevision: sourceRevision, recipeID: recipeID, score: score,
+                margin: match.margin, calibrationID: match.calibrationID, runID: print.record.runID)
         }
     }
 

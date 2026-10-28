@@ -120,3 +120,83 @@ public enum SpeakerMatcher {
                             abstention: nil, calibrationID: policy.calibrationID)
     }
 }
+
+/// `SpeakerMatcher.match` for many turns against one roster: the examples are checked and
+/// normalized once instead of once per turn, with the same arithmetic, so every decision is
+/// identical to the single-turn call's.
+public struct SpeakerMatchRoster: Sendable {
+    private struct Person: Sendable {
+        /// Each confirmed crop's channel views, normalized.
+        var crops: [[[Float]]] = []
+        var invalid: SpeakerRecognitionError?
+    }
+    private let policy: SpeakerMatchPolicy
+    private let people: [SpeakerEmbeddingRecipe: [UUID: Person]]
+
+    public init(examples: [ConfirmedSpeakerExample], policy: SpeakerMatchPolicy,
+                excluding: Set<UUID> = []) throws {
+        try policy.validate()
+        var ids = Set<String>()
+        for example in examples {
+            guard !example.id.isEmpty, !example.confirmationID.isEmpty,
+                  !example.sessionID.isEmpty, ids.insert(example.id).inserted else {
+                throw SpeakerRecognitionError.invalidCorpus("Examples require unique IDs and confirmation provenance")
+            }
+        }
+        var people: [SpeakerEmbeddingRecipe: [UUID: Person]] = [:]
+        for example in examples where !excluding.contains(example.personID) {
+            let recipe = example.embedding.recipe
+            var person = people[recipe]?[example.personID] ?? Person()
+            let variants = example.embeddingVariants ?? []
+            // Like the single-turn call, a bad example only fails turns of its own recipe.
+            if variants.count > 1 {
+                person.invalid = .invalidCorpus("At most one channel variant per real example")
+            } else if !variants.allSatisfy({ $0.recipe == recipe }) {
+                person.invalid = .incompatibleRecipe
+            } else {
+                person.crops.append(try ([example.embedding] + variants).map {
+                    try SpeakerEmbedding.normalized($0.values, dimensions: recipe.dimensions)
+                })
+            }
+            people[recipe, default: [:]][example.personID] = person
+        }
+        self.policy = policy
+        self.people = people
+    }
+
+    public func match(_ query: SpeakerEmbedding) throws -> SpeakerMatch {
+        _ = try SpeakerEmbedding(recipe: query.recipe, values: query.values)
+        func abstain(_ reason: SpeakerAbstention, score: Double? = nil, margin: Double? = nil) -> SpeakerMatch {
+            SpeakerMatch(personID: nil, score: score, margin: margin,
+                         abstention: reason, calibrationID: policy.calibrationID)
+        }
+        guard let roster = people[query.recipe], !roster.isEmpty else { return abstain(.noCompatibleExamples) }
+        let q = try SpeakerEmbedding.normalized(query.values, dimensions: query.recipe.dimensions)
+        var candidates: [(personID: UUID, score: Double, count: Int)] = []
+        for (personID, person) in roster {
+            if let invalid = person.invalid { throw invalid }
+            guard person.crops.count <= 32 else {
+                throw SpeakerRecognitionError.invalidCorpus("Keep at most 32 confirmed examples per person and recipe")
+            }
+            let scores = person.crops.map { views in
+                views.map { view in min(1, max(-1, zip(q, view).reduce(0.0) { $0 + Double($1.0) * Double($1.1) })) }.max()!
+            }.sorted(by: >)
+            let best = scores.prefix(2)
+            candidates.append((personID, best.reduce(0, +) / Double(best.count), person.crops.count))
+        }
+        candidates.sort {
+            $0.score == $1.score ? $0.personID.uuidString < $1.personID.uuidString : $0.score > $1.score
+        }
+        guard let winner = candidates.first else { return abstain(.insufficientEvidence) }
+        let margin = candidates.count > 1 ? winner.score - candidates[1].score : nil
+        guard winner.count >= policy.minimumExamples else {
+            return abstain(.insufficientEvidence, score: winner.score, margin: margin)
+        }
+        guard winner.score >= policy.minimumSimilarity else { return abstain(.belowThreshold, score: winner.score, margin: margin) }
+        if let margin, margin <= 0 || margin < policy.minimumMargin {
+            return abstain(.ambiguous, score: winner.score, margin: margin)
+        }
+        return SpeakerMatch(personID: winner.personID, score: winner.score, margin: margin,
+                            abstention: nil, calibrationID: policy.calibrationID)
+    }
+}

@@ -134,6 +134,7 @@ public final class VoiceBackgroundPace: @unchecked Sendable {
     private var slices = 0
     private var busyMs: Int64 = 0
     private var windows = 0
+    private var renamed = 0
 
     public init() {}
 
@@ -142,18 +143,20 @@ public final class VoiceBackgroundPace: @unchecked Sendable {
     /// How long until the next slice may run, for the pass's own sleep.
     public func msUntilDue(nowMs: Int64) -> Int64 { lock.withLock { max(0, nextAtMs - nowMs) } }
 
-    /// Records a backgrounded voice pass. Returns a summary every tenth slice that did work.
-    public func record(windows: Int, busyMs: Int64, nowMs: Int64) -> String? {
+    /// Records a backgrounded voice pass: `windows` analysed, and recordings `renamed` from
+    /// their prints. Returns a summary every tenth slice that did work.
+    public func record(windows: Int, renamed: Int = 0, busyMs: Int64, nowMs: Int64) -> String? {
         lock.withLock {
-            guard windows > 0 else { nextAtMs = nowMs + Self.idleGapMs; return nil }
+            guard windows > 0 || renamed > 0 else { nextAtMs = nowMs + Self.idleGapMs; return nil }
             nextAtMs = nowMs + max(Self.minimumGapMs, busyMs * Self.gapPerBusyMs)
             slices += 1
             self.busyMs += busyMs
             self.windows += windows
+            self.renamed += renamed
             guard slices >= 10 else { return nil }
-            defer { slices = 0; self.busyMs = 0; self.windows = 0 }
+            defer { slices = 0; self.busyMs = 0; self.windows = 0; self.renamed = 0 }
             return "voice recognition: \(slices) background slices, \(self.windows) windows, "
-                + "\(self.busyMs) ms busy"
+                + "\(self.busyMs) ms busy" + (self.renamed > 0 ? ", \(self.renamed) recordings re-matched" : "")
         }
     }
 }

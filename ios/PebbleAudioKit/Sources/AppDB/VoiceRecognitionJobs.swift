@@ -15,19 +15,29 @@ extension VoiceIdentityStore {
             guard config.mode == .local else { throw VoiceIdentityError.disabled }
             guard let source = try Self.source(d, segmentId: segmentId) else { throw VoiceIdentityError.missingSource }
             guard try Self.activeRun(d, id: runID) else { throw VoiceIdentityError.invalidRecord }
-            // Repeated foreground scans are idempotent even when they propose a new run ID.
+            // Repeated foreground scans are idempotent even when they propose a new run ID. New
+            // voices don't ask for the audio again: its prints are named afresh instead.
             if !explicitRerun, let row = try Row.fetchOne(d, sql: """
                 SELECT * FROM voice_jobs WHERE segmentId = ? AND startMediaMs = ? AND endMediaMs = ?
                     AND recipeID = ? AND sourceRevision = ? AND sourceGeneration = ?
-                    AND configGeneration = ? AND corpusRevision = ? AND state IN ('pending','running','done') LIMIT 1
+                    AND configGeneration = ? AND state IN ('pending','running','done') LIMIT 1
                 """, arguments: [segmentId, startMediaMs, endMediaMs, recipeID, source.revision,
-                    source.generation, config.generation, config.corpusRevision]) { return Self.job(row) }
+                    source.generation, config.generation]) { return Self.job(row) }
             if let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE runID = ? AND segmentId = ? AND startMediaMs = ? AND endMediaMs = ?",
                                          arguments: [runID, segmentId, startMediaMs, endMediaMs]) { return Self.job(row) }
             if explicitRerun {
                 try Self.clearSuppressions(d, segmentId: segmentId, start: startMediaMs, end: endMediaMs)
-                try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?",
-                              arguments: [segmentId, endMediaMs, startMediaMs])
+                // Names on audio already analysed are brought up to date from its prints in place,
+                // so an unchanged name is never deleted and re-added (nor re-sent to the archive).
+                let analysed = try VoicePrintStore.analyzed(d, segmentId: segmentId, recipeID: recipeID, source: source)
+                for row in try Row.fetchAll(d, sql: """
+                    SELECT id, startMediaMs, endMediaMs FROM voice_auto_attributions
+                    WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?
+                    """, arguments: [segmentId, endMediaMs, startMediaMs]) {
+                    let start: Int64 = row["startMediaMs"], end: Int64 = row["endMediaMs"]
+                    guard !analysed.contains(where: { $0.lowerBound <= start && end <= $0.upperBound }) else { continue }
+                    try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE id = ?", arguments: [row["id"] as String])
+                }
             }
             let id = UUID().uuidString.lowercased()
             try d.execute(sql: """
@@ -57,9 +67,13 @@ extension VoiceIdentityStore {
 
     /// A bounded window and its cursor commit together. Retries cannot lose a window or apply
     /// it twice. Manual corrections overlapping a prediction suppress that prediction only.
+    /// `window` is the audio analysed, with the `prints` of its turns; `matchedCorpus` is the
+    /// voices the names were matched against (the job's own by default). Names from voices
+    /// that have changed since are not saved; the prints are, and are named again from there.
     @discardableResult public func advanceJob(
         id: String, expectedCursorMediaMs: Int64, nextCursorMediaMs: Int64,
         attributions: [VoiceAutomaticAttribution], unmatched: [VoiceUnmatchedCrop] = [],
+        window: Range<Int64>? = nil, prints: [VoiceTurnPrint] = [], matchedCorpus: Int64? = nil,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> Bool {
         guard attributions.count <= 256 else { throw VoiceIdentityError.capacityExceeded }
@@ -68,21 +82,49 @@ extension VoiceIdentityStore {
             guard let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE id = ?", arguments: [id]) else { return false }
             let job = Self.job(row)
             guard job.state == .running, job.cursorMediaMs == expectedCursorMediaMs,
-                  try Self.valid(d, segmentId: job.segmentId, token: job.token),
+                  try Self.validWork(d, segmentId: job.segmentId, token: job.token),
                   try Self.activeRun(d, id: job.runID) else { return false }
-            guard nextCursorMediaMs > expectedCursorMediaMs, nextCursorMediaMs <= job.endMediaMs else {
-                throw VoiceIdentityError.invalidRecord
+            guard nextCursorMediaMs > expectedCursorMediaMs, nextCursorMediaMs <= job.endMediaMs,
+                  window.map({ $0.lowerBound >= expectedCursorMediaMs && $0.upperBound <= nextCursorMediaMs }) ?? prints.isEmpty
+            else { throw VoiceIdentityError.invalidRecord }
+            let matched = matchedCorpus ?? job.token.corpusRevision
+            let current = try Self.configuration(d).corpusRevision
+            if let window {
+                try VoicePrintStore.recordWindow(d, job: job, window: window, prints: prints, matchedCorpus: matched)
             }
             for a in attributions {
                 guard a.segmentId == job.segmentId, a.runID == job.runID, a.recipeID == job.recipeID,
                       a.startMediaMs >= expectedCursorMediaMs, a.endMediaMs <= nextCursorMediaMs,
                       a.sourceRevision == job.token.sourceRevision else { throw VoiceIdentityError.invalidRecord }
-                _ = try Self.insertAutomatic(d, attribution: a, token: job.token)
+                if matched == current { _ = try Self.insertAutomatic(d, attribution: a, token: job.token) }
             }
             guard unmatched.allSatisfy({ $0.segmentId == job.segmentId && $0.recipeID == job.recipeID
                 && $0.startMediaMs >= expectedCursorMediaMs && $0.endMediaMs <= nextCursorMediaMs
                 && $0.sourceRevision == job.token.sourceRevision }) else { throw VoiceIdentityError.invalidRecord }
             try VoiceUnmatchedStore.insert(d, unmatched)
+            try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
+                          arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
+            return true
+        }
+    }
+
+    /// Moves the cursor over audio already analysed (for this run or another): no model time,
+    /// and the stretch's prints are named for this run from what they hold.
+    @discardableResult public func adoptAnalyzed(
+        id: String, expectedCursorMediaMs: Int64, nextCursorMediaMs: Int64,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Bool {
+        try await db.writer.write { d in
+            guard let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE id = ?", arguments: [id]) else { return false }
+            let job = Self.job(row)
+            guard job.state == .running, job.cursorMediaMs == expectedCursorMediaMs,
+                  try Self.validWork(d, segmentId: job.segmentId, token: job.token),
+                  try Self.activeRun(d, id: job.runID) else { return false }
+            guard nextCursorMediaMs > expectedCursorMediaMs, nextCursorMediaMs <= job.endMediaMs else {
+                throw VoiceIdentityError.invalidRecord
+            }
+            try VoicePrintStore.adopt(d, segmentId: job.segmentId,
+                                      range: expectedCursorMediaMs..<nextCursorMediaMs, runID: job.runID)
             try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
                           arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
             return true
@@ -147,12 +189,20 @@ extension VoiceIdentityStore {
         }
     }
 
-    /// Recordings with audio still to check, whichever run asked for them.
+    /// Recordings with audio still to check, whichever run asked for them, and recordings
+    /// whose names are still from voices that have changed since.
     public func pendingRecordingCount() async throws -> Int {
         try await db.reader.read { d in
             try Int.fetchOne(d, sql: """
-                SELECT COUNT(DISTINCT segmentId) FROM voice_jobs WHERE state IN ('pending', 'running')
-                """) ?? 0
+                SELECT COUNT(*) FROM (
+                    SELECT segmentId FROM voice_jobs WHERE state IN ('pending', 'running')
+                    UNION
+                    SELECT p.segmentId FROM voice_print_sources p JOIN voice_sources s ON s.segmentId = p.segmentId
+                    WHERE s.state = 'ready' AND s.generation = p.sourceGeneration AND s.revision = p.sourceRevision
+                        AND p.matchedCorpus NOT IN ((SELECT corpusRevision FROM voice_recognition_config WHERE id = 1), ?)
+                        -- With no voices at all there are no names to bring up to date.
+                        AND EXISTS (SELECT 1 FROM voice_examples))
+                """, arguments: [VoicePrintStore.frozenCorpus]) ?? 0
         }
     }
 
@@ -179,11 +229,12 @@ extension VoiceIdentityStore {
                                  sourceGeneration: r["sourceGeneration"], sourceRevision: r["sourceRevision"]),
             state: VoiceJobState(rawValue: r["state"]) ?? .cancelled, attempts: r["attempts"], lastError: r["lastError"])
     }
+    /// Work outlives new voices (its prints are named again), never a switch-off or a changed recording.
     static func cancelStaleJobs(_ d: Database) throws {
         try d.execute(sql: """
             UPDATE voice_jobs SET state = 'cancelled' WHERE state IN ('pending','running') AND (
                 NOT EXISTS (SELECT 1 FROM voice_recognition_config c WHERE c.mode = 'local'
-                    AND c.generation = voice_jobs.configGeneration AND c.corpusRevision = voice_jobs.corpusRevision)
+                    AND c.generation = voice_jobs.configGeneration)
                 OR NOT EXISTS (SELECT 1 FROM voice_sources s WHERE s.segmentId = voice_jobs.segmentId
                     AND s.state = 'ready' AND s.generation = voice_jobs.sourceGeneration AND s.revision = voice_jobs.sourceRevision)
                 OR NOT EXISTS (SELECT 1 FROM voice_runs r WHERE r.runID = voice_jobs.runID AND r.state = 'active'))

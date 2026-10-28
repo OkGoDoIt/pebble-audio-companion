@@ -53,34 +53,6 @@ public struct VoiceHistoryPlanStore: Sendable {
         }
     }
 
-    /// An interrupted explicit scan restarts its fixed scope after new human evidence changes
-    /// the model roster. Completed historical scans stay completed until explicitly requested.
-    public func reconcileCorpus() async throws -> [String] {
-        try await db.writer.write { d in
-            let config = try VoiceIdentityStore.configuration(d)
-            guard config.mode == .local else { return [] }
-            let runs = try String.fetchAll(d, sql: """
-                SELECT runID FROM voice_history_plans p WHERE state = 'active' AND corpusRevision <> ?
-                    AND (discoveryComplete = 0 OR EXISTS(SELECT 1 FROM voice_jobs j
-                        WHERE j.runID = p.runID AND (j.state IN ('pending','running')
-                            OR (j.state = 'cancelled' AND j.corpusRevision <> (SELECT corpusRevision FROM voice_recognition_config WHERE id = 1)))))
-                    AND EXISTS(SELECT 1 FROM voice_runs r WHERE r.runID = p.runID AND r.state = 'active')
-                """, arguments: [config.corpusRevision])
-            var changed = Set<String>()
-            for run in runs {
-                changed.formUnion(try String.fetchAll(d, sql:
-                    "SELECT DISTINCT segmentId FROM voice_auto_attributions WHERE runID = ?", arguments: [run]))
-                try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE runID = ?", arguments: [run])
-                try d.execute(sql: "DELETE FROM voice_jobs WHERE runID = ?", arguments: [run])
-                try d.execute(sql: """
-                    UPDATE voice_history_plans SET corpusRevision = ?, cursorStartMs = -9223372036854775808,
-                        cursorSegmentId = '', discoveryComplete = 0, queuedCount = 0 WHERE runID = ?
-                    """, arguments: [config.corpusRevision, run])
-            }
-            return Array(changed)
-        }
-    }
-
     public func advance(runID: String, startMs: Int64, segmentId: String,
                         queued: Bool, complete: Bool = false) async throws {
         try await db.writer.write { d in

@@ -808,8 +808,8 @@ public actor CompanionRuntime {
                 let started = clock.nowMs
                 let outcome = await voice.pass(segmentStore: env.store, mayAnalyze: voiceMayRun)
                 if background,
-                    let line = voicePace.record(
-                        windows: outcome.windows, busyMs: clock.nowMs - started, nowMs: clock.nowMs)
+                    let line = voicePace.record(windows: outcome.windows, renamed: outcome.renamed,
+                                                busyMs: clock.nowMs - started, nowMs: clock.nowMs)
                 {
                     log.write(line)
                 }

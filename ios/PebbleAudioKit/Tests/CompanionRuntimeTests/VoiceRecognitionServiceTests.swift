@@ -72,6 +72,18 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
             protector: VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256)))
     }
 
+    /// A print is saved in half precision; whatever it is named from must be what was saved.
+    @Test func aSavedPrintOpensToExactlyTheVoiceItWasNamedFrom() throws {
+        let recipe = SpeakerEmbeddingRecipe(modelID: "test", modelRevision: "1", weightsSHA256: "digest",
+            runtimeID: "fake", preprocessingID: "16k", dimensions: 4)
+        let original = try SpeakerEmbedding(recipe: recipe, values: [0.123_456, -0.654_321, 0.333_333, 0.01])
+        let saved = try VoicePrintCodec.save(original)
+        #expect(saved.bytes.count == 8)
+        #expect(try VoicePrintCodec.open(saved.bytes, recipe: recipe) == saved.embedding)
+        #expect(try abs(saved.embedding.cosineSimilarity(to: original) - 1) < 1e-3)
+        #expect(throws: SpeakerRecognitionError.self) { try VoicePrintCodec.open(saved.bytes.prefix(6), recipe: recipe) }
+    }
+
     @Test func explicitPhoneEnrollmentWhileOffIsAtomicAndDoesNotEnableOrDownload() async throws {
         let db = try AppDatabase.inMemory()
         let person = try await PeopleStore(db: db).createPerson(name: "Roger")
@@ -458,6 +470,66 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         let charging = await service.pass(segmentStore: store, mayAnalyze: { true })
         #expect(charging.windows > 0 && charging.didWork)
         #expect(await analyzer.calls > afterEnrolling)
+    }
+
+    /// A closed recording with Dana's voice in it, checked all the way through.
+    private func checkedRecording(_ root: URL) async throws
+        -> (store: SegmentStore, segmentId: String, db: AppDatabase, dana: Person, analyzer: VoiceTestAnalyzer, service: VoiceRecognitionService) {
+        let (store, segmentId) = try await Self.openRecording(root)
+        let db = try AppDatabase.inMemory()
+        let dana = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let analyzer = VoiceTestAnalyzer()
+        let service = service(db, root: root, analyzer: analyzer)
+        try await service.setEnabled(true)
+        _ = try await service.enroll(personId: dana.id, segmentId: segmentId, startMediaMs: 1_000, endMediaMs: 5_000)
+        try await store.closeSegment(reason: .stopped(reasonRaw: Int(StopReason.shutdown.rawValue),
+                                                      finalSequence: 609, finalSampleIndex: 760 * 320))
+        try await service.enqueueSegment(segmentId: segmentId)
+        try await drain(service, store)
+        return (store, segmentId, db, dana, analyzer, service)
+    }
+    private func drain(_ service: VoiceRecognitionService, _ store: SegmentStore) async throws {
+        for _ in 0..<40 where try await service.status().pendingRecordings > 0 {
+            _ = await service.pass(segmentStore: store, mayAnalyze: { true })
+        }
+        #expect(try await service.status().pendingRecordings == 0)
+    }
+    private func names(_ db: AppDatabase, _ segmentId: String) async throws -> [VoiceResolvedAttribution] {
+        try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: [segmentId]).automaticAttributions
+    }
+
+    @Test func aNewSampleNamesRecordingsAlreadyCheckedWithoutTheModels() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, segmentId, db, dana, analyzer, service) = try await checkedRecording(root)
+        let named = try await names(db, segmentId).count
+        #expect(named > 0)
+        // Removing her samples takes her names away; a new sample brings them back.
+        try await service.removeExamples(ids: try await service.examples().map(\.id))
+        #expect(try await names(db, segmentId).isEmpty)
+        _ = try await service.enrollPCM(personId: dana.id, pcm16LE: Data(repeating: 1, count: 128_000), sessionID: "again")
+        let afterEnrolling = await analyzer.calls
+        #expect(try await service.status().pendingRecordings == 1)
+        let outcome = await service.pass(segmentStore: store, mayAnalyze: { true })
+        #expect(outcome.renamed == 1 && outcome.windows == 0)
+        #expect(await analyzer.calls == afterEnrolling, "Named from its prints, not analysed again")
+        #expect(try await names(db, segmentId).count == named)
+        #expect(try await service.status().pendingRecordings == 0)
+    }
+
+    @Test func aHistoryRunOverCheckedAudioReadsItsPrintsNotTheAudio() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (store, segmentId, db, _, analyzer, service) = try await checkedRecording(root)
+        let named = try await names(db, segmentId).map(\.attribution.id)
+        let before = await analyzer.calls
+        let run = try await service.recognizeHistory(fromMs: Self.t0 - 60_000, toMs: Self.t0 + 3_600_000)
+        for _ in 0..<40 { _ = await service.pass(segmentStore: store, mayAnalyze: { true }) }
+        #expect(await analyzer.calls == before)
+        // The same names, untouched: nothing went blank or back to the archive meanwhile.
+        #expect(try await names(db, segmentId).map(\.attribution.id) == named)
+        let owners = try await db.reader.read { try String.fetchAll($0, sql: "SELECT DISTINCT runID FROM voice_turn_prints") }
+        #expect(owners == [run])
     }
 
     @Test func aSampleSituationGoesWithItsLastCrop() async throws {

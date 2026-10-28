@@ -207,7 +207,8 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
               examples.filter({ $0.personId == personId && $0.recipeID == LocalSpeakerDiarizer.recipeID }).count >= 2
         else { return }
         // Starting a run cancels the active one. A run already covering this stretch (say, "Find
-        // voices in all recordings") re-queues its work when the voices change, so leave it be.
+        // voices in all recordings") keeps going, and what it has analysed is named afresh from
+        // its prints when the voices change, so leave it be.
         if let plans = try? await service.historyPlans(),
            plans.contains(where: { $0.state == "active" && $0.fromMs <= from }) { return }
         _ = try? await service.recognizeHistory(fromMs: from, toMs: now)

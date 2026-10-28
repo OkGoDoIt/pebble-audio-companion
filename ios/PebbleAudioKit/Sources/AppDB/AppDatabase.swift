@@ -915,6 +915,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-ignored-clips-v1") { db in
             try VoiceUnmatchedStore.installIgnoredClipsSchema(db)
         }
+        migrator.registerMigration("voice-turn-prints-v1") { db in
+            try VoicePrintStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

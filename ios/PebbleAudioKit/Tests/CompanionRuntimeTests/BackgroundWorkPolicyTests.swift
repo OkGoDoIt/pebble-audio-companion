@@ -110,4 +110,15 @@ import Testing
         #expect(line == "voice recognition: 10 background slices, 12 windows, 7100 ms busy")
         #expect(pace.record(windows: 1, busyMs: 100, nowMs: 400_000) == nil)
     }
+
+    /// Re-matching names after a new sample runs no models, but it is still work: it must not
+    /// wait the idle half-minute between slices.
+    @Test func aSliceThatOnlyRematchedIsWorkNotIdle() {
+        let pace = VoiceBackgroundPace()
+        _ = pace.record(windows: 0, renamed: 40, busyMs: 200, nowMs: 1_000)
+        #expect(pace.isDue(nowMs: 4_000))
+        var line: String?
+        for index in 0..<9 { line = pace.record(windows: 0, renamed: 10, busyMs: 100, nowMs: 10_000 + Int64(index)) }
+        #expect(line == "voice recognition: 10 background slices, 0 windows, 1100 ms busy, 130 recordings re-matched")
+    }
 }
