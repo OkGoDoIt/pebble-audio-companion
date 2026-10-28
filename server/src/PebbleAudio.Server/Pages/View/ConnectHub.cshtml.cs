@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Html;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 using PebbleAudio.Server.Auth;
+using PebbleAudio.Server.Plugin;
 using PebbleAudio.Server.Sync;
 
 namespace PebbleAudio.Server.Pages.View;
@@ -50,9 +51,10 @@ public sealed class ConnectHubModel(
 		}
 
 		// Connected assistants that are none of the above (Antigravity, a tool with an access key) sit above "Another
-		// assistant".
+		// assistant". The Pebble plugin is not an assistant: it is set up on the phone and listed in Who can read.
 		var other = ConnectModel.Find("other")!;
 		rows.AddRange(entries
+			.Where(e => !PluginLinkService.IsPlugin(e))
 			.Where(e => !known.Any(t => t.IsMatch(e.Name)) && (e.Kind != TokenAssistantSource.KindName || e.LastUsedAt is not null))
 			.Select(e => new HubRow(ConnectModel.ToolUrl(other), e.Name, SiteText.Connected(e.ConnectedAt, now, zone), true, BrandMarks.Tile(e.Name))));
 		rows.Add(new HubRow(ConnectModel.ToolUrl(other), other.Name, other.Subtitle, false, BrandMarks.Others));

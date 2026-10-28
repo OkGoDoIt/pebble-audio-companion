@@ -15,7 +15,8 @@ namespace PebbleAudio.Server.Tests;
 
 /// <summary>
 /// The Pebble plugin's server half: the phone's <c>deviceStatus</c> reports in its batches, <c>GET /plugin/status</c>
-/// and <c>GET /plugin/today</c> behind a read-only personal token, and the one-time code that makes that token.
+/// and <c>GET /plugin/today</c> behind a read-only personal token, the one-time code the phone shows to make that token,
+/// and where the website lists it.
 /// </summary>
 [Collection(ServerCollection.Name)]
 public sealed partial class PluginTests(ArchiveServerFactory factory)
@@ -224,64 +225,6 @@ public sealed partial class PluginTests(ArchiveServerFactory factory)
 	}
 
 	[Fact]
-	public async Task The_plugin_connects_with_a_one_time_code_from_its_connect_page()
-	{
-		var userId = await factory.CreateUserAsync();
-		using var browser = factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-		Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync($"{TestSignIn.Path}?userId={userId}")).StatusCode);
-
-		// The page asks for a code first, then shows one, which only that response carries.
-		var page = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/pebble-plugin"));
-		Assert.Contains("Apps › Plugins › Pebble Audio", page, StringComparison.Ordinal);
-		Assert.Contains("Show a Code", page, StringComparison.Ordinal);
-		Assert.DoesNotContain("code-boxes", page, StringComparison.Ordinal);
-		var csrf = Csrf().Match(page).Groups["token"].Value;
-		var shown = await browser.PostAsync("/connect/pebble-plugin?handler=Code", new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = csrf }));
-		Assert.Equal(HttpStatusCode.OK, shown.StatusCode);
-		Assert.True(shown.Headers.CacheControl?.NoStore);
-		var withCode = WebUtility.HtmlDecode(await shown.Content.ReadAsStringAsync());
-		var pageCode = CodeOnPage().Match(withCode).Groups["code"].Value;
-		Assert.Matches("^[A-Z2-9]{4}-[A-Z2-9]{4}$", pageCode);
-		Assert.Contains("once you enter the code", withCode, StringComparison.Ordinal);
-		Assert.Equal(HttpStatusCode.NotFound, (await browser.PostAsync("/connect/pebble-plugin?handler=Key", new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = csrf }))).StatusCode);
-
-		// A newer code ends the one on the page; a phone's code is not a plugin's, nor the other way round.
-		string code, phoneCode;
-		await using (var scope = factory.Services.CreateAsyncScope())
-		{
-			code = (await scope.ServiceProvider.GetRequiredService<PluginLinkService>().MintAsync(userId, CancellationToken.None)).Code;
-			phoneCode = (await scope.ServiceProvider.GetRequiredService<PhoneLinkService>().MintAsync(userId, CancellationToken.None)).Code;
-		}
-
-		using var plugin = factory.CreateClient();
-		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = pageCode }))).StatusCode);
-		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = phoneCode }))).StatusCode);
-		Assert.Equal(HttpStatusCode.Conflict, (await plugin.SendAsync(Phone.LinkRequest(code))).StatusCode);
-
-		// Typed the way a person might, it is exchanged once for a read-only token named for the plugin.
-		var linked = await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = PhoneLinkService.Display(code).ToLowerInvariant() }));
-		Assert.Equal(HttpStatusCode.Created, linked.StatusCode);
-		Assert.True(linked.Headers.CacheControl?.NoStore);
-		var token = JsonDocument.Parse(await linked.Content.ReadAsStringAsync()).RootElement.GetProperty("token").GetString()!;
-		Assert.StartsWith(ApiTokenService.Prefix, token);
-		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = code }))).StatusCode);
-		await using (var scope = factory.Services.CreateAsyncScope())
-		{
-			var made = Assert.Single(await scope.ServiceProvider.GetRequiredService<ApiTokenService>().ListAsync(userId, CancellationToken.None));
-			Assert.Equal((PluginLinkService.TokenName, TokenAccess.Read), (made.Name, made.Access));
-			var used = await scope.ServiceProvider.GetRequiredService<ArchiveDbContext>().PluginLinkCodes.AsNoTracking()
-				.SingleAsync(c => c.UserId == userId && c.UsedAt != null);
-			Assert.Equal(made.Id, used.ApiTokenId);
-		}
-
-		// Once it reads, the plugin is connected on its page.
-		Assert.Equal(HttpStatusCode.NotFound, (await plugin.SendAsync(Get("/plugin/status", token))).StatusCode);
-		var connected = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect/pebble-plugin"));
-		Assert.Contains("data-ready=\"true\"", connected, StringComparison.Ordinal);
-		Assert.Contains("Pebble plugin is connected.", connected, StringComparison.Ordinal);
-	}
-
-	[Fact]
 	public async Task The_phone_shows_the_plugin_s_code_and_sees_it_connect()
 	{
 		var userId = await factory.CreateUserAsync();
@@ -371,6 +314,36 @@ public sealed partial class PluginTests(ArchiveServerFactory factory)
 		Assert.Equal(JsonValueKind.Null, gone.GetProperty("lastUsedAtMs").ValueKind);
 	}
 
+	[Fact]
+	public async Task The_website_lists_the_plugin_under_its_own_heading_and_never_with_the_assistants()
+	{
+		var userId = await factory.CreateUserAsync();
+		var token = await TokenAsync(userId);
+		using (var plugin = factory.CreateClient())
+		{
+			Assert.Equal(HttpStatusCode.OK, (await plugin.SendAsync(Get("/plugin/today", token))).StatusCode);
+		}
+
+		using var browser = factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+		Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync($"{TestSignIn.Path}?userId={userId}")).StatusCode);
+
+		// Set up on the phone: no row or page among the assistants.
+		var hub = WebUtility.HtmlDecode(await browser.GetStringAsync("/connect"));
+		Assert.DoesNotContain(PluginLinkService.TokenName, hub, StringComparison.OrdinalIgnoreCase);
+		Assert.DoesNotContain("/connect/pebble-plugin", hub, StringComparison.Ordinal);
+		Assert.Equal(HttpStatusCode.NotFound, (await browser.GetAsync("/connect/pebble-plugin")).StatusCode);
+
+		// Who can read: what it does and when it last read, under its own heading, with Disconnect; no assistant yet.
+		var access = WebUtility.HtmlDecode(await browser.GetStringAsync("/access"));
+		Assert.Contains("No assistant is connected yet.", access, StringComparison.Ordinal);
+		Assert.DoesNotContain("Access keys", access, StringComparison.Ordinal);
+		Assert.Matches(new Regex(
+			"<h2 class=\"section-header\" id=\"watch-h\">On your watch</h2>.*<span class=\"t strong\">Pebble plugin</span><span class=\"s\">" +
+			Regex.Escape(PebbleAudio.Server.Pages.Admin.AccessModel.PluginLine) + "\u00a0· <span class=\"nb\">Last read just now</span>.*Disconnect Pebble plugin",
+			RegexOptions.Singleline), access);
+		Assert.Contains(PebbleAudio.Server.Pages.Admin.AccessModel.PluginAfterwards, access, StringComparison.Ordinal);
+	}
+
 	/// <summary><c>POST /sync/plugin-code</c>'s code.</summary>
 	private static async Task<string> CodeAsync(Phone phone)
 	{
@@ -429,9 +402,4 @@ public sealed partial class PluginTests(ArchiveServerFactory factory)
 		return JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.Clone();
 	}
 
-	[GeneratedRegex("""<meta name="csrf-token" content="(?<token>[^"]+)">""")]
-	private static partial Regex Csrf();
-
-	[GeneratedRegex("""data-code="(?<code>[A-Z2-9-]+)""")]
-	private static partial Regex CodeOnPage();
 }

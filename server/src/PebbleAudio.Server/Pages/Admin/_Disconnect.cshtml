@@ -8,7 +8,7 @@
 	<button type="submit" class="btn small danger" aria-label="Disconnect @row.Name">Disconnect</button>
 	<dialog class="confirm" aria-labelledby="@id-h">
 		<p class="h" id="@id-h">Disconnect @row.Name?</p>
-		<p>@row.Name can't read your server after this. What it already read stays in your chats with it.</p>
+		<p>@row.Name can't read your server after this. @(row.Afterwards ?? "What it already read stays in your chats with it.")</p>
 		<div class="acts">
 			<button type="submit" class="danger" data-confirmed>Disconnect</button>
 			<button type="button" data-cancel>Cancel</button>

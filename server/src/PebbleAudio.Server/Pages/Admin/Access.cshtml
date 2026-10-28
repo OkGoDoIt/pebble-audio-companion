@@ -55,6 +55,25 @@
 		}
 	}
 
+	@if (Model.Watch.Count > 0)
+	{
+		<section class="group" id="watch" aria-labelledby="watch-h">
+			<h2 class="section-header" id="watch-h">On your watch</h2>
+			<ul class="list-card">
+				@foreach (var row in Model.Watch)
+				{
+					n++;
+					<li class="row wrap">
+						@BrandMarks.Tile(row.Name)
+						<span class="grow"><span class="t strong">@row.Name</span><span class="s">@row.MayDo&nbsp;· <span class="nb">@row.LastRead</span></span></span>
+						<partial name="_Disconnect" model="(row, n)" />
+					</li>
+				}
+			</ul>
+			<p class="footer">Set up in Pebble Audio on your phone, under <span class="nb">Settings › Watch</span>.</p>
+		</section>
+	}
+
 	@if (Model.Subscriptions.Count > 0)
 	{
 		<section class="group" aria-labelledby="updates-h">

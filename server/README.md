@@ -48,8 +48,9 @@ Built:
   `events/unsubscribe`, with `day_recap.ready` and `followup.created` delivered as Standard Webhooks from the job
   queue. Other modules call `IEventPublisher`.
 - The site's own pages, passkey-only, one user, in one layout with the round-3 server design: Who can read
-  (`/access`: connected assistants, access keys, and event subscriptions), Connect an app (`/connect` and
-  `/connect/{chatgpt,claude,claude-code,codex,cursor,gemini,muse,pebble-plugin,grok,other}`), Link a phone (`/phones`), and Settings
+  (`/access`: connected assistants, access keys, the Pebble plugin under its own heading, and event subscriptions),
+  Connect an app (`/connect` and `/connect/{chatgpt,claude,claude-code,codex,cursor,gemini,muse,grok,other}`, assistants
+  only), Link a phone (`/phones`), and Settings
   (`/settings`: sync status, passkeys, and the typed limits), beside the viewer at `/`. The old `/admin/*`
   addresses answer 307 to their new pages (`Pages/OldAdminUrls.cs`).
 - The Postgres-backed job queue (`Jobs/`) with a `noop` handler and `clip.transcode`.
@@ -57,7 +58,9 @@ Built:
 - The Pebble plugin's half (`Plugin/`; the plugin is [`../pebble-plugin`](../pebble-plugin), whose README has the
   endpoints): `GET /plugin/status` (the watch's status the phone reports as the `deviceStatus` batch kind, stale
   after the *Watch status on Pebble* setting), `GET /plugin/today` (today's conversations, read inside the sharing
-  scope), and `POST /plugin/link`, which exchanges a code from `/connect/pebble-plugin` for a read-only token.
+  scope), and `POST /plugin/link`, which exchanges a one-time code for a read-only token. The code comes from the
+  phone app (Settings › Watch, which asks for it at `POST /sync/plugin-code` and reads `GET /sync/plugin` to say
+  whether the plugin is connected); the site makes none.
 - The sync half (`Sync/`, the whole of [`docs/sync-protocol.md`](docs/sync-protocol.md)): linking a phone at
   `/phones` (one-time code and QR code), device tokens (`pad_…`, their own scheme, `/link` and `/sync/*`
   only), `PUT /sync/batch`, the request channel and clip uploads, the ffmpeg transcode to m4a, signed clip
