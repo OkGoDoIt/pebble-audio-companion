@@ -20,10 +20,9 @@ private typealias Guide = Copy.FirmwareGuidance
 struct FirmwareSetupGuide: View {
     /// Where the build actually comes from.
     ///
-    /// Nil while nothing is published, and the guide then says so instead of offering a link
-    /// that goes nowhere. Defaulted from `Copy.FirmwareGuidance.releaseURL`, so publishing a
-    /// build is one constant — or pass a URL in, which is what a Settings screen backed by a
-    /// real release feed should do.
+    /// Defaulted to the newest release page (`Copy.FirmwareGuidance.releaseURL`); a Settings
+    /// screen backed by the release feed passes the `.pbz` itself. Nil renders a sentence saying
+    /// nothing is published rather than a link that goes nowhere.
     var releaseURL: URL? = Guide.releaseURL
 
     var body: some View {
@@ -45,7 +44,6 @@ struct FirmwareSetupGuide: View {
                 StepRow(number: 4, title: Guide.step4Title, line: Guide.step4Line)
             }
 
-            note(Guide.slotNote)
             note(Guide.officialAppNote)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

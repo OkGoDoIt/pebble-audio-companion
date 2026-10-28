@@ -2,23 +2,20 @@ import Foundation
 
 /// Where the release feed lives — the one configuration point for the whole feature.
 ///
-/// **Nothing is published yet, so this is deliberately unset.** With no source the update check
-/// returns `.notConfigured`, no network call is ever made, and Settings does not draw the row at
-/// all. That is the intended shipping state: a firmware screen that shows a permanently failing
-/// feed would be worse than no screen, because it would read as the app being broken rather than
-/// as the feature not having started.
+/// Builds are published as GitHub releases of the PebbleOS fork by
+/// `scripts/publish-firmware-release.sh` (workspace root). Each release carries one `.pbz` with
+/// both slots and a `firmware.json` naming it, and `releases/latest/download/firmware.json`
+/// always resolves to the newest release's copy — so this constant never changes again.
+/// `FirmwareFeed` carries the schema and a worked example.
 ///
-/// To turn it on, put the raw URL of the feed JSON in `publishedFeedURL` below — for a GitHub
-/// release that is a `https://github.com/<owner>/<repo>/releases/latest/download/firmware.json`
-/// URL, which always resolves to the newest release's copy of the file, so the constant never
-/// needs to change again. `FirmwareFeed` carries the schema and a worked example.
+/// With no source the update check returns `.notConfigured`, no network call is ever made, and
+/// the firmware rows are not drawn at all.
 public enum FirmwareFeedSource {
 
-    // ─────────────────────────────────────────────────────────────────────────────────────
-    // PLACEHOLDER — set this when the firmware is actually published somewhere.
-    // Must be https (`FirmwareRelease.assetURL` explains why). Leave nil until then.
-    // ─────────────────────────────────────────────────────────────────────────────────────
-    public static let publishedFeedURL: URL? = nil
+    /// Must be https (`FirmwareRelease.assetURL` explains why).
+    public static let publishedFeedURL: URL? = URL(
+        string: "https://github.com/OkGoDoIt/PebbleOS/releases/latest/download/firmware.json"
+    )
 
     /// `UserDefaults` key for pointing a build at a different feed without a rebuild — a staging
     /// feed, or a `file://` fixture during development. Overrides the constant when set.

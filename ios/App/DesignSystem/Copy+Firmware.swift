@@ -24,11 +24,13 @@ extension Copy {
         // MARK: Entry point
         // ─────────────────────────────────────────────────────────────────────
 
-        /// The Settings-root row. "Watch firmware", not "Firmware update": the row exists
-        /// whether or not there is an update, and a row named for an update that is not there
-        /// reads as a notification that never clears.
-        static let rowTitle = "Watch firmware"
         static let title = "Watch firmware"
+
+        /// The Watch screen's action row, drawn only when the watch's own build is older than
+        /// the published one. One tap downloads, checks, and asks before sending to Pebble.
+        static let updateWatch = "Update Watch"
+        static func updateAvailable(_ version: String) -> String { "\(version) is available." }
+        static let downloadingUpdate = "Downloading…"
 
         /// The row's trailing value. Only ever set when there is genuinely an update — the row
         /// stays quiet otherwise rather than reporting "Up to date" at someone who did not ask.
@@ -40,13 +42,11 @@ extension Copy {
 
         static let installedHeading = "On your watch"
 
-        /// The honest default. The audio-companion service does carry a firmware-version field,
-        /// but the firmware never fills it in, so the app has never once been told.
+        /// Until the watch has connected since launch, its build has not been read.
         static let installedUnknown = "Not known"
-        static let installedUnknownNote =
-            "The watch doesn't report its firmware version, so this app can't check it."
+        static let installedUnknownNote = "Your watch reports its firmware when it connects."
 
-        /// The watch's own word — reserved for the day the firmware fills the field.
+        /// The watch's own word, read from its Device Information Service.
         static func installedReported(_ version: String) -> String { version }
 
         /// The weaker claim, and the one that is actually used: this app handed that build over
@@ -155,6 +155,19 @@ extension Copy {
                 return "Couldn't save the download."
             case .cancelled:
                 return "Canceled."
+            }
+        }
+
+        /// The same kinds, for the `.pbz` rather than the list: "the update list" would
+        /// misplace a failed download.
+        static func downloadFailure(_ failure: FirmwareFailure) -> String {
+            switch failure {
+            case .offline:
+                return "Couldn't download the update."
+            case .server(let status):
+                return "The download isn't answering (\(status))."
+            case .badFeed, .checksum, .storage, .cancelled:
+                return Self.failure(failure)
             }
         }
 

@@ -1,28 +1,24 @@
 import Firmware
 import SwiftUI
 
-/// Settings → **Watch firmware** (pushed).
+/// Settings → Watch → **Firmware** (pushed).
 ///
 /// ## What this screen is for
 ///
 /// The watch runs firmware that is built and published by hand, and it keeps moving as upstream
 /// PebbleOS does. Without this screen, getting a new build onto a watch means a laptop, a cable
 /// and a toolchain. With it, the whole job is: see that there is a new build, read what changed,
-/// and hand the file to the app that can flash it.
+/// and hand the file to the app that can flash it. The Watch screen's Update Watch row is the
+/// one-tap version of the same thing, sharing this screen's model.
 ///
 /// ## What it can and cannot know
 ///
-/// Two honest gaps shape every word here, and neither is fixable from this app:
-///
-/// - **It does not know what is installed.** The audio-companion service carries a firmware
-///   version field, and the firmware never fills it in
-///   (`audio_companion_fill_info()` leaves `fw_version_packed` zero), so the app reads 0 and the
-///   Watch screen's Firmware row stays hidden. The screen therefore *offers* rather than
-///   *recommends*: a release is shown with its version and date, and the person — who knows what
-///   they last flashed — decides. When this app has handed a build over before, that is shown
-///   too, labelled as what it is.
-/// - **It does not know what happened after the hand-off.** iOS reports which app was chosen and
-///   nothing else. So the screen says "sent", never "installed".
+/// - **What is installed, once the watch has connected.** The watch states its exact build in
+///   its Device Information Service. Before that has been read the screen *offers* rather than
+///   *recommends*, and when this app has handed a build over before, that is shown, labelled as
+///   what it is.
+/// - **Not what happened after the hand-off.** iOS reports which app was chosen and nothing
+///   else. So the screen says "sent", never "installed", until the watch reports the new build.
 ///
 /// ## Order of the screen
 ///
@@ -31,9 +27,7 @@ import SwiftUI
 ///
 /// The screen is only reachable when a feed is configured — see `isReachable`.
 struct SettingsFirmwareScreen: View {
-    @State private var model = FirmwareUpdateModel(
-        watchReportedVersion: { SettingsDataSources.current.watch.firmwareVersion }
-    )
+    @State private var model: FirmwareUpdateModel
 
     /// Set between the consent dialog and the Open In menu.
     @State private var consentingTo: FirmwareRelease?
@@ -44,12 +38,25 @@ struct SettingsFirmwareScreen: View {
     /// describe something that is no longer true.
     @State private var handoffNote: String?
 
-    /// Whether Settings should draw a row leading here.
+    /// - Parameter model: the Watch screen's, so a download started there is the one shown
+    ///   here. Nil builds a fresh one (previews).
+    init(model: FirmwareUpdateModel? = nil) {
+        _model = State(initialValue: model ?? Self.makeModel())
+    }
+
+    /// The model every firmware surface uses: the feed this build is configured with, judged
+    /// against the build the watch itself reports.
+    static func makeModel() -> FirmwareUpdateModel {
+        FirmwareUpdateModel(
+            watchReportedVersion: { SettingsDataSources.current.watch.firmwareRevision }
+        )
+    }
+
+    /// Whether the Watch screen should draw a row leading here.
     ///
-    /// Nothing is published yet, so in a release build this is false and the row does not exist:
-    /// a screen that could only ever report a failing feed would read as the app being broken.
-    /// A development build always shows it so the screen is reachable while it is being worked
-    /// on — with no feed it says so calmly and does nothing.
+    /// With no feed the screen could report nothing but a dead source, which would read as the
+    /// app being broken. A development build always shows it so the screen is reachable while
+    /// it is being worked on — with no feed it says so calmly and does nothing.
     static var isReachable: Bool {
         #if DEBUG
             return true
@@ -116,6 +123,7 @@ struct SettingsFirmwareScreen: View {
         .navigationTitle(Copy.Firmware.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.refresh() }
+        .onChange(of: SettingsDataSources.current.watch.firmwareRevision) { model.reevaluate() }
         .alert(Copy.Firmware.noOpenerTitle, isPresented: $showNoOpenerAlert) {
             Button(Copy.Common.done, role: .cancel) {}
         } message: {
@@ -180,7 +188,7 @@ struct SettingsFirmwareScreen: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(release.version.raw)
+                    Text(release.version.label)
                         .font(AppFont.sectionTitle)
                         .foregroundStyle(Tokens.label)
                         .fixedSize(horizontal: false, vertical: true)
@@ -317,7 +325,7 @@ struct SettingsFirmwareScreen: View {
                     .accessibilityHint(Copy.Firmware.handOffFallbackHint)
 
             case .failed(let failure):
-                noticeLine(Copy.Firmware.failure(failure), color: Tokens.attention)
+                noticeLine(Copy.Firmware.downloadFailure(failure), color: Tokens.attention)
                 Button(Copy.Common.tryAgain) {
                     model.discardDownload()
                     model.startDownload()
@@ -339,26 +347,9 @@ struct SettingsFirmwareScreen: View {
         return min(1, max(0, Double(received) / Double(total)))
     }
 
-    /// One place where a hand-off is turned into a record and a sentence, so the two can never
-    /// disagree. A dismissal records nothing: the person changed their mind.
     private func handle(_ outcome: FirmwareHandoffOutcome) {
-        guard let release = model.availability?.release else { return }
-        switch outcome {
-        case .openedIn(let bundleIdentifier):
-            model.recordHandoff(
-                of: release, destination: .openedInApp, openedIn: bundleIdentifier
-            )
-            handoffNote = PebbleAppHandoff.isPebbleApp(bundleIdentifier)
-                ? Copy.Firmware.sentToPebble
-                : Copy.Firmware.sentElsewhere
-        case .savedToFiles:
-            model.recordHandoff(of: release, destination: .savedToFiles)
-            handoffNote = Copy.Firmware.savedToFiles
-        case .dismissed:
-            break
-        case .noOpener:
-            showNoOpenerAlert = true
-        }
+        if outcome == .noOpener { showNoOpenerAlert = true }
+        if let note = model.recordHandoff(outcome) { handoffNote = note }
     }
 
     // MARK: - What is on the watch
@@ -406,9 +397,9 @@ struct SettingsFirmwareScreen: View {
         guard let known = model.known else { return Copy.Firmware.installedUnknown }
         switch known.source {
         case .watchReported:
-            return Copy.Firmware.installedReported(known.version.raw)
+            return Copy.Firmware.installedReported(known.version.label)
         case .handedOff(let date):
-            return Copy.Firmware.handedOver(known.version.raw, on: date)
+            return Copy.Firmware.handedOver(known.version.label, on: date)
         }
     }
 

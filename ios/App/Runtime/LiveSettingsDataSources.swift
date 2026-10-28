@@ -211,6 +211,7 @@ final class LiveWatchStatusSource: WatchStatusSource {
     private(set) var deviceName = StatusCopy.genericDeviceName
     private(set) var batteryPercent: Int?
     private(set) var firmwareVersion: String?
+    private(set) var firmwareRevision: String?
     private(set) var watchReports = watchServiceStateLabel(nil)
     private(set) var isConnected = false
 
@@ -242,6 +243,13 @@ final class LiveWatchStatusSource: WatchStatusSource {
             for await info in receiver.watchInfo.stream() {
                 guard let self, let info else { continue }
                 firmwareVersion = Self.firmwareLabel(info.fwVersionPacked)
+            }
+        }
+        Task { [weak self] in
+            let receiver = await runtime.environment.receiver
+            for await revision in receiver.watchFirmwareRevision.stream() {
+                guard let self else { return }
+                if firmwareRevision != revision { firmwareRevision = revision }
             }
         }
         // The watch's own battery, from its standard Battery Service. It stays at the last value

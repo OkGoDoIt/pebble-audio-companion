@@ -54,6 +54,9 @@ protocol WatchStatusSource: AnyObject {
     /// Nil until the watch reports one — an unknown battery renders as nothing, never as 0%.
     var batteryPercent: Int? { get }
     var firmwareVersion: String? { get }
+    /// The exact build ("v4.41.0-678-g49b06928d") from the watch's Device Information Service.
+    /// Nil until it has been read. `firmwareVersion` is major.minor.patch only.
+    var firmwareRevision: String? { get }
     /// The watch's own reported state — approved vocabulary ("Recording", "Paused", …).
     var watchReports: String { get }
     var isConnected: Bool { get }
@@ -69,6 +72,7 @@ final class MockWatchStatusSource: WatchStatusSource {
     var deviceName = "Pebble Time 2"
     var batteryPercent: Int? = 78
     var firmwareVersion: String? = "v4.36"
+    var firmwareRevision: String? = "v4.36.0-12-g1a2b3c4d5"
     var watchReports = Copy.Status.recording
     var isConnected = true
 

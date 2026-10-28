@@ -15,9 +15,9 @@ import Foundation
 //   procedure lives in `PEBBLE_TIME_2_CUSTOM_FIRMWARE_GUIDE.md`, which is where the two
 //   details worth repeating here came from: the official app hides Sideload FW behind
 //   `Show debug options`, and it rejects a bundle built for the slot it is not updating.
-// - **No firmware URL yet.** The builds are not published, so `releaseURL` is nil and the
-//   guide says so plainly rather than offering a link that goes nowhere. Dropping a real URL
-//   into that one constant turns the row into a link and changes nothing else.
+// - **One file.** Builds are published as GitHub releases of the PebbleOS fork, each with a
+//   single `.pbz` that carries both slots, so the official app picks the slot itself and there
+//   is no "try the other slot's build" step to explain.
 // - **Name the official app, and say what this app does not do to it.** The install happens
 //   in the official Core Devices Pebble app; this one is a separate app that never touches it
 //   or its data. That is the product shape, and it is the first thing anyone asks.
@@ -63,9 +63,6 @@ extension Copy {
         static let step4Title = "Come back and connect"
         static let step4Line = "The watch asks you to allow this phone once."
 
-        /// The single most common way the install fails, and it is not obvious from the error.
-        static let slotNote = "If the app says the slot is wrong, use the other slot's build."
-
         /// The reassurance the two-app shape earns: audio never reaches the official app, and
         /// nothing here modifies it.
         static let officialAppNote =
@@ -73,9 +70,11 @@ extension Copy {
 
         // ─── Where the build comes from ──────────────────────────────────────
 
-        /// Nil until the builds are published. The guide renders `releaseUnavailable` while it
-        /// is nil and a link once it is not — one constant, no other change.
-        static let releaseURL: URL? = nil
+        /// The newest published release (`scripts/publish-firmware-release.sh`). The guide
+        /// renders `releaseUnavailable` when this is nil.
+        static let releaseURL: URL? = URL(
+            string: "https://github.com/OkGoDoIt/PebbleOS/releases/latest"
+        )
         static let releaseLinkTitle = "Get the latest build"
         static let releaseUnavailable = "Builds are not published yet."
 

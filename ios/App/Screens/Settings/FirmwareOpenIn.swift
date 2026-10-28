@@ -1,3 +1,4 @@
+import Firmware
 import SwiftUI
 import UIKit
 
@@ -42,6 +43,27 @@ enum FirmwareHandoffOutcome: Equatable {
     case dismissed
     /// Nothing installed can open a `.pbz`. No menu was shown.
     case noOpener
+}
+
+extension FirmwareUpdateModel {
+    /// Records what the person did with the file and returns the one line that reports it, so
+    /// the record and the sentence can never disagree. Nil when there is nothing to record: a
+    /// dismissal (they changed their mind) or `.noOpener`, which the caller shows as an alert.
+    func recordHandoff(_ outcome: FirmwareHandoffOutcome) -> String? {
+        guard let release = availability?.release else { return nil }
+        switch outcome {
+        case .openedIn(let bundleIdentifier):
+            recordHandoff(of: release, destination: .openedInApp, openedIn: bundleIdentifier)
+            return PebbleAppHandoff.isPebbleApp(bundleIdentifier)
+                ? Copy.Firmware.sentToPebble
+                : Copy.Firmware.sentElsewhere
+        case .savedToFiles:
+            recordHandoff(of: release, destination: .savedToFiles)
+            return Copy.Firmware.savedToFiles
+        case .dismissed, .noOpener:
+            return nil
+        }
+    }
 }
 
 extension View {

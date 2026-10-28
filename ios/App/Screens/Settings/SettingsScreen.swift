@@ -271,14 +271,7 @@ struct SettingsScreen: View {
                 route: .settings(.privacy)
             )
             SettingsNavRow(title: Copy.Settings.Root.aboutYou, route: .settings(.aboutyou))
-            // Only when a firmware release feed is configured (always in a debug build). With
-            // no feed the screen could report nothing but a dead source, which would read as
-            // the app being broken rather than as the feature not having started — so the door
-            // does not exist either. `SettingsPushRow`, not a `Route`: this is a leaf screen
-            // nothing deep-links to yet.
-            if SettingsFirmwareScreen.isReachable {
-                SettingsPushRow(title: Copy.Firmware.rowTitle) { SettingsFirmwareScreen() }
-            }
+            // Watch firmware lives on the Watch screen, as its Firmware row.
             SettingsNavRow(title: Copy.Settings.Root.diagnostics, route: .settings(.diagnostics))
         }
     }

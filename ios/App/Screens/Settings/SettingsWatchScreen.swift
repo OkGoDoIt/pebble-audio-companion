@@ -1,3 +1,4 @@
+import Firmware
 import SwiftUI
 
 /// Settings · Watch (artboard 2.10): device card w/ battery, what the watch itself reports,
@@ -15,6 +16,18 @@ struct SettingsWatchScreen: View {
     @State private var confirmForget = false
     @State private var showFocusHelp = false
     private var focus: FocusQuietTimeController { .shared }
+
+    /// Shared with the Firmware screen this pushes, so a download started here is the one
+    /// shown there.
+    @State private var firmware = SettingsFirmwareScreen.makeModel()
+    /// Set by Update Watch while its download runs, so the send-to-Pebble question follows
+    /// the download on its own instead of needing a second tap.
+    @State private var updateAwaitingDownload = false
+    @State private var confirmUpdate = false
+    @State private var showOpenInMenu = false
+    @State private var showNoOpenerAlert = false
+    /// The result of the last hand-off from this screen. Cleared by the next tap.
+    @State private var handoffNote: String?
 
     var body: some View {
         SettingsScroll {
@@ -60,6 +73,21 @@ struct SettingsWatchScreen: View {
             SettingsFooter(text: Copy.Settings.Watch.footer)
         }
         .navigationTitle(Copy.Settings.Watch.title)
+        // Once per visit, not per appearance: coming back from the Firmware screen (which
+        // refreshes the same model) must not blank the answer and take the Update Watch row,
+        // and the Open In menu anchored to it, away mid-flow.
+        .task { if firmware.availability == nil { await firmware.refresh() } }
+        .onChange(of: watch.firmwareRevision) { firmware.reevaluate() }
+        .onChange(of: firmware.download) { _, download in
+            guard updateAwaitingDownload, !download.isBusy else { return }
+            updateAwaitingDownload = false
+            if download.verifiedFile != nil { confirmUpdate = true }
+        }
+        .alert(Copy.Firmware.noOpenerTitle, isPresented: $showNoOpenerAlert) {
+            Button(Copy.Common.done, role: .cancel) {}
+        } message: {
+            Text(Copy.Firmware.noOpenerMessage)
+        }
     }
 
     // MARK: Cards
@@ -125,15 +153,12 @@ struct SettingsWatchScreen: View {
         }
     }
 
-    /// What the watch itself says about the audio service.
+    /// What the watch itself says, and the firmware it runs.
     ///
-    /// The Firmware row is rendered ONLY when the watch has actually reported a version, which
-    /// today it never does: `InfoSnapshot.fwVersionPacked` exists in the wire layout
-    /// (`PROTOCOL.md` §3, offset 12) but `audio_companion_fill_info()` never assigns it, so the
-    /// designated initializer zero-fills those four bytes and the app correctly reads "unknown".
-    /// A row whose value is a permanent em-dash is worse than no row: it reads as a value the
-    /// app failed to fetch rather than one the firmware does not send. When a firmware build
-    /// starts filling the field the row appears on its own, with no change here.
+    /// The Firmware row leads to the Firmware screen whenever a release feed is configured, and
+    /// otherwise appears only once the watch has reported a version: a row whose value is a
+    /// permanent em-dash reads as something the app failed to fetch. Update Watch appears below
+    /// it only when the watch's own build is older than the published one.
     private var infoCard: some View {
         ListCard {
             SettingsRow(
@@ -141,13 +166,83 @@ struct SettingsWatchScreen: View {
                 value: watch.watchReports,
                 showsChevron: false
             )
-            if let firmwareVersion = watch.firmwareVersion {
+            if SettingsFirmwareScreen.isReachable {
+                SettingsPushRow(title: Copy.Settings.Watch.firmware, value: firmwareValue) {
+                    SettingsFirmwareScreen(model: firmware)
+                }
+            } else if let firmwareValue {
                 SettingsRow(
                     title: Copy.Settings.Watch.firmware,
-                    value: Copy.Settings.Watch.firmwareValue(firmwareVersion),
+                    value: firmwareValue,
                     showsChevron: false
                 )
             }
+            if let update = offeredUpdate {
+                TintActionRow(
+                    title: Copy.Firmware.updateWatch,
+                    subtitle: updateSubtitle(update),
+                    action: updateWatch
+                ) {
+                    if firmware.download.isBusy {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .firmwareOpenInMenu(
+                    isPresented: $showOpenInMenu,
+                    fileURL: firmware.download.verifiedFile,
+                    onOutcome: handleHandoff
+                )
+            }
+        }
+        // Anchored to the card holding the row that raises it, for the reason the Forget
+        // dialog below gives; and this one hands straight on to the Open In menu, which is
+        // anchored to that row.
+        .confirmationDialog(
+            Copy.Firmware.consentTitle, isPresented: $confirmUpdate, titleVisibility: .visible
+        ) {
+            Button(Copy.Firmware.consentConfirm) {
+                Haptics.impact(.medium)
+                // After the dialog's own dismissal animation: presenting the Open In menu while
+                // it is still on its way out fails silently (see `SettingsFirmwareScreen`).
+                Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    showOpenInMenu = true
+                }
+            }
+        } message: {
+            Text(Copy.Firmware.consentMessage)
+        }
+    }
+
+    /// The exact build when the watch has reported it ("v4.41.0-678"), else the
+    /// major.minor.patch the companion service carries, else nothing.
+    private var firmwareValue: String? {
+        if let revision = watch.firmwareRevision {
+            return FirmwareVersion(revision)?.label ?? revision
+        }
+        return watch.firmwareVersion.map(Copy.Settings.Watch.firmwareValue)
+    }
+
+    /// The published build, when the watch itself has said it is running an older one — never
+    /// on this app's memory of what it sent. Kept on screen after a hand-off while the watch
+    /// still reports the old build, so the "sent" line has somewhere to sit and a failed install
+    /// can be tried again.
+    private var offeredUpdate: FirmwareRelease? {
+        guard let availability = firmware.availability, availability.isUpdate,
+            firmware.known?.isFromWatch == true
+        else { return nil }
+        return availability.release
+    }
+
+    private func updateSubtitle(_ release: FirmwareRelease) -> String {
+        switch firmware.download {
+        case .downloading(let received, let total):
+            return total > 0
+                ? Copy.Firmware.downloadProgress(received, total) : Copy.Firmware.downloadingUpdate
+        case .failed(let failure):
+            return Copy.Firmware.downloadFailure(failure)
+        case .idle, .ready:
+            return handoffNote ?? Copy.Firmware.updateAvailable(release.version.label)
         }
     }
 
@@ -180,6 +275,25 @@ struct SettingsWatchScreen: View {
     }
 
     // MARK: Actions
+
+    /// Download (or reuse the verified copy), then ask, then the Open In menu. A tap while the
+    /// download runs does nothing; a tap after a failure starts it again.
+    private func updateWatch() {
+        guard !firmware.download.isBusy else { return }
+        handoffNote = nil
+        if case .failed = firmware.download { firmware.discardDownload() }
+        if firmware.download.verifiedFile == nil { firmware.startDownload() }
+        if firmware.download.verifiedFile != nil {
+            confirmUpdate = true
+        } else {
+            updateAwaitingDownload = firmware.download.isBusy
+        }
+    }
+
+    private func handleHandoff(_ outcome: FirmwareHandoffOutcome) {
+        if outcome == .noOpener { showNoOpenerAlert = true }
+        if let note = firmware.recordHandoff(outcome) { handoffNote = note }
+    }
 
     /// Rebuilds the link and shows progress inline. Deliberately touches NOTHING about capture
     /// intent (anti-B3: connecting never silently enables recording).
