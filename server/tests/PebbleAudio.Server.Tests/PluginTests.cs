@@ -296,6 +296,15 @@ public sealed partial class PluginTests(ArchiveServerFactory factory)
 		Assert.True(read.GetProperty("connected").GetBoolean());
 		Assert.InRange(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - read.GetProperty("lastUsedAtMs").GetInt64(), 0, 60_000);
 
+		// Connecting again replaces it: the new key reads, the old one is ended, and one plugin is listed.
+		var again = await CodeAsync(phone);
+		var relinked = await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = again }));
+		Assert.Equal(HttpStatusCode.Created, relinked.StatusCode);
+		var newer = JsonDocument.Parse(await relinked.Content.ReadAsStringAsync()).RootElement.GetProperty("token").GetString()!;
+		Assert.Equal(HttpStatusCode.Unauthorized, (await plugin.SendAsync(Get("/plugin/today", token))).StatusCode);
+		Assert.Equal(HttpStatusCode.OK, (await plugin.SendAsync(Get("/plugin/today", newer))).StatusCode);
+		Assert.True((await phone.GetJsonAsync("/sync/plugin")).GetProperty("connected").GetBoolean());
+
 		// Another account's phone sees nothing of it.
 		using (var stranger = await Phone.LinkAsync(factory, await factory.CreateUserAsync()))
 		{

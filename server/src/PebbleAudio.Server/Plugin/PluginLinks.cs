@@ -106,6 +106,12 @@ public sealed class PluginLinkService(ArchiveDbContext db, ApiTokenService token
 		await db.PluginLinkCodes
 			.Where(c => c.Id == row.Id)
 			.ExecuteUpdateAsync(s => s.SetProperty(c => c.ApiTokenId, token.Id), cancellationToken);
+
+		// One plugin per account: connecting again (the phone's Connect Again) ends the key the last link made, so Who
+		// can read never lists a stale second "Pebble plugin".
+		await db.ApiTokens
+			.Where(t => t.UserId == row.UserId && t.Name == TokenName && t.RevokedAt == null && t.Id != token.Id)
+			.ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, now), cancellationToken);
 		await transaction.CommitAsync(cancellationToken);
 		return secret;
 	}
