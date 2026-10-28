@@ -276,6 +276,64 @@ struct ArchiveSyncServiceTests {
         #expect(try await w.outbox.counts().pending == 0)
     }
 
+    /// The device status goes as an ordinary upsert, its payload the reading the reporter
+    /// stored. A server from before the kind refuses it: that is nobody's error to show, and it
+    /// is not sent again — one upload, settled, nothing parked, nothing pending.
+    @Test func aServerThatDoesNotKnowTheDeviceStatusIsNeitherAnErrorNorARetry() async throws {
+        let w = try await world(answer: { body in
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            let items = json?["items"] as? [[String: Any]] ?? []
+            let known = items.filter { $0["kind"] as? String != "deviceStatus" }
+            let answer: [String: Any] = [
+                "accepted": known.map { ["kind": $0["kind"] ?? "", "id": $0["id"] ?? "", "version": $0["version"] ?? 0] },
+                "ignored": [],
+                "rejected": items.filter { $0["kind"] as? String == "deviceStatus" }.map {
+                    ["kind": "deviceStatus", "id": $0["id"] ?? "", "reason": "kind: 'deviceStatus' is not known"]
+                },
+                "pendingRequests": 0,
+            ]
+            return (200, (try? JSONSerialization.data(withJSONObject: answer)) ?? Data())
+        })
+        let reading = ArchiveDeviceStatusPayload(
+            updatedAtMs: 1_793_188_800_000, capture: .active, link: .streaming, recording: true,
+            lastAudioAtMs: 1_793_188_798_000, watchBatteryPercent: 62)
+        try await w.outbox.recordDeviceStatus(
+            deviceId: "dev-1", payload: try ArchiveJSON.encoder().encode(reading), atMs: reading.updatedAtMs)
+        _ = try await FollowUpStore(db: w.db).add(text: "Water the tomatoes")
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+
+        #expect(w.uploads.bodies.count == 1)
+        let body = try #require(w.uploads.bodies.first)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let items = try #require(json["items"] as? [[String: Any]])
+        let status = try #require(items.first { $0["kind"] as? String == "deviceStatus" })
+        #expect(status["id"] as? String == "dev-1" && status["op"] as? String == "upsert")
+        let payload = try #require(status["payload"] as? [String: Any])
+        #expect(payload["link"] as? String == "streaming" && payload["recording"] as? Bool == true)
+        #expect((payload["updatedAtMs"] as? NSNumber)?.int64Value == 1_793_188_800_000)
+        #expect(payload["watchFirmware"] is NSNull && payload["todayRecordedMinutes"] is NSNull)
+
+        #expect(try await w.outbox.row(kind: .deviceStatus, id: "dev-1")?.pending == false)
+        let counts = try await w.outbox.counts()
+        #expect(counts.pending == 0 && counts.parked == 0)
+        #expect(w.service.status.value.lastError == nil)
+        // Nothing more goes until the next reading.
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+        #expect(w.uploads.bodies.count == 1)
+    }
+
+    @Test func aServerThatTakesTheDeviceStatusClearsIt() async throws {
+        let w = try await world()
+        try await w.outbox.recordDeviceStatus(deviceId: "dev-1", payload: Data("{}".utf8), atMs: 1)
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+        #expect(w.uploads.bodies.count == 1)
+        let row = try #require(try await w.outbox.row(kind: .deviceStatus, id: "dev-1"))
+        #expect(!row.pending && row.sentHash == ArchivePayloadBuilder.hash(Data("{}".utf8)))
+    }
+
     @Test func anOversizedBatchIsHalvedAndSentAgain() async throws {
         let counter = Counter()
         let w = try await world(answer: { body in

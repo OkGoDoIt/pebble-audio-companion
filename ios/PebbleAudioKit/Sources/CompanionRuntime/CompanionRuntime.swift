@@ -50,6 +50,9 @@ public struct CompanionRuntimeEnvironment: Sendable {
     /// The Pebble Audio archive sync. Optional so a runtime built without it behaves exactly as
     /// before: nothing is synced, and it does nothing at all until a server is linked.
     public var archiveSync: ArchiveSyncService?
+    /// What the archive server is told about the watch (`ArchiveDeviceStatusReporter`). Poked at
+    /// the moments the runtime is awake anyway; nothing without a linked, syncing server.
+    public var deviceStatus: ArchiveDeviceStatusReporter?
 
     public init(
         database: AppDatabase,
@@ -73,7 +76,8 @@ public struct CompanionRuntimeEnvironment: Sendable {
         audioContent: AudioContentService? = nil,
         coldStorage: ColdAudioTier? = nil,
         archiveSync: ArchiveSyncService? = nil,
-        voiceRecognition: VoiceRecognitionService? = nil
+        voiceRecognition: VoiceRecognitionService? = nil,
+        deviceStatus: ArchiveDeviceStatusReporter? = nil
     ) {
         self.database = database
         self.store = store
@@ -97,6 +101,7 @@ public struct CompanionRuntimeEnvironment: Sendable {
         self.coldStorage = coldStorage
         self.archiveSync = archiveSync
         self.voiceRecognition = voiceRecognition
+        self.deviceStatus = deviceStatus
     }
 }
 
@@ -326,6 +331,9 @@ public actor CompanionRuntime {
             await archiveSync.start()
             await archiveSync.setForeground(foreground.value)
         }
+        // The link's state changes are the one input watched directly: the rest is read at the
+        // moments below that already happen (snapshot writes, backgrounding, sync windows).
+        await environment.deviceStatus?.start(observing: environment.receiver.state)
     }
 
     private func startLoop() {
@@ -405,8 +413,15 @@ public actor CompanionRuntime {
             await archiveSync.setForeground(value)
             // Background entry hands what changed while the app was open to the background
             // session, the way finished segments are handed to the transcription uploader.
-            // Not awaited: a pass may wait on the server's answer.
-            if !value { Task { await archiveSync.pass(.backgroundEntry) } }
+            // Not awaited: a pass may wait on the server's answer. The device status goes first,
+            // so a reading that is due rides this pass rather than waiting for the next wake.
+            if !value {
+                let deviceStatus = environment.deviceStatus
+                Task {
+                    await deviceStatus?.flush()
+                    await archiveSync.pass(.backgroundEntry)
+                }
+            }
         }
         if !value {
             // Background entry, app still alive: let the model go once the segment in flight is
@@ -518,6 +533,7 @@ public actor CompanionRuntime {
         await refreshSnapshot(.manual)
         // The archive sync's fallback window: what changed while the app was suspended, and the
         // server's requests. Nothing at all when no server is linked or nothing is pending.
+        await environment.deviceStatus?.flush()
         await environment.archiveSync?.pass(.backgroundTask)
     }
 
@@ -554,6 +570,7 @@ public actor CompanionRuntime {
         )
         log.write("charging catch-up processed \(processed) segment(s)")
         // What that changed, to the archive server while the window is still open.
+        await environment.deviceStatus?.flush()
         await environment.archiveSync?.pass(.backgroundTask)
         return processed
     }
@@ -685,6 +702,8 @@ public actor CompanionRuntime {
             log.failure("delete all voice examples and automatic names", error)
         }
         await environment.archiveSync?.didWipeLocally()
+        // The wipe took the server's device status too; the snapshot below pokes a new one.
+        await environment.deviceStatus?.serverForgot()
         await environment.receiver.resumeAfterBulkDelete()
         await environment.diagnostics.refresh()
         await refreshSnapshot(.manual)
@@ -727,9 +746,12 @@ public actor CompanionRuntime {
 
     // --- snapshot ---------------------------------------------------------------------------------
 
-    /// Refreshes the App Group coverage snapshot the widget renders from.
+    /// Refreshes the App Group coverage snapshot the widget renders from. Every caller is a
+    /// moment something the device status reports may have moved (the intent, backgrounding,
+    /// foregrounding), so it is poked too.
     public func refreshSnapshot(_ trigger: CoverageSnapshotTrigger) async {
         await environment.snapshots.refresh(trigger)
+        await environment.deviceStatus?.poke()
     }
 
     // --- pipeline wiring ---------------------------------------------------------------------------
@@ -854,12 +876,14 @@ public actor CompanionRuntime {
             },
             onDiagnosticsDirty: { await env.diagnostics.refresh() },
             refreshCoverageSnapshot: {
-                await env.snapshots.refreshIfDue(
+                let written = await env.snapshots.refreshIfDue(
                     .pipelinePass,
                     minIntervalMs: foreground.value
                         ? CoverageSnapshotService.foregroundHeartbeatMs
                         : CoverageSnapshotService.backgroundHeartbeatMs
                 )
+                // New totals for today: the device status reads them from this write.
+                if written != nil { await env.deviceStatus?.poke() }
             },
             submitPendingUploads: { await env.transcription.submitPendingToUploader() },
             syncArchive: { changed in

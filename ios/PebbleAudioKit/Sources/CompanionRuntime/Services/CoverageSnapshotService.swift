@@ -170,6 +170,7 @@ public actor CoverageSnapshotService {
             openFollowUpCount: live.openFollowUpCount
         )
         writer.write(snapshot)
+        latest = snapshot
         return snapshot
     }
 
@@ -243,6 +244,9 @@ public actor CoverageSnapshotService {
     public private(set) var lastTrigger: CoverageSnapshotTrigger?
     /// When the last write went out, for `refreshIfDue`'s rate limit.
     public private(set) var lastWriteMs: Int64?
+    /// The snapshot last written. The archive's device status reads today's minutes here
+    /// rather than computing coverage a second time.
+    public private(set) var latest: CoverageSnapshot?
 
     /// How often the pipeline-pass heartbeat may rewrite the snapshot.
     ///

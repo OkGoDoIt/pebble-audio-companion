@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import GRDB
 import Intelligence
+import Receiver
 import SegmentStore
 import Testing
 import Transcription
@@ -385,4 +386,29 @@ struct SyntheticBackup {
     let limit = ArchiveSyncProtocol.maxBatchBytes
     #expect(big.fitsAlone(item(0, bytes: limit - 512)))
     #expect(!big.fitsAlone(item(0, bytes: limit - 511)))
+}
+
+/// The phone's device status reading, checked against the contract by the same rules as every
+/// other kind: every key present, `null` when unknown, the two enumerations known.
+@Test func theDeviceStatusTheReporterWritesPassesTheContractCheck() throws {
+    let reading = ArchiveDeviceStatusPayload.derive(
+        ArchiveDeviceStatusInputs(
+            nowMs: 1_793_188_800_000, captureIntent: .active, receiverState: .streaming(streamId: 3),
+            watchBound: true, lastAudioAtMs: 1_793_188_798_000, watchBatteryPercent: 62,
+            watchFirmware: "v4.41.0-667", coverage: nil, phoneBatteryPercent: nil))
+    func item(_ edit: (inout [String: Any]) -> Void = { _ in }) throws -> Data {
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: try JSONEncoder().encode(reading)) as? [String: Any])
+        edit(&object)
+        return try ArchiveBatchItem(
+            key: ArchiveItemKey(kind: .deviceStatus, entityId: "dev-1", version: 1), op: .upsert,
+            changedAtMs: 1_793_188_800_000, payload: try JSONSerialization.data(withJSONObject: object),
+            hash: nil, pieceKey: nil
+        ).encoded()
+    }
+    #expect(ContractCheck.check(item: try item()) == nil)
+    #expect(ContractCheck.check(item: try item { $0["link"] = "paired" }) == "payload: link 'paired' is not known")
+    #expect(ContractCheck.check(item: try item { $0["todayLostMinutes"] = nil })
+        == "payload: todayLostMinutes left out (the contract sends null)")
+    #expect(ContractCheck.check(item: try item { $0["recording"] = NSNull() }) == "payload: recording missing")
 }
