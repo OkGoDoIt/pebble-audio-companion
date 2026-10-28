@@ -255,9 +255,9 @@ final class MockWorld {
             // conversations each leaving one follow-up the app was unsure of. Clear of
             // "long-day" (9:44–10:48), whose middle the History moment test opens.
             MockConversation(
-                id: "vietnam-catchup",
-                title: "Catching up about Vietnam",
-                summary: "When Austin could visit, and who to ask about the dates.",
+                id: "visit-catchup",
+                title: "Catching up about the visit",
+                summary: "When Oliver could visit, and who to ask about the dates.",
                 start: today(10, 50), end: today(11, 8),
                 tags: [ConversationTag(id: "tag-travel", name: "travel", source: "ai")],
                 transcript: [
@@ -1495,8 +1495,8 @@ extension MockWorld {
                 conversation: "app-redesign", at: said(4, 9, 7),
                 quote: "Remind me to add a quick action that marks a moment.", stage: .reminder),
             item(
-                "fu-austin", "Talk to Austin’s mother about when Austin can visit Vietnam",
-                conversation: "vietnam-catchup", at: said(10, 55, 11),
+                "fu-oliver", "Talk to Oliver’s mother about when Oliver can visit",
+                conversation: "visit-catchup", at: said(10, 55, 11),
                 quote: "I should ask his mom when he could actually come over.",
                 why: "the trip gets planned without the dates that work", stage: .suggested),
             item(

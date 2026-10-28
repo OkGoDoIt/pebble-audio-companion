@@ -498,7 +498,7 @@ struct ReviewCard: View {
         return Copy.FollowUps.dueOn(due.formatted(date: .abbreviated, time: .omitted))
     }
 
-    /// "10:05 AM · Catching up about Vietnam".
+    /// "10:05 AM · Catching up about the visit".
     private var provenance: String {
         [TimeFmt.time(item.said), item.sourceConversationTitle]
             .compactMap { $0 }

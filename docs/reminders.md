@@ -44,11 +44,10 @@ reminder.
 - Entry points: the Reminders tab's top rows, Today's Reminders section, and (when turned on) one
   evening notification: "3 follow-ups to review · 4 reminders added".
 
-Native inline-card renders: [phone](mockups/reminders/built/review-inline-375-light.png),
+Native inline-card renders (simulator, `-demo-data`): [phone](mockups/reminders/built/review-inline-375-light.png),
 [no date](mockups/reminders/built/review-inline-undated.png),
-[large text](mockups/reminders/built/review-inline-large-type.png),
-[tablet, dark](mockups/reminders/built/review-inline-820-dark.png), and
-[wide](mockups/reminders/built/review-inline-1024-light.png).
+[large text](mockups/reminders/built/review-inline-large-type.png), and
+[dark](mockups/reminders/built/review-inline-dark.png).
 
 ## Where reminders are kept
 

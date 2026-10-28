@@ -44,7 +44,7 @@ struct RemindersReviewTests {
                 decided: decidedThisMorning),
             item("asked-2", said: ms(hour: 14, minute: 41), stage: .reminder,
                 decided: decidedThisMorning),
-            item("austin", said: ms(hour: 10, minute: 5), stage: .suggested),
+            item("oliver", said: ms(hour: 10, minute: 5), stage: .suggested),
             item("clinic", said: ms(hour: 11, minute: 20), stage: .suggested,
                 due: ms(hour: 0, minute: 0)),
             item("shirt", said: ms(hour: 13, minute: 30), stage: .suggested),
@@ -67,7 +67,7 @@ struct RemindersReviewTests {
 
         await model.start(.review)
         #expect(model.phase == .cards)
-        #expect(model.queue.map(\.id) == ["austin", "clinic", "shirt"])
+        #expect(model.queue.map(\.id) == ["oliver", "clinic", "shirt"])
         #expect(model.counter == "1 of 3")
         #expect(model.behind.map(\.id) == ["clinic", "shirt"])
 
@@ -76,7 +76,7 @@ struct RemindersReviewTests {
         await model.decide(.remind)?.value
         await model.decide(.remind)?.value
 
-        #expect(fake.rows.first { $0.id == "austin" }?.stage == .skipped)
+        #expect(fake.rows.first { $0.id == "oliver" }?.stage == .skipped)
         #expect(fake.rows.first { $0.id == "clinic" }?.stage == .reminder)
         #expect(fake.rows.first { $0.id == "shirt" }?.stage == .reminder)
         // Alerts are asked about once, for the first dated reminder.
@@ -85,7 +85,7 @@ struct RemindersReviewTests {
         // Today's decisions, automatic ones included, in the order they were said; not
         // yesterday's, and not what an assistant added.
         #expect(model.phase == .summary)
-        #expect(model.summary.map(\.id) == ["asked-1", "austin", "clinic", "shirt", "asked-2"])
+        #expect(model.summary.map(\.id) == ["asked-1", "oliver", "clinic", "shirt", "asked-2"])
         #expect(model.addedCount == 4)
     }
 
@@ -121,9 +121,9 @@ struct RemindersReviewTests {
         let model = ReminderReviewModel(source: fake, now: { now }) { alerts += 1 }
         await model.start(.review)
         let original = try #require(model.current)
-        try await model.saveDetails(id: original.id, text: "  Call Austin  ", dueAt: now, priority: .high)
+        try await model.saveDetails(id: original.id, text: "  Call Oliver  ", dueAt: now, priority: .high)
         #expect(model.counter == "1 of 3")
-        #expect(model.current?.text == "  Call Austin  ")
+        #expect(model.current?.text == "  Call Oliver  ")
         #expect(model.current?.priority == .high)
         #expect(model.current?.stage == .suggested)
         #expect(fake.rows.first { $0.id == original.id }?.stage == .suggested)
@@ -131,7 +131,7 @@ struct RemindersReviewTests {
         #expect(alerts == 0)
         await model.decide(.remind)?.value
         #expect(alerts == 1)
-        #expect(fake.rows.first { $0.id == original.id }?.text == "Call Austin")
+        #expect(fake.rows.first { $0.id == original.id }?.text == "Call Oliver")
     }
 
     @Test func clearingADateThenSkippingPreservesEditsWithoutRequestingAlerts() async throws {
@@ -157,17 +157,17 @@ struct RemindersReviewTests {
         let original = model.current
         fake.failReviewSave = true
         await #expect(throws: (any Error).self) {
-            try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .high)
+            try await model.saveDetails(id: "oliver", text: "Call Oliver", dueAt: nil, priority: .high)
         }
         #expect(model.current?.id == original?.id)
-        #expect(model.current?.text == "Call Austin")
+        #expect(model.current?.text == "Call Oliver")
         #expect(model.saveError != nil)
         #expect(!model.canDecide)
-        #expect(fake.rows.first { $0.id == "austin" } == original)
+        #expect(fake.rows.first { $0.id == "oliver" } == original)
         #expect(!model.savingDetails)
         fake.failReviewSave = false
-        try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .high)
-        #expect(model.current?.text == "Call Austin")
+        try await model.saveDetails(id: "oliver", text: "Call Oliver", dueAt: nil, priority: .high)
+        #expect(model.current?.text == "Call Oliver")
         #expect(model.position == 0)
     }
 
@@ -180,26 +180,26 @@ struct RemindersReviewTests {
             #expect(model.decide(.remind) == nil)
             #expect(model.position == 0)
         }
-        try await model.saveDetails(id: "austin", text: "Call Austin", dueAt: nil, priority: .normal)
+        try await model.saveDetails(id: "oliver", text: "Call Oliver", dueAt: nil, priority: .normal)
         await #expect(throws: (any Error).self) {
             try await model.saveDetails(id: "clinic", text: "Wrong card", dueAt: nil, priority: .high)
         }
         await #expect(throws: (any Error).self) {
-            try await model.saveDetails(id: "austin", text: "  ", dueAt: nil, priority: .high)
+            try await model.saveDetails(id: "oliver", text: "  ", dueAt: nil, priority: .high)
         }
         #expect(!model.canDecide)
-        #expect(fake.rows.first { $0.id == "austin" }?.text == "Call Austin")
+        #expect(fake.rows.first { $0.id == "oliver" }?.text == "Call Oliver")
     }
 
     @Test func rapidTypingSavesOnlyTheLatestDraft() async throws {
         let fake = source()
         let model = ReminderReviewModel(source: fake, now: { now })
         await model.start(.review)
-        let first = model.editDetails(id: "austin", text: "Call", dueAt: nil, priority: .normal)
-        let last = model.editDetails(id: "austin", text: "Call Austin", dueAt: now, priority: .high)
+        let first = model.editDetails(id: "oliver", text: "Call", dueAt: nil, priority: .normal)
+        let last = model.editDetails(id: "oliver", text: "Call Oliver", dueAt: now, priority: .high)
         try await first?.value
         try await last?.value
-        #expect(fake.reviewSavedTexts == ["Call Austin"])
+        #expect(fake.reviewSavedTexts == ["Call Oliver"])
         #expect(model.current?.dueDate == now)
         #expect(model.current?.priority == .high)
         #expect(model.canDecide)
@@ -216,9 +216,9 @@ struct RemindersReviewTests {
             await withCheckedContinuation { release = $0 }
             throw CocoaError(.fileWriteUnknown)
         }
-        let first = model.editDetails(id: "austin", text: "Older", dueAt: nil, priority: .low)
+        let first = model.editDetails(id: "oliver", text: "Older", dueAt: nil, priority: .low)
         for await _ in started { break }
-        let last = model.editDetails(id: "austin", text: "Latest", dueAt: now, priority: .high)
+        let last = model.editDetails(id: "oliver", text: "Latest", dueAt: now, priority: .high)
         fake.beforeReviewSave = nil
         release?.resume()
         _ = try? await first?.value
@@ -237,7 +237,7 @@ struct RemindersReviewTests {
         let digest = ReminderDigestModel(source: fake, now: { now })
         await digest.reload()
         #expect(digest.toReview == 3)
-        #expect(digest.firstToReview == "Follow up austin")
+        #expect(digest.firstToReview == "Follow up oliver")
         #expect(digest.addedToday == 2)
 
         let model = ReminderReviewModel(source: fake, now: { now })
