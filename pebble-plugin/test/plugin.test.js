@@ -156,11 +156,12 @@ test('audio/status reads the server with the token and answers every declared sh
     instances: [{
       instanceId: 'watch',
       properties: {
-        name: { shortText: { text: "Alex's iPhone" } },
+        name: { shortText: { text: 'Watch' } },
         recording: { boolean: { value: true }, shortText: { text: 'Recording' } },
         capture: { shortText: { text: 'On' } },
         link: { shortText: { text: 'Streaming' } },
         stale: { boolean: { value: false } },
+        device: { shortText: { text: "Alex's iPhone" }, longText: { text: "Alex's iPhone" } },
         last_audio: { timestamp: { value: Math.floor((NOW - 125_000) / 1000) }, shortText: { text: '2m ago' } },
         watch_battery: { numericValue: { value: 62, unit: '%', min: 0, max: 100 }, shortText: { text: '62%' } },
         today_recorded: { numericValue: { value: 312, unit: 'min' }, shortText: { text: '5h 12m' } },
@@ -174,13 +175,24 @@ test('audio/status reads the server with the token and answers every declared sh
   assertNothingLeaks(plugin, data);
 });
 
-test('audio/status leaves out what the phone does not know, and says Watch without a name', async () => {
+test('audio/status leaves out what the phone does not know, the phone\'s name included', async () => {
   const sparse = { ...STATUS, lastAudioAtMs: null, watchBatteryPercent: null, todayRecordedMinutes: null, todayLostMinutes: null, storageUsedBytes: null, deviceName: null };
   const plugin = load({ token: TOKEN, routes: { 'GET /plugin/status': { status: 200, body: sparse } } });
   const { data } = await read(plugin, 'status');
   const properties = data.instances[0].properties;
   assert.deepEqual(Object.keys(properties).sort(), ['capture', 'link', 'name', 'recording', 'stale']);
   assert.equal(properties.name.shortText.text, 'Watch');
+  assert.equal(properties.device, undefined);
+});
+
+test('the manifest guards conversations with its own read permission and leaves status open', () => {
+  assert.deepEqual(manifest.plugin.definesPermissions, [
+    { name: 'ReadConversations', label: 'Read your conversation titles and recaps', kind: 'read' },
+  ]);
+  const of = (item) => manifest.plugin.sources.find((s) => s.items.includes(item));
+  // A bare name, as the 1.15 document and the Hue plugin write a plugin's own permission.
+  assert.deepEqual(of('conversation').callerPermissions, ['ReadConversations']);
+  assert.equal((of('status').callerPermissions || []).length, 0);
 });
 
 test('one answer to "is it recording?", settled in order', async () => {

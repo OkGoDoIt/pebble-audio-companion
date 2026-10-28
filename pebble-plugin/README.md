@@ -11,7 +11,7 @@ It is a plugin-only project for the plugin API of the Pebble app 1.15 and 1.16
 
 | File | What it is |
 | --- | --- |
-| `package.json` | The manifest (`pebble` block): uuid `dd26acba-10b0-4424-b196-afea043c2526`, the Internet permission for `pebbleaudio.okgodoit.com` only, and every source, property, and shape |
+| `package.json` | The manifest (`pebble` block): uuid `dd26acba-10b0-4424-b196-afea043c2526`, the Internet permission for `pebbleaudio.okgodoit.com` only, the plugin's own `ReadConversations` permission, and every source, property, and shape |
 | `src/plugin/index.js` | The plugin script |
 | `src/config.html` | The settings page: connect with a code, see the watch's status, disconnect |
 | `src/icon.svg` | The icon (one 1.6 px line on a 24 × 24 grid, as the pebble-plugins repo draws them) |
@@ -59,7 +59,9 @@ The server must have the plugin's endpoints first (deployed from `server/`, see 
 5. Open **Dashboard (Plugin Demo)** (1.15 names it "Plugin Demo: Dashboard"; it comes with plugins turned on)
    and its settings in the Pebble app. Point a tile at **audio/status** (for example `recording`, which draws
    a check and says Recording, Paused, Off, No watch, or Unknown) and another at **audio/conversation**
-   (`conversations`, or `last_title`). Open Dashboard on the watch.
+   (`conversations`, or `last_title`). Open Dashboard on the watch. The first time it reads
+   audio/conversation, the Pebble app asks once whether Dashboard may "Read your conversation titles and
+   recaps (via Pebble Audio)"; until you allow it, that tile shows nothing.
 
 A pasted access key (`pat_…`, made at **Connect an app › Another assistant**) works in the code field too.
 
@@ -67,8 +69,17 @@ A pasted access key (`pat_…`, made at **Connect an app › Another assistant**
 
 Read by Index and agents. Each has one instance; a property the server does not know right now is left out.
 
+**Who may read them.** `audio/status` is open: any watchface or app reads it without asking.
+`audio/conversation` carries what was said, so it asks its callers for the plugin's own read permission,
+`ReadConversations` ("Read your conversation titles and recaps"): the Pebble app asks the person once,
+per watchface or app, before that one can read it, and it can be changed on the app's page afterwards. (That is
+the Pebble app's default for an app that can send data off the phone, which the Dashboard can; with its
+setting changed, it may ask for every app or for none.) A face
+that wants it declares `{ "name": "ReadConversations", "plugin": "dd26acba-10b0-4424-b196-afea043c2526" }`
+in its `usesPermissions`, so the question comes at install.
+
 - `audio/status`, instance `watch`, refreshed every 2 minutes:
-  `name` (the phone's name, else "Watch"), `recording` (boolean, and Recording, Paused, Off, No watch,
+  `name` ("Watch"), `device` (the phone that reports for it, "Roger's iPhone"), `recording` (boolean, and Recording, Paused, Off, No watch,
   Offline, Not recording, or Unknown when the phone's last report is too old), `capture` (On, Paused, Off),
   `link` (No watch, Offline, Connecting, Connected, Streaming, Refused; Unknown when too old), `last_audio`
   (timestamp, and "2m ago" as of the read), `watch_battery` (0–100 %), `today_recorded` and `today_lost`

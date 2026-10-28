@@ -9,16 +9,21 @@ names, the plugin script and the bundled settings page, at the paths the manifes
 The result is written to build/<package name>.pbw.
 
 Before writing, it checks what the Pebble app would otherwise reject or silently drop: a missing
-uuid, script, or settings page, and sources without declared properties and shapes.
+uuid, script, or settings page, sources without declared properties and shapes, and a plugin-defined
+permission without a valid name, a label, and a kind.
 """
 
 import json
 import os
+import re
 import sys
 import zipfile
 
 MANIFEST_VERSION = 2
 SHAPES = {"shortText", "longText", "numericValue", "timestamp", "boolean", "icon", "image"}
+PERMISSION_KINDS = {"read", "write", "exfiltrating"}
+# The implicit permission every plugin has for invoking its actions.
+RESERVED_PERMISSIONS = {"InvokeAction"}
 
 
 def fail(message):
@@ -45,6 +50,14 @@ def check(appinfo):
     plugin = appinfo.get("plugin")
     if not isinstance(plugin, dict) or not plugin.get("script"):
         fail("package.json's pebble block needs a plugin with a script")
+    for permission in plugin.get("definesPermissions", []):
+        name = permission.get("name", "")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name) or name in RESERVED_PERMISSIONS:
+            fail(f"permission name '{name}' must be alphanumeric and not {', '.join(sorted(RESERVED_PERMISSIONS))}")
+        if not str(permission.get("label", "")).strip():
+            fail(f"permission '{name}' needs a label")
+        if permission.get("kind") not in PERMISSION_KINDS:
+            fail(f"permission '{name}' needs a kind: one of {', '.join(sorted(PERMISSION_KINDS))}")
     for source in plugin.get("sources", []):
         where = f"{source.get('category')}/{','.join(source.get('items', []))}"
         properties = source.get("properties") or {}

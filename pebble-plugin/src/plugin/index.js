@@ -134,13 +134,17 @@ function recordingReading(status) {
 function statusInstance(status, now) {
   var recording = recordingReading(status);
   var properties = {
-    name: { shortText: text(status.deviceName || 'Watch') },
+    // The instance is the watch; the phone that reports for it is its own property.
+    name: { shortText: text('Watch') },
     recording: { boolean: { value: recording.on }, shortText: text(recording.words) },
     capture: { shortText: text(CAPTURE_WORDS[status.capture] || status.capture) },
     // An old report says nothing about the link now; the capture setting is the person's own choice.
     link: { shortText: text(status.stale ? 'Unknown' : (LINK_WORDS[status.link] || status.link)) },
     stale: { boolean: { value: !!status.stale } },
   };
+  if (status.deviceName) {
+    properties.device = { shortText: text(status.deviceName), longText: text(status.deviceName) };
+  }
   if (known(status.lastAudioAtMs)) {
     properties.last_audio = {
       timestamp: { value: Math.floor(status.lastAudioAtMs / 1000) },

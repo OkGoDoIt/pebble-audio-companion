@@ -1,7 +1,7 @@
 {
   "name": "pebble-audio",
   "author": "OkGoDoIt",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
     "test": "node --test",
@@ -24,8 +24,15 @@
       }
     ],
     "plugin": {
-      "description": "Pebble Audio at a glance: whether the watch is recording, its link and battery, today's recorded and lost minutes, and today's conversations, read from the user's Pebble Audio archive. audio/status has one instance, watch; audio/conversation has one instance, today. Connect it in settings.",
+      "description": "Pebble Audio at a glance: whether the watch is recording, its link and battery, today's recorded and lost minutes, and today's conversations, read from the user's Pebble Audio archive. audio/status has one instance, watch (open to any app); audio/conversation has one instance, today, and needs ReadConversations. Connect it in settings.",
       "script": "src/plugin/index.js",
+      "definesPermissions": [
+        {
+          "name": "ReadConversations",
+          "label": "Read your conversation titles and recaps",
+          "kind": "read"
+        }
+      ],
       "sources": [
         {
           "category": "audio",
@@ -35,6 +42,10 @@
           "properties": {
             "name": [
               "shortText"
+            ],
+            "device": [
+              "shortText",
+              "longText"
             ],
             "recording": [
               "boolean",
@@ -106,6 +117,9 @@
               "longText"
             ]
           },
+          "callerPermissions": [
+            "ReadConversations"
+          ],
           "supportsMultiple": false,
           "suggestedRefreshIntervalSec": 900
         }
