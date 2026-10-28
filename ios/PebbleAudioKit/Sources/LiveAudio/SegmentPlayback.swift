@@ -1,3 +1,4 @@
+import AudioCodec
 import Foundation
 
 // Port of `app/.../SegmentPlayback.kt`.
@@ -299,6 +300,8 @@ public final class SegmentPlaybackController: @unchecked Sendable {
             }
             var currentFrames = frames
             var index = startFrame
+            // Brought up to a comfortable listening level as it plays; nothing stored changes.
+            var level = PlaybackLevel(sampleRateHz: self.sampleRateHz)
             while index < currentFrames.count {
                 if Task.isCancelled { return }
                 let requested = self.lock.withLock { () -> Int in
@@ -320,7 +323,7 @@ public final class SegmentPlaybackController: @unchecked Sendable {
                 let end = min(index + Self.batchFrames, currentFrames.count)
                 let pcm = await decoder.decode(Array(currentFrames[index..<end]))
                 if Task.isCancelled { return }
-                await player.write(pcm)
+                await player.write(level.process(pcm))
                 if Task.isCancelled { return }
                 index = end
                 self.lock.withLock {

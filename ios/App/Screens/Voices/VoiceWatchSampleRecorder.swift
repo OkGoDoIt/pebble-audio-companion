@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioCodec
 import CompanionRuntime
 import Foundation
 import Observation
@@ -129,7 +130,15 @@ final class VoiceWatchSampleRecorder {
     }
 
     /// 16 kHz mono 16-bit PCM in a WAV container, for playback only.
-    static func wav(_ pcm: Data) -> Data {
+    /// The clip as a WAV for listening, brought up to a comfortable level: watch speech sits
+    /// 20-25 dB below it. Only what is played is leveled; the stored audio is untouched.
+    static func wav(_ stored: Data) -> Data {
+        let samples = stored.withUnsafeBytes { raw in
+            (0..<raw.count / 2).map { Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self)) }
+        }
+        let pcm = VoiceNoteLevel.prepare(samples).pcm.withUnsafeBufferPointer { buffer in
+            Data(buffer: UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
+        }
         func le<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
         var data = Data("RIFF".utf8) + le(UInt32(36 + pcm.count)) + Data("WAVEfmt ".utf8)
         data += le(UInt32(16)) + le(UInt16(1)) + le(UInt16(1)) + le(UInt32(16_000)) + le(UInt32(32_000))
