@@ -2,7 +2,9 @@ import Firmware
 import SwiftUI
 import UIKit
 
-// The hand-off itself: getting a verified `.pbz` out of this app and into the Pebble app.
+// The hand-off itself: getting a file out of this app and into the Pebble app. Firmware (a
+// verified `.pbz`) and the Pebble Audio plugin (the bundled `.pbw`) both go this way; only the
+// file, and whether the type is named, differ.
 //
 // **There is no way to push it directly, and this is not a limitation we can engineer around.**
 // `UIApplication.open(_:options:completionHandler:)` dispatches on the URL *scheme* and takes no
@@ -33,7 +35,7 @@ import UIKit
 // <https://developer.apple.com/documentation/uikit/uidocumentinteractioncontroller/presentopeninmenu(from:in:animated:)>
 
 /// What the person did with the file.
-enum FirmwareHandoffOutcome: Equatable {
+enum PebbleAppHandoffOutcome: Equatable {
     /// An app was chosen. The bundle id is what iOS reported through
     /// `willBeginSendingToApplication` — the one thing it does tell us.
     case openedIn(bundleIdentifier: String?)
@@ -41,7 +43,7 @@ enum FirmwareHandoffOutcome: Equatable {
     case savedToFiles
     /// The menu closed with nothing chosen.
     case dismissed
-    /// Nothing installed can open a `.pbz`. No menu was shown.
+    /// Nothing installed can open the file. No menu was shown.
     case noOpener
 }
 
@@ -49,7 +51,7 @@ extension FirmwareUpdateModel {
     /// Records what the person did with the file and returns the one line that reports it, so
     /// the record and the sentence can never disagree. Nil when there is nothing to record: a
     /// dismissal (they changed their mind) or `.noOpener`, which the caller shows as an alert.
-    func recordHandoff(_ outcome: FirmwareHandoffOutcome) -> String? {
+    func recordHandoff(_ outcome: PebbleAppHandoffOutcome) -> String? {
         guard let release = availability?.release else { return nil }
         switch outcome {
         case .openedIn(let bundleIdentifier):
@@ -71,24 +73,40 @@ extension View {
     ///
     /// Anchored to the button rather than to a zero-size probe so the iPad popover has somewhere
     /// sensible to point; on iPhone the menu is a sheet and the rect is ignored.
-    func firmwareOpenInMenu(
+    ///
+    /// `typeIdentifier` nil leaves the type to be inferred from the file's extension; a value
+    /// names it on the interaction (`UIDocumentInteractionController.uti`), which changes only
+    /// which apps the menu lists.
+    func pebbleAppOpenInMenu(
         isPresented: Binding<Bool>,
         fileURL: URL?,
-        onOutcome: @escaping (FirmwareHandoffOutcome) -> Void
+        typeIdentifier: String? = nil,
+        onOutcome: @escaping (PebbleAppHandoffOutcome) -> Void
     ) -> some View {
         overlay {
-            FirmwareOpenInAnchor(
-                isPresented: isPresented, fileURL: fileURL, onOutcome: onOutcome
+            PebbleAppOpenInAnchor(
+                isPresented: isPresented, fileURL: fileURL, typeIdentifier: typeIdentifier,
+                onOutcome: onOutcome
             )
             .allowsHitTesting(false)
         }
     }
+
+    /// The firmware's `.pbz`, its type inferred from the extension (see `present` below).
+    func firmwareOpenInMenu(
+        isPresented: Binding<Bool>,
+        fileURL: URL?,
+        onOutcome: @escaping (PebbleAppHandoffOutcome) -> Void
+    ) -> some View {
+        pebbleAppOpenInMenu(isPresented: isPresented, fileURL: fileURL, onOutcome: onOutcome)
+    }
 }
 
-private struct FirmwareOpenInAnchor: UIViewControllerRepresentable {
+private struct PebbleAppOpenInAnchor: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     let fileURL: URL?
-    let onOutcome: (FirmwareHandoffOutcome) -> Void
+    let typeIdentifier: String?
+    let onOutcome: (PebbleAppHandoffOutcome) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -109,21 +127,24 @@ private struct FirmwareOpenInAnchor: UIViewControllerRepresentable {
     // only ever calls it there, and the coordinator's state is main-actor state.
     @MainActor
     final class Coordinator: NSObject, @MainActor UIDocumentInteractionControllerDelegate {
-        var parent: FirmwareOpenInAnchor
+        var parent: PebbleAppOpenInAnchor
         private(set) var isShowing = false
         /// Held for the life of the menu: `UIDocumentInteractionController` is not retained by
         /// the presentation, and a released one takes its menu down with it.
         private var interaction: UIDocumentInteractionController?
         private var chosenApplication: String?
 
-        init(_ parent: FirmwareOpenInAnchor) { self.parent = parent }
+        init(_ parent: PebbleAppOpenInAnchor) { self.parent = parent }
 
         func present(from controller: UIViewController, fileURL: URL) {
             let interaction = UIDocumentInteractionController(url: fileURL)
-            // The UTI is left to be inferred from the `.pbz` extension. The Pebble app's own
-            // imported type declaration supplies that mapping system-wide whenever it is
+            // Firmware leaves the UTI to be inferred from the `.pbz` extension. The Pebble app's
+            // own imported type declaration supplies that mapping system-wide whenever it is
             // installed — which is the only case in which this menu is useful — so asserting a
-            // type identifier we do not own would add a competing claim and buy nothing.
+            // type identifier we do not own would add a competing claim and buy nothing. The
+            // plugin names its type (`PebbleAppHandoff.appTypeIdentifier` says why); naming it
+            // here is a hint to this one menu, never a declaration.
+            if let typeIdentifier = parent.typeIdentifier { interaction.uti = typeIdentifier }
             interaction.delegate = self
             self.interaction = interaction
             chosenApplication = nil
@@ -161,7 +182,7 @@ private struct FirmwareOpenInAnchor: UIViewControllerRepresentable {
             }
         }
 
-        private func finish(_ outcome: FirmwareHandoffOutcome) {
+        private func finish(_ outcome: PebbleAppHandoffOutcome) {
             parent.isPresented = false
             parent.onOutcome(outcome)
         }
@@ -178,7 +199,7 @@ extension View {
     func firmwareFilesExport(
         isPresented: Binding<Bool>,
         fileURL: URL?,
-        onOutcome: @escaping (FirmwareHandoffOutcome) -> Void
+        onOutcome: @escaping (PebbleAppHandoffOutcome) -> Void
     ) -> some View {
         modifier(FirmwareFilesExport(isPresented: isPresented, fileURL: fileURL, onOutcome: onOutcome))
     }
@@ -187,7 +208,7 @@ extension View {
 private struct FirmwareFilesExport: ViewModifier {
     @Binding var isPresented: Bool
     let fileURL: URL?
-    let onOutcome: (FirmwareHandoffOutcome) -> Void
+    let onOutcome: (PebbleAppHandoffOutcome) -> Void
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: $isPresented) {
@@ -204,7 +225,7 @@ private struct FirmwareFilesExport: ViewModifier {
 
 private struct FirmwareExportPicker: UIViewControllerRepresentable {
     let fileURL: URL
-    let onOutcome: (FirmwareHandoffOutcome) -> Void
+    let onOutcome: (PebbleAppHandoffOutcome) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onOutcome: onOutcome) }
 
@@ -217,9 +238,9 @@ private struct FirmwareExportPicker: UIViewControllerRepresentable {
     func updateUIViewController(_ picker: UIDocumentPickerViewController, context: Context) {}
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        private let onOutcome: (FirmwareHandoffOutcome) -> Void
+        private let onOutcome: (PebbleAppHandoffOutcome) -> Void
 
-        init(onOutcome: @escaping (FirmwareHandoffOutcome) -> Void) { self.onOutcome = onOutcome }
+        init(onOutcome: @escaping (PebbleAppHandoffOutcome) -> Void) { self.onOutcome = onOutcome }
 
         func documentPicker(
             _ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]

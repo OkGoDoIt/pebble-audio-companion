@@ -117,7 +117,7 @@ final class FirmwareInstallModel {
         }
     }
 
-    func handle(_ outcome: FirmwareHandoffOutcome) {
+    func handle(_ outcome: PebbleAppHandoffOutcome) {
         _ = firmware.recordHandoff(outcome)
         switch outcome {
         case .openedIn(let bundleIdentifier):

@@ -347,7 +347,7 @@ struct SettingsFirmwareScreen: View {
         return min(1, max(0, Double(received) / Double(total)))
     }
 
-    private func handle(_ outcome: FirmwareHandoffOutcome) {
+    private func handle(_ outcome: PebbleAppHandoffOutcome) {
         if outcome == .noOpener { showNoOpenerAlert = true }
         if let note = model.recordHandoff(outcome) { handoffNote = note }
     }

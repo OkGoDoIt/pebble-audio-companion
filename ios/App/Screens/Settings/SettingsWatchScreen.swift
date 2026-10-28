@@ -300,7 +300,7 @@ struct SettingsWatchScreen: View {
         }
     }
 
-    private func handleHandoff(_ outcome: FirmwareHandoffOutcome) {
+    private func handleHandoff(_ outcome: PebbleAppHandoffOutcome) {
         if outcome == .noOpener { showNoOpenerAlert = true }
         if let note = firmware.recordHandoff(outcome) { handoffNote = note }
     }
