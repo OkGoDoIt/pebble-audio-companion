@@ -73,6 +73,10 @@ enum AssistantsDemo {
     static let codex = ArchiveServerStatus.Access(
         kind: "token", id: "token-codex", name: "Codex on Mac", scopes: ["archive:read"],
         connectedAtMs: at(10, 18, 14, 0), lastUsedAtMs: at(10, 18, 15, 12))
+    /// The Pebble plugin's read-only key (07f): it reads, but Who can read lists it under the watch.
+    static let pebblePlugin = ArchiveServerStatus.Access(
+        kind: "token", id: "token-pebble-plugin", name: "Pebble plugin", scopes: ["archive:read"],
+        connectedAtMs: at(10, 20, 8, 0), lastUsedAtMs: at(10, 21, 9, 40))
 
     /// What ChatGPT read (08): Monday's recap, Sam's kitchen, a search, Priya's launch, Leo's
     /// dentist. The server's log carries the tool and ids, never the words searched for.
@@ -159,6 +163,8 @@ enum AssistantsDemo {
             flow.demoMacTool = state == "05e" ? .cursor : .codex
         case "05d":
             connecting([chatGPT, claude, codex], open: .other)
+        case "07f":
+            linked(source, scope: .lastDays(90), access: [chatGPT, claude, codex, pebblePlugin])
         case "07a", "07b", "07c", "07d", "07e", "08":
             linked(source, scope: .lastDays(90), enabled: state != "07e", access: [chatGPT, claude, codex])
             switch state {

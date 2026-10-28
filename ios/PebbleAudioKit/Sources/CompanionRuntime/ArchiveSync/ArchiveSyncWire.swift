@@ -905,6 +905,18 @@ public struct ArchiveServerStatus: Codable, Equatable, Sendable {
         /// The server lets it create follow-ups and notes (the phone still checks edits).
         public var canWrite: Bool { scopes.contains(Self.writeScope) }
 
+        /// The name the server gives the Pebble plugin's key when it connects (`POST /plugin/link`).
+        public static let pebblePluginName = "Pebble plugin"
+
+        /// The Pebble plugin's read-only key, not an assistant: it shows recording status on watch
+        /// faces, so the app lists it under the watch and never among the assistants. The same
+        /// test as the server's `PluginLinkService.IsPlugin`.
+        public var isPebblePlugin: Bool {
+            kind == "token"
+                && name.trimmingCharacters(in: .whitespaces)
+                    .caseInsensitiveCompare(Self.pebblePluginName) == .orderedSame
+        }
+
         enum CodingKeys: String, CodingKey { case kind, id, name, scopes, connectedAt, lastUsedAt }
 
         public init(

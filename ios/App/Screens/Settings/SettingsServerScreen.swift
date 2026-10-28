@@ -178,6 +178,18 @@ struct SettingsServerScreen: View {
             .buttonStyle(.plain)
         }
 
+        // The Pebble plugin reads too, but it is not an assistant: its own group, set up and
+        // explained on Settings › Watch, the way the website's Who can read lists it.
+        if let plugin = source.pebblePlugin {
+            AssistantSectionHeader(title: Copy.AssistantAccess.onYourWatch)
+            AssistantList {
+                NavigationLink(value: Route.settings(.watch)) {
+                    pluginRow(plugin)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
         if let host = source.host {
             AssistantSectionHeader(title: Copy.AssistantAccess.whatGoesTo(host))
         }
@@ -276,6 +288,30 @@ struct SettingsServerScreen: View {
                     .foregroundStyle(Tokens.label)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(Copy.AssistantAccess.accessLine(mayDo, lastRead: lastRead))
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            AssistantChevron()
+        }
+        .frame(minHeight: 40)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func pluginRow(_ plugin: ArchiveServerStatus.Access) -> some View {
+        let lastRead = plugin.lastUsedAtMs.map {
+            Copy.AssistantAccess.lastRead(AssistantTime.ago($0, nowMs: source.nowMs))
+        } ?? Copy.AssistantAccess.notReadYet
+        return HStack(spacing: 12) {
+            GlyphTile(systemName: "applewatch", style: .neutral)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(plugin.name)
+                    .font(AppFont.rowTitle)
+                    .foregroundStyle(Tokens.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(Copy.AssistantAccess.accessLine(Copy.AssistantAccess.pluginLine, lastRead: lastRead))
                     .font(AppFont.footnote)
                     .foregroundStyle(Tokens.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

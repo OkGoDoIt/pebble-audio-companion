@@ -227,6 +227,8 @@ extension Copy {
         static let syncToggle = "Sync"
 
         static let whoCanRead = "Who can read"
+        static let onYourWatch = "On your watch"
+        static let pluginLine = "Shows recording status on your watch faces"
         static func accessLine(_ mayDo: String, lastRead: String) -> String { "\(mayDo) · \(lastRead)" }
         static let notReadYet = "Not used yet"
         static func lastRead(_ when: String) -> String { "Last read \(when)" }

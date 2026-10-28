@@ -217,4 +217,27 @@ struct PluginInstallModelTests {
         #expect(url.lastPathComponent == "Pebble Audio.pbw")
         #expect(try Data(contentsOf: url) == Data("pbw".utf8))
     }
+
+    // MARK: Who can read
+
+    /// The plugin reads the server but is not an assistant: the AI Assistants list, the Settings
+    /// row, and the Connect step never show it; Who can read lists it under the watch; and the
+    /// privacy view still names it, since it can read.
+    @Test func thePluginIsListedUnderTheWatchNeverAmongTheAssistants() {
+        let source = MockAssistantsSource(nowMs: 1_792_000_000_000)
+        func access(_ kind: String, _ id: String, _ name: String, lastUsed: Int64?) -> ArchiveServerStatus.Access {
+            .init(kind: kind, id: id, name: name, scopes: ["archive:read"], connectedAtMs: nil, lastUsedAtMs: lastUsed)
+        }
+        AssistantsDemo.linked(source, scope: .lastDays(90), access: [
+            access("oauth", "c1", "ChatGPT", lastUsed: 1_791_999_000_000),
+            access("token", "p-old", "Pebble plugin", lastUsed: 1_791_000_000_000),
+            access("token", "p-new", " pebble plugin ", lastUsed: 1_791_999_900_000),
+            access("token", "k1", "Pebble plugin helper", lastUsed: nil),
+        ])
+
+        #expect(source.assistants.map(\.id) == ["c1", "k1"])
+        #expect(source.pebblePlugin?.id == "p-new")
+        #expect(source.rowValue == "ChatGPT and Pebble plugin helper")
+        #expect(source.privacyServer?.assistants.count == 4)
+    }
 }

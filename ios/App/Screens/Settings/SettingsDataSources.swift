@@ -1393,7 +1393,16 @@ extension AssistantsSource {
     /// The address an assistant connects to.
     var connectorURL: String? { sync.origin.map { ArchiveEndpoint.url(URL(string: $0)!, "/mcp").absoluteString } }
 
-    var assistants: [ArchiveServerStatus.Access] { status.server?.access ?? [] }
+    /// Everything that can read the server: the assistants and the Pebble plugin.
+    var everyAccess: [ArchiveServerStatus.Access] { status.server?.access ?? [] }
+
+    /// The assistants that can read the server. The Pebble plugin is not one; see `pebblePlugin`.
+    var assistants: [ArchiveServerStatus.Access] { everyAccess.filter { !$0.isPebblePlugin } }
+
+    /// The Pebble plugin's access, listed under the watch in Who can read: the most recently used.
+    var pebblePlugin: ArchiveServerStatus.Access? {
+        everyAccess.filter(\.isPebblePlugin).max { ($0.lastUsedAtMs ?? 0) < ($1.lastUsedAtMs ?? 0) }
+    }
 
     /// The Settings root row's value.
     var rowValue: String {
@@ -1411,7 +1420,7 @@ extension AssistantsSource {
         return PrivacyInputs.ServerState(
             host: host, paused: !sync.enabled, scope: sync.preferences.scope,
             clipsAllowed: sync.preferences.clips, editsAllowed: sync.preferences.edits,
-            assistants: assistants.map {
+            assistants: everyAccess.map {
                 .init(name: $0.name, canWrite: $0.canWrite, lastUsedAtMs: $0.lastUsedAtMs)
             },
             assistantsFetchedAtMs: status.serverStatusAtMs,
