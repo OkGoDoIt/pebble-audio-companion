@@ -174,8 +174,13 @@ The hook (`AppComposition+SonioxLevelTest.swift`) runs only with `PEBBLE_SONIOX_
 launch; the 18 bodies (~130 MB) are still in the app container under
 `diagnostics/soniox-level-test/`. Scored with `research/tools/soniox_ab_score.py`.
 
-**Waiting on Roger:** level-matched playback for clips and samples (the same
-stage, a product change); and labelling more people across recordings so a watch-domain threshold
+**Playback leveling (`d41f4f11`, Roger asked 10-28):** everything played is brought up to a
+comfortable level, nothing stored changes. Segment playback (recordings, conversations, moments)
+runs each decoded piece through `PlaybackLevel` (VoiceNoteLevel's high-pass, −22 dBFS target, 30 dB
+cap, limiter; gain from the last 30 s, rising ≤3 dB/s, falling ≤12 dB/s). Who-is-this clips and
+watch samples use `VoiceNoteLevel` on the whole clip. Phone-mic samples are played as recorded.
+
+**Waiting on Roger:** labelling more people across recordings so a watch-domain threshold
 can be calibrated.
 
 **Verify `f69a8623` + `6edbfc14` on the phone** once G17 is back and main is installed:
