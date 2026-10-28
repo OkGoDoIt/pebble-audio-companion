@@ -918,6 +918,13 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-turn-prints-v1") { db in
             try VoicePrintStore.installSchema(db)
         }
+        // The status this phone last reported to the archive server about the watch (is it
+        // recording, the link, the batteries, today's minutes): the payload its `deviceStatus`
+        // item sends, and what the next reading is compared against. Derived — losing it costs
+        // one report.
+        migrator.registerMigration("archive-device-status-v1") { db in
+            try ArchiveOutbox.installDeviceStatus(db)
+        }
         try migrator.migrate(writer)
     }
 }

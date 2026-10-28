@@ -99,6 +99,14 @@ public struct ArchivePayloadBuilder: Sendable {
                 return try Self.encode(ArchiveVoiceRevocationPayload(originID: record.originID,
                     generation: record.generation, scope: record.scope.rawValue, targetID: record.targetID))
             }
+        case .deviceStatus:
+            // Stored already encoded when it was written. None for this device (an earlier
+            // link's) is nothing to send — never a delete: the status is not the person's data.
+            guard
+                let data = try await ArchiveOutbox(db: sources.database)
+                    .deviceStatusPayload(deviceId: row.entityId)
+            else { return .unchanged(hash: nil, pieceKey: nil) }
+            return .payload(data, hash: Self.hash(data), pieceKey: nil)
         }
     }
 

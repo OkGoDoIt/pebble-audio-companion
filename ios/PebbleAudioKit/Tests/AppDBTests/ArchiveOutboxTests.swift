@@ -293,4 +293,46 @@ struct ArchiveOutboxTests {
         #expect(ArchiveOutbox.lastDay(ofPeriod: "week:2026-10-11") == "2026-10-17")
         #expect(ArchiveOutbox.lastDay(ofPeriod: "month:2026-02") == "2026-02-28")
     }
+
+    /// The device status is one row, replaced in place: a reading nobody has sent yet is
+    /// superseded by the next, never queued behind it, so a server that is away for a day gets
+    /// one status when it is back, not ninety-six.
+    @Test func theDeviceStatusIsOneRowReplacedNeverAHistory() async throws {
+        let (_, outbox) = try await linked()
+        #expect(try await outbox.recordDeviceStatus(deviceId: "dev-1", payload: Data("{\"n\":1}".utf8), atMs: 1))
+        let first = try #require(try await outbox.row(kind: .deviceStatus, id: "dev-1"))
+        #expect(try await outbox.recordDeviceStatus(deviceId: "dev-1", payload: Data("{\"n\":2}".utf8), atMs: 2))
+        let rows = try await outbox.pending(limit: 50).filter { $0.kind == .deviceStatus }
+        #expect(rows.count == 1)
+        #expect(rows.first?.version ?? 0 > first.version)
+        #expect(try await outbox.deviceStatusPayload(deviceId: "dev-1") == Data("{\"n\":2}".utf8))
+        #expect(try await outbox.deviceStatus()?.updatedAtMs == 2)
+        // Not the person's data: not a change waiting in Settings.
+        #expect(try await outbox.counts().pending == 0)
+
+        // In flight, then answered however the server answered (here: refused, an old server):
+        // settled, not retried. A newer reading recorded meanwhile is not.
+        let sent = try #require(try await outbox.row(kind: .deviceStatus, id: "dev-1"))
+        let key = ArchiveItemKey(kind: .deviceStatus, entityId: "dev-1", version: sent.version)
+        try await outbox.markInFlight([ArchiveSentItem(key: key, hash: "h", pieceKey: nil)])
+        try await outbox.recordDeviceStatus(deviceId: "dev-1", payload: Data("{\"n\":3}".utf8), atMs: 3)
+        try await outbox.settleDeviceStatus()
+        #expect(try await outbox.row(kind: .deviceStatus, id: "dev-1")?.pending == true)
+        let newer = try #require(try await outbox.row(kind: .deviceStatus, id: "dev-1"))
+        try await outbox.markInFlight([
+            ArchiveSentItem(key: ArchiveItemKey(kind: .deviceStatus, entityId: "dev-1", version: newer.version),
+                            hash: "h", pieceKey: nil)
+        ])
+        try await outbox.settleDeviceStatus()
+        #expect(try await outbox.row(kind: .deviceStatus, id: "dev-1")?.pending == false)
+
+        // A new link's status replaces the old link's row; unlinking forgets both.
+        try await outbox.recordDeviceStatus(deviceId: "dev-2", payload: Data("{}".utf8), atMs: 4)
+        #expect(try await outbox.row(kind: .deviceStatus, id: "dev-1") == nil)
+        #expect(try await outbox.deviceStatusPayload(deviceId: "dev-1") == nil)
+        try await outbox.setActive(false)
+        #expect(try await outbox.deviceStatus() == nil)
+        #expect(try await outbox.recordDeviceStatus(deviceId: "dev-2", payload: Data("{}".utf8), atMs: 5) == false)
+        #expect(try await outbox.row(kind: .deviceStatus, id: "dev-2") == nil)
+    }
 }

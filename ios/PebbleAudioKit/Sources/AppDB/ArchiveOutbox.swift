@@ -41,6 +41,11 @@ public enum ArchiveEntityKind: String, Codable, Sendable, CaseIterable {
     case person
     case coverage
     case voiceRevocation
+    /// What this phone says about the watch right now (`ArchiveDeviceStatusPayload`): one per
+    /// linked phone, its id the phone's device id. Not the person's data — a reading of now —
+    /// so it is never in a count the person sees, never marked by a full send, and a server that
+    /// refuses it is not an error (`settleDeviceStatus`).
+    case deviceStatus
 }
 
 /// `upsert` carries a payload; `delete` is the person deleting it (the server deletes it and
@@ -579,7 +584,12 @@ public struct ArchiveOutbox: Sendable {
             guard was != active else { return }
             try d.execute(
                 sql: "UPDATE sync_outbox_state SET active = ? WHERE id = 1", arguments: [active])
-            if !active { try d.execute(sql: "DELETE FROM sync_outbox") }
+            if !active {
+                try d.execute(sql: "DELETE FROM sync_outbox")
+                if try d.tableExists("sync_device_status") {
+                    try d.execute(sql: "DELETE FROM sync_device_status")
+                }
+            }
         }
     }
 
@@ -694,18 +704,29 @@ public struct ArchiveOutbox: Sendable {
         }
     }
 
+    /// The person's changes waiting and parked, as Settings shows them. The device status is
+    /// not one of them: it would flicker "1 change waiting" every quarter hour.
     public func counts() async throws -> Counts {
         try await db.reader.read { d in
             let pending = try Int.fetchOne(
-                d, sql: "SELECT COUNT(*) FROM sync_outbox WHERE pending = 1 AND attempts < ?",
+                d,
+                sql: """
+                    SELECT COUNT(*) FROM sync_outbox
+                    WHERE pending = 1 AND attempts < ? AND kind != 'deviceStatus'
+                    """,
                 arguments: [Self.maxAttempts]) ?? 0
             let parked = try Int.fetchOne(
-                d, sql: "SELECT COUNT(*) FROM sync_outbox WHERE pending = 1 AND attempts >= ?",
+                d,
+                sql: """
+                    SELECT COUNT(*) FROM sync_outbox
+                    WHERE pending = 1 AND attempts >= ? AND kind != 'deviceStatus'
+                    """,
                 arguments: [Self.maxAttempts]) ?? 0
             let error = try String.fetchOne(
                 d,
                 sql: """
-                    SELECT lastError FROM sync_outbox WHERE pending = 1 AND attempts >= ?
+                    SELECT lastError FROM sync_outbox
+                    WHERE pending = 1 AND attempts >= ? AND kind != 'deviceStatus'
                     ORDER BY changedAtMs DESC LIMIT 1
                     """,
                 arguments: [Self.maxAttempts])
@@ -934,6 +955,85 @@ public struct ArchiveOutbox: Sendable {
                     WHERE kind = ? AND entityId = ? AND version = ? AND op = 'upsert'
                     """,
                 arguments: [key.kind.rawValue, key.entityId, key.version])
+        }
+    }
+
+    // MARK: - The device status (`ArchiveDeviceStatusPayload`)
+
+    /// One row: the status this phone last reported, which the payload builder sends and the
+    /// reporter compares the next reading against (so a relaunch does not report again what
+    /// nothing changed). Its own table, not a trigger's: no stored row it is built from exists.
+    static func installDeviceStatus(_ db: Database) throws {
+        try db.execute(
+            sql: """
+                CREATE TABLE sync_device_status (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    deviceId TEXT NOT NULL,
+                    payload BLOB NOT NULL,
+                    updatedAtMs INTEGER NOT NULL
+                )
+                """)
+    }
+
+    /// Replaces the status this phone reports and marks it to be sent, in one transaction. A
+    /// singleton: the outbox holds one row for it whatever happened before, so a status nobody
+    /// has sent yet is replaced, never queued behind as a history. False (nothing written) while
+    /// no server is linked.
+    @discardableResult
+    public func recordDeviceStatus(deviceId: String, payload: Data, atMs: Int64) async throws -> Bool {
+        try await db.writer.write { d in
+            guard try Self.isActive(d) else { return false }
+            try d.execute(
+                sql: """
+                    INSERT INTO sync_device_status (id, deviceId, payload, updatedAtMs)
+                    VALUES (1, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET deviceId = excluded.deviceId,
+                        payload = excluded.payload, updatedAtMs = excluded.updatedAtMs
+                    """,
+                arguments: [deviceId, payload, atMs])
+            try Self.enqueue(d, kind: .deviceStatus, id: deviceId, op: .upsert)
+            // An earlier link's status is nothing this server should hear about.
+            try d.execute(
+                sql: "DELETE FROM sync_outbox WHERE kind = 'deviceStatus' AND entityId != ?",
+                arguments: [deviceId])
+            return true
+        }
+    }
+
+    /// The status last recorded, for whichever device it was recorded under.
+    public func deviceStatus() async throws -> (deviceId: String, payload: Data, updatedAtMs: Int64)? {
+        try await db.reader.read { d in
+            guard
+                let row = try Row.fetchOne(
+                    d, sql: "SELECT deviceId, payload, updatedAtMs FROM sync_device_status WHERE id = 1")
+            else { return nil }
+            return (row["deviceId"], row["payload"], row["updatedAtMs"])
+        }
+    }
+
+    /// The payload to send for `deviceId`'s outbox row: nil when the status recorded is another
+    /// link's (or none).
+    public func deviceStatusPayload(deviceId: String) async throws -> Data? {
+        try await db.reader.read { d in
+            try Data.fetchOne(
+                d, sql: "SELECT payload FROM sync_device_status WHERE id = 1 AND deviceId = ?",
+                arguments: [deviceId])
+        }
+    }
+
+    /// A batch with the device status in it was answered: whatever the answer said about it —
+    /// accepted (already cleared), refused by a server that does not know the kind yet, or not
+    /// mentioned at all — the status sent is done with. The next reading replaces it; sending
+    /// a refused one again would only repeat the refusal every pass. A status recorded after
+    /// the batch was built (a newer version than the one in flight) stays pending.
+    public func settleDeviceStatus() async throws {
+        try await db.writer.write { d in
+            try d.execute(
+                sql: """
+                    UPDATE sync_outbox SET pending = 0, attempts = 0, lastError = NULL,
+                        inflightVersion = NULL, inflightHash = NULL, inflightKey = NULL
+                    WHERE kind = 'deviceStatus' AND pending = 1 AND inflightVersion = version
+                    """)
         }
     }
 }

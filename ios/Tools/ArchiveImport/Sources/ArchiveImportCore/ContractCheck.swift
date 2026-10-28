@@ -81,6 +81,11 @@ public enum ContractCheck {
         .person: ["name"],
         .voiceRevocation: ["originID", "generation", "scope", "targetID"],
         .coverage: ["dayKey", "timeZone", "spans", "recordedMs", "quietMs", "missingMs"],
+        .deviceStatus: [
+            "updatedAtMs", "capture", "link", "recording", "lastAudioAtMs", "watchBatteryPercent",
+            "watchFirmware", "todayRecordedMinutes", "todayQuietMinutes", "todayLostMinutes",
+            "storageUsedBytes", "phoneBatteryPercent",
+        ],
     ]
 
     static func checkPayload(_ kind: ArchiveEntityKind, id: String, _ object: [String: Any]) throws {
@@ -228,6 +233,21 @@ public enum ContractCheck {
                     throw Violation(reason: "payload: spans[\(i)].startedAt or endedAt missing")
                 }
                 try f.oneOf("kind", ["recorded", "quiet", "missing", "paused", "off"])
+            }
+        case .deviceStatus:
+            // Never part of an import (the phone's own reading of now), but checked all the same.
+            guard try p.integer("updatedAtMs") != nil else { throw p.missing("updatedAtMs") }
+            try p.oneOf("capture", ["active", "paused", "off"])
+            try p.oneOf(
+                "link", ["unbound", "disconnected", "connecting", "connected", "streaming", "revoked"])
+            guard p.value("recording") != nil else { throw p.missing("recording") }
+            try p.bool("recording")
+            try p.string("watchFirmware")
+            for key in [
+                "lastAudioAtMs", "watchBatteryPercent", "todayRecordedMinutes", "todayQuietMinutes",
+                "todayLostMinutes", "storageUsedBytes", "phoneBatteryPercent",
+            ] {
+                try p.integer(key)
             }
         }
     }

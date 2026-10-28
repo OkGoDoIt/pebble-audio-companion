@@ -774,14 +774,18 @@ public actor ArchiveSyncService {
                 var parked = 0
                 for rejected in response.rejected {
                     guard let kind = ArchiveEntityKind(rawValue: rejected.kind) else { continue }
+                    deps.log.write(
+                        "archive sync: server rejected \(rejected.kind) \(rejected.id): \(rejected.reason ?? "")")
+                    // Settled below, never retried or shown: a server from before the kind
+                    // refuses it, and the next reading replaces it anyway.
+                    if kind == .deviceStatus { continue }
                     if try await deps.outbox.reject(
                         kind: kind, id: rejected.id, reason: rejected.reason ?? "rejected")
                     {
                         parked += 1
                     }
-                    deps.log.write(
-                        "archive sync: server rejected \(rejected.kind) \(rejected.id): \(rejected.reason ?? "")")
                 }
+                try await deps.outbox.settleDeviceStatus()
                 deps.log.write(
                     "archive sync: batch \(id.prefix(8)) — \(response.accepted.count) accepted, "
                         + "\(response.ignored.count) already held, \(response.rejected.count) rejected, "
@@ -793,7 +797,9 @@ public actor ArchiveSyncService {
             state.lastBatchAtMs = now
             state.failures = 0
             state.nextAttemptAtMs = nil
-            if response.rejected.isEmpty { state.lastError = nil }
+            if response.rejected.allSatisfy({ $0.kind == ArchiveEntityKind.deviceStatus.rawValue }) {
+                state.lastError = nil
+            }
             state.maxItems = min(ArchiveSyncProtocol.maxItemsPerBatch, state.maxItems * 2)
             if response.pendingRequests > 0 { requestsDue = true; rerun = true }
             save()
