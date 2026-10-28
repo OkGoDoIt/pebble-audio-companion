@@ -915,6 +915,10 @@ extension LiveTodayDataSource: TodayDataSource {
             UIApplication.shared.open(Route.settings(.diagnostics).url)
         case .tryAgain, .troubleshoot, .setUpAgain:
             UIApplication.shared.open(Route.settings(.watch).url)
+        case .installFirmware:
+            // Today presents the install sheet itself and never routes this here; anything else
+            // that does lands on the watch's own screen, which offers the same install.
+            UIApplication.shared.open(Route.settings(.watch).url)
         }
     }
 

@@ -226,6 +226,9 @@ final class OnboardingViewModel {
     enum Phase: Equatable {
         case connect
         case confirm
+        /// The watch answered without the audio service: install the firmware, then wait for
+        /// it to come back with it. Pairing carries on to `.confirm` by itself from here.
+        case firmware
         /// The three-card processing question. Case name kept from when it asked only about
         /// transcripts, because the DEBUG staging flag `-onboarding.phase transcripts` names it.
         case transcripts
@@ -245,6 +248,13 @@ final class OnboardingViewModel {
 
     var phase: Phase = .connect
     private(set) var pairing: PairingState = .idle
+    /// The watch came back from the firmware step offering the audio service. The confirm step
+    /// says so in one line, so the jump from "Installing" to "Confirm" reads as progress.
+    private(set) var firmwareJustInstalled = false
+    /// A pairing attempt is running. The firmware step's quiet checks never stack.
+    @ObservationIgnored private var attemptInFlight = false
+    /// Retires a superseded attempt, so its teardown cannot clear the current one's flag.
+    @ObservationIgnored private var attemptGeneration = 0
     /// Artboard 2.3 shows "In the cloud" selected.
     var choice: ProcessingChoice = .cloud
     /// The two-axis screen's draft. Seeded from the preset the person arrives with, so opening
@@ -308,7 +318,7 @@ final class OnboardingViewModel {
     #if DEBUG
     /// Hidden staging control for simulator automation (sanctioned by the plan: failure
     /// branches must be reachable in DEBUG builds without a watch):
-    /// `-onboarding.phase connect|confirm|transcripts|processing|cloudKey`,
+    /// `-onboarding.phase connect|confirm|firmware|transcripts|processing|cloudKey`,
     /// `-onboarding.fail <case>`,
     /// `-onboarding.hold [searching|confirm]` (pairing never resolves), `-onboarding.mock`
     /// (the scripted happy path). `-onboarding.reset` is NOT one of these: it only re-enters
@@ -339,6 +349,7 @@ final class OnboardingViewModel {
         if let index = args.firstIndex(of: "-onboarding.phase"), index + 1 < args.count {
             switch args[index + 1] {
             case "confirm": beginPairing()
+            case "firmware": phase = .firmware
             case "transcripts": phase = .transcripts
             case "processing": openProcessingDetail()
             case "cloudKey": phase = .cloudKey
@@ -357,33 +368,62 @@ final class OnboardingViewModel {
 
     /// One attempt. Every state the screen shows from here on is the receiver's own — searching,
     /// the on-watch prompt, and each failure branch.
+    ///
+    /// A watch without the audio service is not a failure to show: it is the firmware step.
+    /// While that step is up, attempts are quiet — nothing they find but a watch WITH the
+    /// service changes the screen, because a watch mid-install looks exactly like one that is
+    /// missing or out of range.
     func startRequest() {
         pairingTask?.cancel()
-        pairing = .searching
+        if phase != .firmware { pairing = .searching }
+        attemptInFlight = true
+        attemptGeneration &+= 1
+        let generation = attemptGeneration
         pairingTask = Task { [weak self] in
             guard let self else { return }
+            defer { if self.attemptGeneration == generation { self.attemptInFlight = false } }
             for await update in self.source.pairingUpdates() {
                 guard !Task.isCancelled else { return }
                 switch update {
                 case .searching:
-                    self.pairing = .searching
+                    if self.phase != .firmware { self.pairing = .searching }
                 case .confirmOnWatch:
+                    if self.phase == .firmware {
+                        self.firmwareJustInstalled = true
+                        self.phase = .confirm
+                    }
                     self.pairing = .confirmOnWatch
                 case .authorized:
                     self.pairing = .idle
                     self.phase = .transcripts
                     return
                 case .failed(let failure):
-                    self.pairing = .failed(failure)
+                    if self.phase == .firmware { return }
+                    if failure == .cantSendAudio {
+                        self.pairing = .idle
+                        self.phase = .firmware
+                    } else {
+                        self.pairing = .failed(failure)
+                    }
                     return
                 }
             }
         }
     }
 
+    /// The firmware step's check for a watch that has restarted into the new build: one quiet
+    /// attempt, unless one is still running.
+    func checkForAudioFirmware() {
+        guard phase == .firmware, !attemptInFlight else { return }
+        startRequest()
+    }
+
     func cancelPairing() {
         pairingTask?.cancel()
+        attemptInFlight = false
+        attemptGeneration &+= 1
         pairing = .idle
+        firmwareJustInstalled = false
         phase = .connect
         Task { [source] in await source.cancelPairing() }
     }
@@ -559,6 +599,12 @@ final class OnboardingViewModel {
     /// Hidden staging control: jump straight to a failure branch.
     func debugTrigger(_ failure: OnboardingFailure) {
         pairingTask?.cancel()
+        // The live flow never shows this one as a card: it is the firmware step.
+        if failure == .cantSendAudio {
+            pairing = .idle
+            phase = .firmware
+            return
+        }
         if phase == .connect { phase = .confirm }
         pairing = .failed(failure)
     }

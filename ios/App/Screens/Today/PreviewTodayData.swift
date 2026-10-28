@@ -140,7 +140,7 @@ final class PreviewTodayData {
     // MARK: Snapshot builders
 
     private func buildToday() -> TodaySnapshot {
-        let status: StatusModel
+        var status: StatusModel
         switch phase {
         case .recording:
             status = StatusModel(
@@ -165,6 +165,13 @@ final class PreviewTodayData {
                 detail: StatusCopy.notRecordingLine,
                 dot: .neutral,
                 action: .start
+            )
+        }
+        // `-demo.needsFirmware`: the watch answered without the audio service (an official
+        // update replaced it) — the card that opens the install sheet.
+        if ProcessInfo.processInfo.arguments.contains("-demo.needsFirmware") {
+            status = statusModel(
+                state: .connectionFailed(kind: .audioServiceMissing, detail: nil), intent: .active
             )
         }
 

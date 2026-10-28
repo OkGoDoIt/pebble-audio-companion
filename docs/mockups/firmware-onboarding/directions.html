@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firmware Onboarding</title>
+<style>
+/* Base tokens and frame styles shared with reminders-v4.html (Tokens.swift light anchors). */
+/* Tokens: ios/App/DesignSystem/Tokens.swift + Tokens+History.swift, light anchors, named after
+   the Swift tokens. Reminders list colors are iOS system colors (the lists belong to Reminders,
+   not to the app); the Pebble Audio list is created in the app's tint. */
+:root {
+  --tint: #5B5BD6;
+  --tint-pressed: #4A4AC4;
+  --captured: #B9B9EE;
+  --tint-on-dark: #9F9FF0;
+  --on-tint: #FFFFFF;
+  --tint-fill-10: rgba(91, 91, 214, 0.10);
+  --tint-fill-12: rgba(91, 91, 214, 0.12);
+  --tint-fill-18: rgba(91, 91, 214, 0.18);
+  --tint-border: rgba(91, 91, 214, 0.40);
+  --tint-soft: #C9C9F0;
+
+  --good: #34C759;
+  --good-fill: rgba(52, 199, 89, 0.12);
+  --missing: #FF9500;
+  --attention: #FF9F0A;
+  --destructive: #FF3B30;
+  --neutral-dot: #8A8A8E;
+
+  --label: #1C1C1E;
+  --secondary-body: #3C3C43;
+  --tertiary: #6E6E73;
+  --meta: #8A8A8E;
+  --faint: #B0B0B6;
+  --chevron: #C7C7CC;
+  --quiet: #D1D1D6;
+  --hairline: rgba(60, 60, 67, 0.18);
+  --card-border: rgba(60, 60, 67, 0.22);
+  --bar-hairline: rgba(60, 60, 67, 0.29);
+  --field-fill: #E3E3E8;
+  --track: #ECECF1;
+  --gray-chip-fill: #EFEFF4;
+  --pill-fill: #E9E9EE;
+  --toggle-off: #E9E9EA;
+  --ground: #F2F2F7;
+  --surface: #FFFFFF;
+  --bar-bg: #F9F9F9;
+  --snackbar-bg: #1C1C1E;
+  --follow-up-done: #A0A0A6;
+  --missing-text: #C77700;
+
+  --screen-margin: 16px;
+  --block-gap: 12px;
+  --card-radius: 12px;
+  --option-card-radius: 14px;
+  --primary-button-radius: 14px;
+  --sheet-radius: 16px;
+  --menu-radius: 13px;
+
+  /* Reminders list colors (iOS system palette) */
+  --list-pebble: #5B5BD6;
+  --list-blue: #007AFF;
+  --list-orange: #FF9500;
+  --list-red: #FF3B30;
+  --list-green: #34C759;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, sans-serif;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { background: #E6E6EB; color: var(--label); font-family: var(--font); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; }
+
+/* ── Review page around the frames (not app UI) ──────────────────────── */
+.page { max-width: 1800px; margin: 0 auto; padding: 40px 16px 72px; }
+.page-head { max-width: 860px; }
+.page-head .kicker { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--tertiary); }
+.page-head h1 { margin: 6px 0 10px; font: 700 34px/41px var(--font); letter-spacing: 0.37px; }
+.page-head p { margin: 0 0 10px; font: 400 17px/25px var(--font); color: var(--secondary-body); }
+.jump { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.jump a { text-decoration: none; font: 500 15px/20px var(--font); color: var(--tint); background: var(--surface); border-radius: 18px; padding: 8px 14px; box-shadow: 0 0 0 0.5px var(--card-border); }
+.jump a b { font-weight: 700; margin-right: 4px; }
+.dir { margin-top: 56px; scroll-margin-top: 16px; }
+.dir-head { max-width: 860px; }
+.dir-head .tag { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.letter { width: 32px; height: 32px; border-radius: 10px; background: var(--label); color: #fff; font: 700 17px/32px var(--font); text-align: center; flex: none; }
+.dir.rec .letter { background: var(--tint); }
+.dir-head h2 { margin: 0; font: 700 26px/32px var(--font); letter-spacing: 0.3px; }
+.recbadge { font: 600 13px/18px var(--font); color: var(--tint); background: var(--tint-fill-12); border-radius: 12px; padding: 4px 10px; }
+.dir-head p { margin: 10px 0 0; font: 400 16px/24px var(--font); color: var(--secondary-body); }
+.dir-head p b { color: var(--label); font-weight: 600; }
+.frames { display: flex; gap: 28px; overflow-x: auto; margin: 0 -16px; padding: 22px 16px 10px; scroll-snap-type: x proximity; }
+.frames::-webkit-scrollbar { height: 8px; }
+.frames::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+figure.shot { margin: 0; flex: none; width: 390px; scroll-snap-align: start; }
+figcaption { margin-top: 14px; font: 400 14px/20px var(--font); color: var(--tertiary); padding: 0 6px; }
+figcaption b { display: block; color: var(--label); font: 600 15px/20px var(--font); margin-bottom: 2px; }
+@media (max-width: 480px) {
+  .page { padding-top: 28px; }
+  .page-head h1 { font-size: 28px; line-height: 34px; }
+  figure.shot { width: 336px; }
+  .phone { zoom: 0.862; }
+  .frames { gap: 18px; }
+}
+
+/* ── Phone frame ─────────────────────────────────────────────────────── */
+.phone { width: 390px; height: 844px; position: relative; overflow: hidden; border-radius: 50px; background: var(--ground); color: var(--label); font-family: var(--font); box-shadow: 0 0 0 1px rgba(0,0,0,0.10), 0 28px 60px -18px rgba(0,0,0,0.30); isolation: isolate; }
+.island { position: absolute; top: 11px; left: 50%; width: 124px; height: 36px; margin-left: -62px; border-radius: 18px; background: #000; z-index: 60; }
+.sb { position: absolute; top: 0; left: 0; right: 0; height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 4px 32px 0 54px; font: 600 17px/22px var(--font); letter-spacing: -0.4px; z-index: 55; color: var(--label); }
+.sb.light { color: #fff; }
+.sb svg { width: 77px; height: 13px; fill: currentColor; }
+.home { position: absolute; left: 50%; bottom: 8px; width: 139px; height: 5px; margin-left: -69.5px; border-radius: 3px; background: var(--label); z-index: 70; }
+.home.light { background: #fff; }
+
+.ic { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
+
+/* Bars */
+.inlinebar { position: absolute; top: 0; left: 0; right: 0; height: 98px; padding-top: 54px; z-index: 30; background: rgba(242, 242, 247, 0.86); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 0.5px 0 var(--bar-hairline); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding-left: 16px; padding-right: 16px; }
+.inlinebar.clear { background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.inlinebar .ttl { font: 600 17px/22px var(--font); letter-spacing: -0.43px; text-align: center; }
+.inlinebar .trail { display: flex; justify-content: flex-end; }
+.glass { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 44px; min-width: 44px; padding: 0 14px; border-radius: 22px; background: rgba(255, 255, 255, 0.82); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.06), 0 2px 10px rgba(0,0,0,0.08); font: 400 17px/22px var(--font); letter-spacing: -0.43px; color: var(--label); }
+.glass.round { padding: 0; width: 44px; }
+.glass .ic { width: 20px; height: 20px; stroke-width: 2.1; }
+.glass .ic.chev-back { width: 12px; height: 20px; stroke-width: 2.6; }
+.glass.tint { color: var(--tint); }
+.glass .flt { width: 18px; height: 18px; stroke-width: 2; }
+
+.content { position: absolute; inset: 0; overflow: hidden; }
+.scroll { display: flex; flex-direction: column; gap: var(--block-gap); padding: 0 var(--screen-margin) 140px; }
+.scroll > * { flex: none; }
+.largetitle { font: 700 34px/41px var(--font); letter-spacing: 0.37px; padding: 3px 0 4px; }
+
+/* Tab bar (iOS 26 floating) */
+.tabbar { position: absolute; left: 20px; right: 20px; bottom: 22px; height: 62px; border-radius: 31px; background: rgba(249, 249, 249, 0.86); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0 0 0.5px var(--card-border), 0 8px 26px rgba(0,0,0,0.10); display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; padding: 0 5px; z-index: 40; }
+.tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; height: 52px; border-radius: 26px; font: 500 10px/12px var(--font); color: var(--label); }
+.tab .ic { width: 25px; height: 25px; stroke-width: 1.8; }
+.tab.on { color: var(--tint); background: rgba(118, 118, 128, 0.12); }
+
+/* Cards and lists */
+.card { background: var(--surface); border-radius: var(--card-radius); padding: 14px 16px; }
+.lc { background: var(--surface); border-radius: var(--card-radius); overflow: hidden; }
+.lc > .r { display: flex; align-items: center; gap: 12px; padding: 11px 16px; position: relative; min-height: 44px; }
+.lc > .r + .r::before { content: ""; position: absolute; top: 0; left: 16px; right: 16px; height: 0.5px; background: var(--hairline); }
+.lc.fu > .r + .r::before { left: 56px; right: 0; }
+.lc.sugs > .r + .r::before { left: 16px; right: 0; }
+.lc.chk > .r + .r::before { left: 52px; right: 0; }
+.r .grow { flex: 1; min-width: 0; }
+.r .t { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--label); }
+.r .t.semi { font-weight: 600; }
+.r .val { font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--meta); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.r .val.urgent { color: var(--attention); }
+.r .sub { font: 400 13px/18px var(--font); letter-spacing: -0.08px; color: var(--meta); margin-top: 2px; }
+.r .tinttext { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--tint); }
+.r .redtext { font: 400 16px/21px var(--font); letter-spacing: -0.31px; color: var(--destructive); }
+.m { display: flex; align-items: center; gap: 5px; margin-top: 3px; font: 400 13px/18px var(--font); letter-spacing: -0.08px; color: var(--meta); white-space: nowrap; }
+.m.urgent { color: var(--attention); }
+.m .ic { width: 13px; height: 13px; stroke-width: 2; }
+.excl { width: 9px; height: 13px; fill: none; stroke: var(--attention); stroke-width: 3; stroke-linecap: round; flex: none; display: block; }
+.chev { width: 8px; height: 14px; stroke: var(--chevron); stroke-width: 2.2; fill: none; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.circ { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; flex: none; align-self: flex-start; margin-top: -3px; }
+.circ::before { content: ""; width: 20px; height: 20px; border-radius: 50%; box-shadow: inset 0 0 0 1.6px var(--chevron); }
+.sh { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta); padding: 6px 4px 0; margin-bottom: -6px; display: flex; align-items: baseline; justify-content: space-between; }
+.sh .act { text-transform: none; letter-spacing: -0.23px; font: 600 15px/20px var(--font); color: var(--tint); }
+.sectitle { display: flex; align-items: baseline; justify-content: space-between; padding-top: 4px; }
+.sectitle h3 { margin: 0; font: 700 20px/25px var(--font); letter-spacing: 0.38px; }
+.sectitle .chip { font: 500 13px/18px var(--font); color: var(--tint); }
+.footer { font: 400 13px/18px var(--font); color: var(--meta); padding: 0 4px; margin-top: -4px; }
+
+/* Reminders list glyph: the list's color as a filled circle (squint test: "this is in Reminders") */
+.lg { width: 20px; height: 20px; border-radius: 50%; background: var(--lc, var(--list-pebble)); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.lg svg { width: 13px; height: 13px; fill: #fff; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; }
+.lg.s { width: 14px; height: 14px; }
+.lg.s svg { width: 9px; height: 9px; stroke-width: 2.6; }
+.lg.l { width: 30px; height: 30px; }
+.lg.l svg { width: 18px; height: 18px; stroke-width: 2; }
+
+/* Suggestion row (C strip, C tab) */
+.sug { align-items: center; }
+.sug .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.btn-x { width: 30px; height: 30px; border-radius: 50%; background: var(--gray-chip-fill); color: var(--tertiary); display: flex; align-items: center; justify-content: center; }
+.btn-x .ic { width: 13px; height: 13px; stroke-width: 2.4; }
+.btn-add { height: 30px; padding: 0 14px; border-radius: 15px; background: var(--tint-fill-12); color: var(--tint); font: 600 15px/30px var(--font); letter-spacing: -0.23px; }
+.added { display: inline-flex; align-items: center; gap: 5px; color: var(--tint); font: 600 15px/20px var(--font); }
+.added .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+.striphead { display: flex; align-items: baseline; justify-content: space-between; padding: 13px 16px 3px; }
+.striphead .h { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.striphead .n { font: 400 13px/18px var(--font); color: var(--meta); }
+
+/* Inline-button rows (B) */
+.ib { flex-direction: column; align-items: stretch !important; gap: 0 !important; }
+.ib .btns { display: flex; gap: 8px; margin-top: 10px; }
+.btn-sm { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 10px; font: 600 14px/19px var(--font); color: var(--tint); box-shadow: inset 0 0 0 1px var(--tint-border); }
+.btn-sm .ic { width: 14px; height: 14px; stroke-width: 2.2; }
+.btn-sm.quiet { box-shadow: none; color: var(--tertiary); background: var(--gray-chip-fill); }
+
+/* Buttons */
+.btn-primary { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 50px; padding: 14px 16px; border-radius: var(--primary-button-radius); background: var(--tint); color: var(--on-tint); font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.btn-plain { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; color: var(--tint); font: 400 17px/22px var(--font); letter-spacing: -0.43px; }
+.btn-incard { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; border-radius: 11px; background: var(--tint); color: var(--on-tint); font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.btn-bordered { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 44px; border-radius: 11px; box-shadow: inset 0 0 0 1px var(--tint-border); color: var(--tint); font: 600 15px/20px var(--font); letter-spacing: -0.23px; position: relative; }
+.btn-bordered .ic { width: 17px; height: 17px; stroke-width: 2; }
+
+/* Switch (on = Tokens.good) */
+.switch { width: 51px; height: 31px; border-radius: 16px; background: var(--toggle-off); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgba(0,0,0,0.15), 0 1px 1px rgba(0,0,0,0.16); }
+.switch.on { background: var(--good); }
+.switch.on::after { left: 22px; }
+.timepill { font: 400 17px/22px var(--font); letter-spacing: -0.43px; background: var(--gray-chip-fill); border-radius: 7px; padding: 6px 11px; color: var(--label); }
+
+/* Snackbar */
+.snack { position: absolute; left: 16px; right: 16px; bottom: 96px; min-height: 44px; border-radius: var(--card-radius); background: var(--snackbar-bg); color: #fff; display: flex; align-items: center; gap: 10px; padding: 0 16px; z-index: 45; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+.snack .msg { flex: 1; font: 400 15px/20px var(--font); letter-spacing: -0.23px; padding: 12px 0; }
+.snack .act { font: 600 15px/20px var(--font); color: var(--tint-on-dark); min-height: 44px; display: flex; align-items: center; }
+
+/* Detail screen bits */
+.d-title { font: 700 24px/30px var(--font); letter-spacing: 0.07px; color: var(--label); }
+.why { font: 400 13px/18px var(--font); color: var(--tertiary); }
+.quote { display: flex; gap: 10px; }
+.quote::before { content: ""; width: 3px; border-radius: 2px; background: var(--tint-soft); flex: none; }
+.quote p { margin: 0; font: italic 400 15px/24px var(--font); letter-spacing: -0.23px; color: var(--secondary-body); }
+.cardhead { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.foot13 { font: 400 13px/18px var(--font); color: var(--meta); }
+.playrow { display: flex; align-items: center; gap: 12px; }
+.play { width: 44px; height: 44px; border-radius: 50%; background: var(--tint); color: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+.play .ic { width: 16px; height: 16px; margin-left: 2px; }
+
+/* Sheet presentation */
+.presenting { position: absolute; inset: 0; background: #000; }
+.presenting .behind { position: absolute; left: 12px; right: 12px; top: 46px; height: 40px; border-radius: 14px 14px 0 0; background: #C9C9CE; }
+.sheet { position: absolute; left: 0; right: 0; top: 56px; bottom: 0; border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; background: var(--ground); display: flex; flex-direction: column; overflow: hidden; }
+.sheet .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--chevron); margin: 5px auto 0; flex: none; }
+.sheet .sbar { height: 52px; flex: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 12px; }
+.sheet .sbar .ttl { font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.sheet .sbar .trail { display: flex; justify-content: flex-end; font: 400 15px/20px var(--font); color: var(--meta); padding-right: 6px; }
+.sheet .body { flex: 1; overflow: hidden; padding: 0 var(--screen-margin); display: flex; flex-direction: column; gap: var(--block-gap); }
+.sheet .body > * { flex: none; }
+.sheet .dock { flex: none; padding: 10px 20px 30px; display: flex; flex-direction: column; gap: 2px; background: var(--ground); box-shadow: 0 -0.5px 0 var(--hairline); }
+
+/* Review stack (A) */
+.stack { position: relative; height: 436px; margin-top: 4px; }
+.scard { position: absolute; left: 0; right: 0; top: 0; height: 410px; background: var(--surface); border-radius: var(--sheet-radius); transform-origin: 50% 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 10px 30px rgba(0,0,0,0.08); padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.scard.b1 { transform: translateY(30px) scale(0.95); opacity: 0.9; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.scard.b2 { transform: translateY(62px) scale(0.90); opacity: 0.7; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.scard .src { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chip-t { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--tint-fill-12); color: var(--tint); font: 500 13px/18px var(--font); }
+.chip-t .ic { width: 13px; height: 13px; stroke-width: 2; }
+.chip-g { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--gray-chip-fill); color: var(--tertiary); font: 500 13px/18px var(--font); }
+.chip-a { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px; border-radius: 13px; background: rgba(255, 159, 10, 0.12); color: var(--missing-text); font: 600 13px/18px var(--font); }
+.scard .hr { height: 0.5px; background: var(--hairline); margin: 2px 0; }
+.scard .spacer { flex: 1; }
+.decide { display: flex; justify-content: center; gap: 56px; margin-top: 30px; }
+.decide .d { display: flex; flex-direction: column; align-items: center; gap: 7px; font: 500 13px/18px var(--font); color: var(--tertiary); }
+.decide .c { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.decide .c.no { background: var(--surface); color: var(--tertiary); box-shadow: 0 0 0 0.5px var(--card-border), 0 4px 12px rgba(0,0,0,0.06); }
+.decide .c.no .ic { width: 24px; height: 24px; stroke-width: 2.4; }
+.decide .c.yes { background: var(--tint); color: #fff; box-shadow: 0 6px 16px rgba(91,91,214,0.35); }
+.decide .c.yes .ic { width: 26px; height: 26px; stroke-width: 2.4; }
+.decide .d.yes { color: var(--tint); font-weight: 600; }
+.decide .d.hot .c.yes { transform: scale(1.12); box-shadow: 0 0 0 8px var(--tint-fill-18), 0 6px 16px rgba(91,91,214,0.35); }
+.stamp { position: absolute; top: 22px; left: 18px; transform: rotate(-7deg); display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 17px; background: var(--tint); color: #fff; font: 600 15px/20px var(--font); box-shadow: 0 6px 18px rgba(91,91,214,0.35); }
+.stamp .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+
+/* Done state */
+.donestate { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 28px 40px; gap: 0; }
+.donestate .badge { width: 76px; height: 76px; border-radius: 50%; background: var(--tint-fill-12); color: var(--tint); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+.donestate .badge .ic { width: 36px; height: 36px; stroke-width: 2.4; }
+.donestate h4 { margin: 0; font: 700 28px/34px var(--font); letter-spacing: 0.36px; }
+.donestate p { margin: 8px 0 0; font: 400 16px/22px var(--font); color: var(--secondary-body); }
+
+/* Checkbox rows (D) */
+.cb { width: 24px; height: 24px; border-radius: 50%; flex: none; align-self: flex-start; box-shadow: inset 0 0 0 1.6px var(--chevron); display: flex; align-items: center; justify-content: center; color: #fff; }
+.cb.on { background: var(--tint); box-shadow: none; }
+.cb .ic { width: 14px; height: 14px; stroke-width: 2.6; }
+.cb.on + .grow .t { color: var(--label); }
+
+/* Menu (C detail) */
+.menu { position: absolute; right: 16px; width: 254px; background: rgba(250, 250, 252, 0.94); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-radius: var(--menu-radius); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.08), 0 18px 50px rgba(0,0,0,0.22); z-index: 50; overflow: hidden; }
+.menu .mi { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; height: 44px; font: 400 17px/22px var(--font); letter-spacing: -0.43px; position: relative; }
+.menu .mi + .mi::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 0.5px; background: var(--hairline); }
+.menu .mi.sep::before { height: 8px !important; background: rgba(0,0,0,0.06) !important; top: -8px !important; }
+.menu .mi.sep { margin-top: 8px; }
+.menu .mi .ic { width: 19px; height: 19px; stroke-width: 1.8; }
+.menu .mi.red { color: var(--destructive); }
+.dimmer { position: absolute; inset: 0; background: rgba(0,0,0,0.06); z-index: 45; }
+
+/* System alert (iOS 26) */
+.alertscrim { position: absolute; inset: 0; background: rgba(0,0,0,0.22); z-index: 50; }
+.alert { position: absolute; left: 36px; right: 36px; top: 268px; background: rgba(255,255,255,0.95); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); border-radius: 34px; padding: 22px 18px 18px; z-index: 55; box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
+.alert h5 { margin: 0 6px; font: 600 17px/22px var(--font); letter-spacing: -0.43px; }
+.alert p { margin: 8px 6px 18px; font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--secondary-body); }
+.alert .ab { display: flex; align-items: center; justify-content: center; height: 48px; border-radius: 24px; background: rgba(120, 120, 128, 0.16); font: 600 17px/22px var(--font); color: var(--label); }
+.alert .ab + .ab { margin-top: 8px; }
+
+/* Touch indicator */
+.touch { position: absolute; width: 46px; height: 46px; border-radius: 50%; background: rgba(28, 28, 30, 0.16); box-shadow: 0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(0,0,0,0.12); z-index: 48; pointer-events: none; }
+
+/* Lock screen (D) */
+.lock { position: absolute; inset: 0; background: radial-gradient(120% 70% at 20% 10%, #8C86D8 0%, rgba(140,134,216,0) 60%), radial-gradient(90% 60% at 90% 80%, #E3A98C 0%, rgba(227,169,140,0) 60%), linear-gradient(170deg, #2C2A57 0%, #514A8F 45%, #9A7FA8 75%, #D79C86 100%); color: #fff; }
+.lock .date { position: absolute; top: 92px; left: 0; right: 0; text-align: center; font: 600 20px/24px var(--font); opacity: 0.92; }
+.lock .time { position: absolute; top: 112px; left: 0; right: 0; text-align: center; font: 700 100px/110px "SF Pro Rounded", var(--font); letter-spacing: -2px; opacity: 0.95; }
+.notif { position: absolute; left: 10px; right: 10px; top: 520px; border-radius: 24px; background: rgba(245, 245, 250, 0.72); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); color: var(--label); display: flex; gap: 12px; padding: 13px 14px 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+.notif .tx { flex: 1; min-width: 0; }
+.notif .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.notif .hd b { font: 600 15px/20px var(--font); letter-spacing: -0.23px; }
+.notif .hd span { font: 400 13px/18px var(--font); color: rgba(60,60,67,0.6); }
+.notif .bd { font: 400 15px/20px var(--font); letter-spacing: -0.23px; color: var(--label); }
+.appicon { width: 38px; height: 38px; border-radius: 9px; background: linear-gradient(160deg, #8C8CF0, #5B5BD6); display: flex; align-items: center; justify-content: center; flex: none; }
+.appicon svg { width: 28px; height: 28px; }
+.lockbtn { position: absolute; bottom: 44px; width: 50px; height: 50px; border-radius: 50%; background: rgba(0,0,0,0.28); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: center; color: #fff; }
+.lockbtn .ic { width: 22px; height: 22px; }
+
+.ring { box-shadow: inset 0 0 0 2px var(--tint-border); }
+.ann { position: absolute; z-index: 80; font: 600 12px/16px var(--font); color: #fff; background: var(--label); border-radius: 8px; padding: 4px 8px; }
+
+/* ── v2 additions ─────────────────────────────────────────────────────── */
+.note { max-width: 860px; margin-top: 18px; background: var(--surface); border-radius: var(--option-card-radius); padding: 16px 20px; box-shadow: 0 0 0 0.5px var(--card-border); }
+.note b { display: block; font: 600 15px/20px var(--font); margin-bottom: 6px; }
+.note ul { margin: 0; padding-left: 18px; }
+.note li { font: 400 15px/22px var(--font); color: var(--secondary-body); margin: 2px 0; }
+
+/* Progress dots: one per card. Filled tint = adding, hollow = keeping. */
+.dots { display: flex; justify-content: center; gap: 9px; height: 26px; align-items: center; flex: none; }
+.dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.dots i.on { background: var(--tint); }
+.dots i.off { box-shadow: inset 0 0 0 1.6px var(--chevron); }
+.dots i.cur { outline: 1.6px solid var(--label); outline-offset: 2.5px; }
+
+/* The card's choice control */
+.choice { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 14px; border-radius: 11px; font: 600 15px/20px var(--font); letter-spacing: -0.23px; flex: none; }
+.choice .box { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; }
+.choice .box .ic { width: 13px; height: 13px; stroke-width: 2.8; color: #fff; }
+.choice.add { background: var(--tint-fill-12); color: var(--tint); }
+.choice.add .box { background: var(--tint); }
+.choice.keep { background: var(--gray-chip-fill); color: var(--tertiary); }
+.choice.keep .box { box-shadow: inset 0 0 0 1.6px var(--chevron); }
+.prov { display: flex; align-items: center; gap: 5px; font: 400 13px/18px var(--font); letter-spacing: -0.08px; color: var(--meta); white-space: nowrap; overflow: hidden; }
+.prov .ic { width: 13px; height: 13px; stroke-width: 2; color: var(--tint); }
+.stamp.keep { left: auto; right: 18px; transform: rotate(7deg); background: var(--tertiary); box-shadow: 0 6px 18px rgba(0,0,0,0.20); }
+.scard.v2 { height: 482px; }
+.stack.v2 { height: 512px; }
+.scard > *:not(.spacer) { flex: none; }
+
+/* Today bits */
+.recrow { display: flex; align-items: center; gap: 8px; }
+.recrow .h { font: 600 17px/22px var(--font); letter-spacing: -0.43px; flex: 1; }
+.gdot { width: 10px; height: 10px; border-radius: 50%; background: var(--good); flex: none; }
+.wave { display: flex; align-items: center; gap: 3px; height: 30px; margin-top: 10px; }
+.wave i { flex: 1; border-radius: 2px; background: var(--tint); display: block; }
+.wave i.q { background: var(--quiet); }
+.wave i.c { background: var(--captured); }
+.revcard { display: flex; align-items: center; gap: 12px; }
+.tile { width: 36px; height: 36px; border-radius: 9px; background: var(--tint-fill-12); color: var(--tint); display: flex; align-items: center; justify-content: center; flex: none; }
+.tile .ic { width: 20px; height: 20px; }
+.btn-review { height: 34px; padding: 0 16px; border-radius: 17px; background: var(--tint); color: #fff; font: 600 15px/34px var(--font); letter-spacing: -0.23px; flex: none; }
+.oneline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.circ.done::before { box-shadow: none; background: var(--tint); }
+.circ.done { position: relative; }
+.circ.done svg { position: absolute; width: 12px; height: 12px; color: #fff; stroke-width: 3; }
+.t.struck { color: var(--meta); text-decoration: line-through; text-decoration-color: var(--meta); }
+.accessnote { text-align: center; font: 600 15px/20px var(--font); color: var(--label); display: flex; align-items: center; justify-content: center; gap: 8px; padding: 2px 0 10px; }
+.accessnote .adot { width: 9px; height: 9px; border-radius: 50%; background: var(--attention); }
+
+/* ── v3 additions ─────────────────────────────────────────────────────── */
+.choice.skip { background: var(--gray-chip-fill); color: var(--tertiary); }
+.choice.skip .box { box-shadow: inset 0 0 0 1.6px var(--chevron); }
+.optrow .ck { width: 20px; height: 20px; color: var(--tint); stroke-width: 2.4; }
+.set-label { font: 600 14px/19px var(--font); color: var(--tint); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.set-label .ic { width: 15px; height: 15px; stroke-width: 2.6; }
+.conv-title { font: 700 24px/30px var(--font); letter-spacing: 0.07px; }
+.pillrow { display: flex; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 16px; background: var(--surface); box-shadow: 0 0 0 0.5px var(--card-border); font: 500 15px/20px var(--font); color: var(--label); }
+.pill .ic { width: 15px; height: 15px; stroke-width: 2; color: var(--tint); }
+.turn { display: flex; flex-direction: column; gap: 2px; }
+.turn .who { font: 600 12px/16px var(--font); color: var(--tint); }
+.turn .what { font: 400 16px/22px var(--font); color: var(--label); }
+.sheet.medium { top: 360px; box-shadow: 0 -8px 30px rgba(0,0,0,0.12); }
+.dimmed { position: absolute; inset: 0; background: rgba(0,0,0,0.18); z-index: 20; }
+.movesheet { position: absolute; left: 0; right: 0; bottom: 0; height: 330px; background: var(--ground); border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; z-index: 30; display: flex; flex-direction: column; padding: 0 20px 30px; box-shadow: 0 -8px 30px rgba(0,0,0,0.12); }
+.movesheet .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--chevron); margin: 5px auto 0; }
+.movesheet h4 { margin: 26px 0 0; font: 700 22px/28px var(--font); text-align: center; letter-spacing: 0.35px; }
+.movesheet p { margin: 8px 0 0; font: 400 16px/22px var(--font); text-align: center; color: var(--secondary-body); }
+.movesheet .grow2 { flex: 1; }
+
+/* ── v4 additions ─────────────────────────────────────────────────────── */
+.scard.v4 { height: 430px; }
+.stack.v4 { height: 466px; }
+.decide.v4 { margin-top: 26px; gap: 64px; }
+.decide .c.yes .ic.ck2 { width: 28px; height: 28px; stroke-width: 2.6; }
+.counter { font: 400 15px/20px var(--font); color: var(--meta); }
+.st { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px; border-radius: 15px; font: 600 14px/19px var(--font); white-space: nowrap; flex: none; }
+.st .ic { width: 14px; height: 14px; stroke-width: 2.2; }
+.st.on { background: var(--tint-fill-12); color: var(--tint); }
+.st.off { background: var(--gray-chip-fill); color: var(--tertiary); }
+.sumhead { padding: 4px 4px 2px; }
+.sumhead h4 { margin: 0; font: 700 28px/34px var(--font); letter-spacing: 0.36px; }
+.sumhead p { margin: 4px 0 0; font: 400 15px/20px var(--font); color: var(--tertiary); }
+.lc.sum > .r { padding-top: 10px; padding-bottom: 10px; }
+.lc.sum .t { font-size: 15px; line-height: 20px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lc.sum > .r + .r::before { left: 16px; right: 0; }
+.r.flash { background: var(--tint-fill-10); }
+.addedline { display: flex; align-items: center; gap: 8px; color: var(--tint); font: 400 15px/20px var(--font); }
+.addedline .ic { width: 16px; height: 16px; stroke-width: 2; }
+/* ── Firmware onboarding additions ───────────────────────────────────── */
+.page { max-width: none; }
+.page-head, .dir-head { max-width: 860px; }
+.ob { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 54px 0 0; }
+.ob .mid { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 24px; gap: 0; }
+.ob .mid.top { justify-content: flex-start; padding-top: 28px; }
+.ob .bottom { flex: none; padding: 0 24px 34px; display: flex; flex-direction: column; gap: 6px; }
+.ob .stepkick { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta); text-align: center; margin-bottom: 10px; }
+.ob h3 { margin: 0; font: 700 28px/34px var(--font); letter-spacing: 0.36px; text-align: center; }
+.ob h3.left { text-align: left; }
+.ob .lede { margin: 10px auto 0; max-width: 310px; font: 400 17px/24px var(--font); letter-spacing: -0.43px; color: var(--tertiary); text-align: center; }
+.ob .lede.left { margin-left: 0; text-align: left; max-width: none; }
+.hero { display: flex; align-items: center; justify-content: center; gap: 14px; height: 76px; margin-bottom: 20px; color: var(--tint); }
+.hero .ic { width: 54px; height: 54px; stroke-width: 1.4; }
+.hero .dash { display: flex; gap: 6px; }
+.hero .dash i { width: 8px; height: 2.5px; border-radius: 2px; background: var(--tint-soft); display: block; }
+.hero .badge-dl { position: relative; }
+.hero .badge-dl .dot { position: absolute; right: -6px; bottom: 2px; width: 26px; height: 26px; border-radius: 50%; background: var(--tint); color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 3px var(--ground); }
+.hero .badge-dl .dot .ic { width: 15px; height: 15px; stroke-width: 2.4; }
+.trust { margin-top: 24px; }
+.trust .r { align-items: flex-start !important; padding-top: 13px !important; padding-bottom: 13px !important; }
+.trust .gl { width: 30px; height: 30px; border-radius: 8px; background: var(--tint-fill-12); color: var(--tint); display: flex; align-items: center; justify-content: center; flex: none; }
+.trust .gl .ic { width: 18px; height: 18px; stroke-width: 1.9; }
+.trust .t { font-weight: 600; }
+.trust .sub { color: var(--tertiary) !important; font-size: 14px !important; line-height: 19px !important; margin-top: 2px; }
+.trust.lc > .r + .r::before { left: 58px; right: 0; }
+.linkline { text-align: center; font: 400 15px/20px var(--font); color: var(--tint); margin-top: 14px; }
+.fine { text-align: center; font: 400 13px/18px var(--font); color: var(--meta); }
+.btn-primary .spin { width: 18px; height: 18px; border-radius: 50%; border: 2.2px solid rgba(255,255,255,0.35); border-top-color: #fff; margin-right: 10px; }
+.btn-primary.busy { background: var(--tint); opacity: 0.92; }
+
+/* Step tracker */
+.track { background: var(--surface); border-radius: var(--card-radius); padding: 2px 16px; }
+.track .tstep { display: flex; gap: 12px; padding: 12px 0; position: relative; }
+.track .tstep + .tstep::before { content: ""; position: absolute; top: 0; left: 40px; right: -16px; height: 0.5px; background: var(--hairline); }
+.track .num { width: 28px; height: 28px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font: 600 14px/18px var(--font); }
+.track .num.done { background: var(--good); color: #fff; }
+.track .num.done .ic { width: 15px; height: 15px; stroke-width: 2.8; }
+.track .num.now { background: var(--tint); color: #fff; box-shadow: 0 0 0 5px var(--tint-fill-12); }
+.track .num.todo { box-shadow: inset 0 0 0 1.5px var(--chevron); color: var(--meta); }
+.track .tx { flex: 1; min-width: 0; padding-top: 4px; }
+.track .tx b { display: block; font: 600 16px/21px var(--font); letter-spacing: -0.31px; }
+.track .tx > span { display: block; font: 400 14px/19px var(--font); color: var(--tertiary); margin-top: 2px; }
+.track .tstep.todo b { color: var(--tertiary); font-weight: 500; }
+.wait { display: inline-flex; align-items: center; gap: 7px; font: 400 14px/19px var(--font); color: var(--tertiary); margin-top: 6px; }
+.wait::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tint); box-shadow: 0 0 0 4px var(--tint-fill-12); }
+
+/* Checklist (B) */
+.chk2 .r { min-height: 58px !important; }
+.chk2 .state { width: 26px; height: 26px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; }
+.chk2 .state.ok { background: var(--good); color: #fff; }
+.chk2 .state.ok .ic { width: 14px; height: 14px; stroke-width: 2.8; }
+.chk2 .state.need { background: rgba(255,159,10,0.16); color: var(--missing-text); font: 700 15px/1 var(--font); }
+.chk2 .state.later { box-shadow: inset 0 0 0 1.5px var(--chevron); }
+.chk2 .state.now { background: var(--tint); box-shadow: 0 0 0 4px var(--tint-fill-12); }
+.chk2.lc > .r + .r::before { left: 54px; right: 0; }
+
+/* Share sheet (system) */
+.dim { position: absolute; inset: 0; background: rgba(0,0,0,0.28); z-index: 40; }
+.share { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 50; background: rgba(246,246,248,0.97); border-radius: 30px; padding: 16px 0 22px; box-shadow: 0 -2px 20px rgba(0,0,0,0.12); }
+.share .file { display: flex; align-items: center; gap: 12px; padding: 4px 22px 16px; border-bottom: 0.5px solid var(--hairline); }
+.share .doc { width: 34px; height: 42px; border-radius: 4px; background: #fff; box-shadow: 0 0 0 0.5px var(--card-border); font: 600 8px/1 var(--font); color: var(--meta); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; }
+.share .file b { display: block; font: 600 15px/20px var(--font); }
+.share .file span { font: 400 13px/18px var(--font); color: var(--meta); }
+.share .apps { display: flex; gap: 22px; padding: 18px 22px 8px; }
+.share .app { display: flex; flex-direction: column; align-items: center; gap: 6px; font: 400 12px/15px var(--font); color: var(--label); width: 64px; text-align: center; }
+.share .ico { width: 62px; height: 62px; border-radius: 15px; display: flex; align-items: center; justify-content: center; }
+.share .ico.pebble { background: #FF4700; color: #fff; font: 800 13px/1 var(--font); letter-spacing: -0.3px; }
+.share .ico.files { background: #fff; box-shadow: 0 0 0 0.5px var(--card-border); color: #1A7CF4; }
+.share .ico.more { background: #fff; box-shadow: 0 0 0 0.5px var(--card-border); color: var(--tertiary); font: 700 20px/1 var(--font); letter-spacing: 1px; }
+.share .app.hl .ico { box-shadow: 0 0 0 3px #fff, 0 0 0 6px var(--tint); }
+.coach { position: absolute; left: 50%; transform: translateX(-50%); z-index: 55; background: var(--label); color: #fff; font: 600 15px/20px var(--font); padding: 10px 14px; border-radius: 12px; white-space: nowrap; box-shadow: 0 8px 20px rgba(0,0,0,0.2); }
+.coach::after { content: ""; position: absolute; left: 34px; bottom: -6px; width: 12px; height: 12px; background: var(--label); transform: rotate(45deg); border-radius: 2px; }
+
+/* Detail sheet rows */
+.kv .r { min-height: 44px; }
+.kv .k { flex: 1; font: 400 16px/21px var(--font); letter-spacing: -0.31px; }
+.kv .v { font: 400 15px/20px var(--font); color: var(--meta); text-align: right; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+.para { font: 400 15px/21px var(--font); letter-spacing: -0.23px; color: var(--secondary-body); }
+.para + .para { margin-top: 8px; }
+.sec { font: 600 13px/18px var(--font); letter-spacing: 0.4px; text-transform: uppercase; color: var(--meta); padding: 8px 4px 0; margin-bottom: -6px; }
+.stepsN .r { align-items: flex-start !important; }
+.stepsN .n { width: 16px; font: 600 15px/20px var(--font); color: var(--tint); flex: none; padding-top: 1px; }
+.stepsN .t { font-weight: 600; font-size: 15px; line-height: 20px; }
+.stepsN .sub { color: var(--secondary-body) !important; }
+.stepsN.lc > .r + .r::before { left: 44px; right: 0; }
+
+/* Watch mock (consent) */
+.wm { display: flex; flex-direction: column; align-items: center; }
+.wm .strap { width: 120px; height: 20px; background: #3A3A3C; }
+.wm .strap.t { border-radius: 8px 8px 0 0; }
+.wm .strap.b { border-radius: 0 0 8px 8px; }
+.wm .bez { width: 156px; height: 156px; border-radius: 20px; background: #1C1C1E; padding: 9px; }
+.wm .scr { width: 100%; height: 100%; border-radius: 6px; background: #F4F4EE; padding: 10px; display: flex; flex-direction: column; color: #1C1C1E; }
+.wm .scr b { font: 700 10px/12px var(--font); letter-spacing: 0.3px; }
+.wm .scr p { margin: 5px 0 0; font: 400 11px/14px var(--font); }
+.wm .scr .opts { margin-top: auto; text-align: right; font: 700 10px/14px var(--font); }
+.wm .scr .opts span { display: block; font-weight: 400; color: #8A8A8E; }
+
+/* Evaluation block */
+.eval { max-width: 860px; margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.eval div { background: var(--surface); border-radius: var(--option-card-radius); padding: 14px 18px; box-shadow: 0 0 0 0.5px var(--card-border); }
+.eval b { display: block; font: 600 14px/18px var(--font); margin-bottom: 6px; }
+.eval ul { margin: 0; padding-left: 18px; }
+.eval li { font: 400 14px/20px var(--font); color: var(--secondary-body); margin: 2px 0; }
+.eval .pro b { color: #248A3D; }
+.eval .con b { color: var(--missing-text); }
+@media (max-width: 640px) { .eval { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sb" viewBox="0 0 77 13"><rect x="0" y="8" width="3" height="4.5" rx="1"/><rect x="5" y="5.5" width="3" height="7" rx="1"/><rect x="10" y="3" width="3" height="9.5" rx="1"/><rect x="15" y="0.5" width="3" height="12" rx="1"/><rect x="54" y="0.5" width="21" height="12" rx="3.5" fill="none" stroke="currentColor" stroke-width="1"/><rect x="56" y="2.5" width="16" height="8" rx="2"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 8 14"><path d="M1.5 1.5 6.5 7l-5 5.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-watch" viewBox="0 0 24 24"><rect x="6.5" y="6" width="11" height="12" rx="3"/><path d="M9 6l.6-3h4.8l.6 3M9 18l.6 3h4.8l.6-3"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.6"/><path d="M10.5 5h3"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="M8.5 7 3.5 12l5 5M15.5 7l5 5-5 5M13.5 4.5l-3 15"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.1 7.5 9.5 4.4-1.4 7.5-4.9 7.5-9.5V6z"/><path d="M8.6 12.2l2.3 2.3 4.6-4.8"/></symbol>
+  <symbol id="i-micslash" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 11.6 4M18.5 11v0M12 17.5V21M4 4l16 16"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10M19.5 4.5 11 13M17 14v5.5H4.5V7H10"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5V18a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5V9a1.5 1.5 0 0 0-1.5-1.5h-7L10 5H5a1.5 1.5 0 0 0-1.5 1.5z"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M19 8.5A8 8 0 1 0 20 13"/><path d="M19.5 4v4.5H15"/></symbol>
+</svg>
+
+<main class="page">
+  <header class="page-head">
+    <div class="kicker">Pebble Audio · Onboarding · Watch firmware</div>
+    <h1>Install the audio firmware during setup</h1>
+    <p>Most people arrive with a Pebble Time 2 on stock PebbleOS. Today they tap Connect, wait, and get “This Pebble can’t send audio,” followed by a four-step manual guide. The app already finds that watch (through the Pebble service the official app keeps connected) and already knows the audio service is missing. That moment should become the install.</p>
+    <div class="note">
+      <b>Facts the screens rely on (checked in the official app’s source)</b>
+      <ul>
+        <li>The Pebble app installs an opened <span class="mono">.pbz</span> at once, with no confirmation. Its only progress is the line under the watch on its Watches tab, and it shows no success message.</li>
+        <li>It installs only on a watch that is connected at that moment. If the Pebble app has to launch first, the file can be silently ignored, so sending it again has to be easy.</li>
+        <li>It refuses a file built for another board or slot. Nothing is written, and the refusal is silent.</li>
+        <li>The watch writes the new firmware into its spare slot and restarts into it, so an interrupted transfer leaves the running firmware alone.</li>
+        <li>Official updates still arrive through the Pebble app. The app sees this build as 4.41.0, so it offers official 4.41.1 and later. Installing one replaces the audio firmware.</li>
+      </ul>
+    </div>
+    <div class="jump"><a href="#a"><b>A</b>Found, then fixed</a><a href="#b"><b>B</b>Setup checklist</a><a href="#c"><b>C</b>Explain first</a></div>
+  </header>
+
+  <!-- ═══════════════════════════ A ═══════════════════════════ -->
+  <section class="dir rec" id="a">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">A</span><h2>Found, then fixed</h2></div>
+      <p>Connect stays the first step. When the watch turns out to need firmware, the next screen is the install: what it is, why it is safe, and one button. After the hand-off, a three-step tracker waits for the watch to come back, then the flow carries on to the on-watch prompt by itself.</p>
+    </div>
+    <div class="frames">
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:41</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid">
+              <div class="hero"><svg class="ic"><use href="#i-watch"/></svg><span class="dash"><i></i><i></i><i></i></span><svg class="ic"><use href="#i-phone"/></svg></div>
+              <h3>Connect your Pebble</h3>
+              <p class="lede">Pebble Audio records from your watch’s microphone and keeps everything on this phone.</p>
+            </div>
+            <div class="bottom">
+              <button class="btn-primary">Connect</button>
+              <p class="fine" style="margin:8px 0 0">For Pebble Time 2. If it needs the audio firmware, setup installs it.</p>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>A1 · Connect</b>The footnote stops being a dead end. It says up front that a firmware install may be part of setup.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:41</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid">
+              <div class="hero"><span class="badge-dl"><svg class="ic"><use href="#i-watch"/></svg><span class="dot"><svg class="ic"><use href="#i-down"/></svg></span></span></div>
+              <h3>Add audio to your Pebble</h3>
+              <p class="lede">Your Pebble Time 2 needs the Pebble Audio firmware before it can send audio to this phone.</p>
+              <div class="lc trust">
+                <div class="r"><span class="gl"><svg class="ic"><use href="#i-code"/></svg></span><div class="grow"><div class="t">Open source</div><div class="sub">PebbleOS with the Pebble Audio features added, built from public code.</div></div></div>
+                <div class="r"><span class="gl"><svg class="ic"><use href="#i-shield"/></svg></span><div class="grow"><div class="t">Installed by the Pebble app</div><div class="sub">Its usual installer. If the transfer stops, your watch keeps the firmware it has.</div></div></div>
+                <div class="r"><span class="gl"><svg class="ic"><use href="#i-micslash"/></svg></span><div class="grow"><div class="t">Microphone off until you allow it</div><div class="sub">Your watch asks before this phone can record.</div></div></div>
+              </div>
+              <div class="linkline">About this firmware</div>
+            </div>
+            <div class="bottom">
+              <button class="btn-primary">Install Firmware</button>
+              <button class="btn-plain">Install It Myself</button>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>A2 · Install</b>Shown only when the watch was found but has no audio service. The three rows answer “what is it,” “could this hurt my watch,” and “will it start recording.”</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:41</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid">
+              <div class="hero"><span class="badge-dl"><svg class="ic"><use href="#i-watch"/></svg><span class="dot"><svg class="ic"><use href="#i-down"/></svg></span></span></div>
+              <h3>Add audio to your Pebble</h3>
+              <p class="lede">Your Pebble Time 2 needs the Pebble Audio firmware before it can send audio to this phone.</p>
+            </div>
+          </div>
+          <div class="dim"></div>
+          <div class="coach" style="bottom: 214px; margin-left: -96px;">Choose Pebble</div>
+          <div class="share">
+            <div class="file"><span class="doc">PBZ</span><div><b>pebble-v4.41.0-678.pbz</b><span>3.5 MB</span></div></div>
+            <div class="apps">
+              <div class="app hl"><span class="ico pebble">pebble</span>Pebble</div>
+              <div class="app"><span class="ico files"><svg class="ic" style="width:30px;height:30px"><use href="#i-folder"/></svg></span>Save to Files</div>
+              <div class="app"><span class="ico more">•••</span>More</div>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>A3 · Hand-off</b>The file is downloaded and checked first. The iOS menu is the one step iOS forces, so a callout says which icon to tap.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:43</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:40px">
+              <h3 class="left">Installing on your watch</h3>
+              <p class="lede left">Keep your watch close and charged. It restarts on its own when the install is done.</p>
+              <div class="track" style="margin-top:22px">
+                <div class="tstep"><span class="num done"><svg class="ic"><use href="#i-check"/></svg></span><div class="tx"><b>Downloaded and checked</b><span>v4.41.0-678 · 3.5 MB</span></div></div>
+                <div class="tstep"><span class="num now">2</span><div class="tx"><b>Installing in the Pebble app</b><span>Its Watches tab shows “Updating to PebbleOS” with a progress bar.</span><div class="wait">Waiting for your watch to restart</div></div></div>
+                <div class="tstep todo"><span class="num todo">3</span><div class="tx"><b>Allow this phone</b><span>Your watch asks once.</span></div></div>
+              </div>
+              <div class="card" style="margin-top:12px">
+                <div class="cardhead">Pebble app not updating?</div>
+                <div class="foot13" style="margin-top:3px; color:var(--tertiary)">Open it, wait for your watch to say Connected, then send the file again.</div>
+                <div style="margin-top:10px"><button class="btn-bordered"><svg class="ic"><use href="#i-redo"/></svg>Send to Pebble Again</button></div>
+              </div>
+            </div>
+            <div class="bottom"><button class="btn-plain">Cancel</button></div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>A4 · Waiting</b>The app can’t see the Pebble app’s progress, so it says where to look. It watches for the restarted watch instead, and moves on by itself when the watch reports the audio service.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:49</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid">
+              <div class="wm" style="margin-bottom:22px"><div class="strap t"></div><div class="bez"><div class="scr"><b>PEBBLE AUDIO</b><p>Allow this phone to receive audio?</p><div class="opts">Allow ›<span>Don’t Allow ›</span></div></div></div><div class="strap b"></div></div>
+              <h3>Confirm on your watch</h3>
+              <p class="lede"><span style="color:var(--good); font-weight:600">Firmware installed.</span> Press Allow on your Pebble to finish.</p>
+            </div>
+            <div class="bottom"><button class="btn-plain">Cancel</button></div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>A5 · Back on track</b>The existing on-watch prompt, with one line confirming the install worked. From here setup is unchanged.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar"><span></span><span class="ttl">About This Firmware</span><span class="trail" style="color:var(--tint); font-weight:600">Done</span></div>
+              <div class="body">
+                <div class="lc kv">
+                  <div class="r"><span class="k">Version</span><span class="v">v4.41.0-678</span></div>
+                  <div class="r"><span class="k">For</span><span class="v">Pebble Time 2</span></div>
+                  <div class="r"><span class="k">Published</span><span class="v">October 28, 2026</span></div>
+                  <div class="r"><span class="k">Size</span><span class="v">3.5 MB</span></div>
+                </div>
+                <div class="sec">What it adds</div>
+                <div class="card"><p class="para" style="margin:0">A Bluetooth service that sends your watch’s microphone to this app, and the watch side of Pebble Audio: Quiet Time, timers, and actions. Everything else is the PebbleOS the Pebble app installs.</p></div>
+                <div class="sec">Where it comes from</div>
+                <div class="card"><p class="para" style="margin:0">Built from the open PebbleOS source and published on GitHub. Pebble Audio checks the file against its published fingerprint before sending it.</p><div class="linkline" style="text-align:left; margin-top:8px">View Source and Release Notes</div></div>
+                <div class="sec">Official updates</div>
+                <div class="card"><p class="para" style="margin:0">The Pebble app still offers official PebbleOS updates. Installing one replaces this firmware, and Pebble Audio offers to install it again.</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="sb light"><span>9:41</span><svg><use href="#i-sb"/></svg></div><div class="island"></div><div class="home"></div>
+        </div>
+        <figcaption><b>A6 · About this firmware</b>The detail for anyone who wants it. Every line is something we can back.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="presenting"><div class="behind"></div>
+            <div class="sheet">
+              <div class="grabber"></div>
+              <div class="sbar"><span></span><span class="ttl">Install It Yourself</span><span class="trail" style="color:var(--tint); font-weight:600">Done</span></div>
+              <div class="body">
+                <div class="lc stepsN">
+                  <div class="r"><span class="n">1</span><div class="grow"><div class="t">Get the firmware file</div><div class="sub">One .pbz for Pebble Time 2.</div><div style="display:flex; gap:8px; margin-top:10px"><button class="btn-sm"><svg class="ic"><use href="#i-folder"/></svg>Save to Files</button><button class="btn-sm"><svg class="ic"><use href="#i-open"/></svg>GitHub</button></div></div></div>
+                  <div class="r"><span class="n">2</span><div class="grow"><div class="t">Open it in the Pebble app</div><div class="sub">In Files, share the .pbz to Pebble. Or turn on Show debug options and use Firmware Update Debug → Sideload FW.</div></div></div>
+                  <div class="r"><span class="n">3</span><div class="grow"><div class="t">Let it finish</div><div class="sub">Keep the watch charged and nearby. It restarts into the new build.</div></div></div>
+                  <div class="r"><span class="n">4</span><div class="grow"><div class="t">Come back and connect</div><div class="sub">The watch asks you to allow this phone once.</div></div></div>
+                </div>
+                <p class="foot13" style="padding:0 4px">The Pebble app installs the firmware. Pebble Audio never changes the Pebble app or its data.</p>
+              </div>
+            </div>
+          </div>
+          <div class="sb light"><span>9:41</span><svg><use href="#i-sb"/></svg></div><div class="island"></div><div class="home"></div>
+        </div>
+        <figcaption><b>A7 · Install it yourself</b>The existing guide, with the file one tap away (Save to Files) instead of a GitHub page to navigate.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ B ═══════════════════════════ -->
+  <section class="dir" id="b">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">B</span><h2>Setup checklist</h2></div>
+      <p>The design plan’s “requirements check”: after Connect, one screen lists everything setup needs, each with its state. The firmware is one row, and the bottom button is always the next thing to do.</p>
+    </div>
+    <div class="frames">
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:41</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:40px">
+              <h3 class="left">Set up Pebble Audio</h3>
+              <p class="lede left">Three things, in order.</p>
+              <div class="lc chk2" style="margin-top:20px">
+                <div class="r"><span class="state ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Pebble Time 2 found</div><div class="sub">Pebble A539, connected to the Pebble app</div></div></div>
+                <div class="r"><span class="state need">!</span><div class="grow"><div class="t semi">Audio firmware</div><div class="sub">Not installed. Your watch needs it to send audio.</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
+                <div class="r"><span class="state later"></span><div class="grow"><div class="t" style="color:var(--tertiary)">Allow this phone</div><div class="sub">On your watch, after the firmware.</div></div></div>
+              </div>
+              <p class="foot13" style="padding:10px 4px 0">The firmware is open source and installed by the Pebble app. The microphone stays off until you allow it on your watch.</p>
+            </div>
+            <div class="bottom">
+              <button class="btn-primary">Install Audio Firmware</button>
+              <button class="btn-plain">Install It Myself</button>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>B1 · Checklist</b>Shows the whole shape of setup at once. The reassurance shrinks to a footnote, because the list does most of the talking.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:43</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:40px">
+              <h3 class="left">Set up Pebble Audio</h3>
+              <p class="lede left">Keep your watch close while it installs.</p>
+              <div class="lc chk2" style="margin-top:20px">
+                <div class="r"><span class="state ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Pebble Time 2 found</div><div class="sub">Pebble A539, connected to the Pebble app</div></div></div>
+                <div class="r"><span class="state now"></span><div class="grow"><div class="t semi">Installing audio firmware</div><div class="sub">Follow it in the Pebble app’s Watches tab.</div><div class="wait">Waiting for your watch to restart</div></div></div>
+                <div class="r"><span class="state later"></span><div class="grow"><div class="t" style="color:var(--tertiary)">Allow this phone</div><div class="sub">On your watch, after the firmware.</div></div></div>
+              </div>
+            </div>
+            <div class="bottom">
+              <button class="btn-bordered" style="min-height:50px">Send to Pebble Again</button>
+              <button class="btn-plain">Cancel</button>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>B2 · Installing</b>The same row turns into progress. Sending again moves to the bottom, where the primary action was.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:49</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:40px">
+              <h3 class="left">Set up Pebble Audio</h3>
+              <p class="lede left">Last step, on your watch.</p>
+              <div class="lc chk2" style="margin-top:20px">
+                <div class="r"><span class="state ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Pebble Time 2 found</div><div class="sub">Pebble A539</div></div></div>
+                <div class="r"><span class="state ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="grow"><div class="t">Audio firmware</div><div class="sub">v4.41.0-678</div></div></div>
+                <div class="r"><span class="state now"></span><div class="grow"><div class="t semi">Allow this phone</div><div class="sub">Press Allow on your Pebble.</div></div></div>
+              </div>
+            </div>
+            <div class="bottom"><button class="btn-plain">Cancel</button></div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>B3 · Allow</b>The checklist replaces the watch illustration of today’s confirm step.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ C ═══════════════════════════ -->
+  <section class="dir" id="c">
+    <div class="dir-head">
+      <div class="tag"><span class="letter">C</span><h2>Explain first</h2></div>
+      <p>Firmware becomes a numbered first step that everyone passes through. It explains before anything happens, then checks the watch. A watch that already has the firmware skips straight past it.</p>
+    </div>
+    <div class="frames">
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:41</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:32px">
+              <div class="stepkick">Step 1 of 3</div>
+              <h3>Your watch needs audio</h3>
+              <p class="lede">Stock PebbleOS can’t send its microphone to a phone. Pebble Audio adds that with its own firmware build.</p>
+              <div class="sec" style="margin-top:22px">What changes</div>
+              <div class="card" style="margin-top:12px"><p class="para" style="margin:0">Your watch gets a Bluetooth service for its microphone. Everything else stays PebbleOS, and the Pebble app keeps working as it does today.</p></div>
+              <div class="sec" style="margin-top:6px">Is it safe</div>
+              <div class="card" style="margin-top:12px"><p class="para" style="margin:0">It’s open source and installed by the Pebble app. If the transfer stops, the watch keeps the firmware it has. Nothing records until you allow it on the watch.</p></div>
+            </div>
+            <div class="bottom">
+              <button class="btn-primary">Check My Watch</button>
+              <button class="btn-plain">Install It Myself</button>
+            </div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>C1 · Explain</b>Everyone reads why before anything happens, including people whose watch is already set up.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="phone">
+          <div class="island"></div><div class="sb"><span>9:43</span><svg><use href="#i-sb"/></svg></div>
+          <div class="ob">
+            <div class="mid top" style="padding-top:32px">
+              <div class="stepkick">Step 1 of 3</div>
+              <h3>Installing</h3>
+              <div style="margin:26px auto 10px; width:170px; height:170px; border-radius:50%; background: conic-gradient(var(--tint) 0 64%, var(--track) 64% 100%); display:flex; align-items:center; justify-content:center"><div style="width:146px; height:146px; border-radius:50%; background:var(--ground); display:flex; flex-direction:column; align-items:center; justify-content:center"><svg class="ic" style="width:44px;height:44px;color:var(--tint)"><use href="#i-watch"/></svg><span class="foot13" style="margin-top:6px">In the Pebble app</span></div></div>
+              <p class="lede">Keep your watch close. It restarts when it’s done, and setup continues here.</p>
+            </div>
+            <div class="bottom"><button class="btn-bordered" style="min-height:50px">Send to Pebble Again</button><button class="btn-plain">Cancel</button></div>
+          </div>
+          <div class="home"></div>
+        </div>
+        <figcaption><b>C2 · Installing</b>A big progress ring the app can’t honestly fill: the Pebble app never reports its percentage back to us.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="dir" id="eval">
+    <div class="dir-head"><div class="tag"><span class="letter">✓</span><h2>Review</h2></div></div>
+    <div class="eval">
+      <div class="pro"><b>A · Found, then fixed (chosen)</b><ul><li>Nobody whose watch is ready sees any of it. The install appears only after the app has found the watch and seen what it lacks.</li><li>One screen carries why, trust, and the action, and the button is the visual primary.</li><li>The tracker is honest: it marks what the app knows and points to the Pebble app for what only it knows.</li><li>Re-sending is right where the silent no-op would leave someone stuck.</li></ul></div>
+      <div class="con"><b>B · Checklist</b><ul><li>Shows setup’s whole shape, but “Pebble Time 2 found” is a row about nothing to do.</li><li>The trust story shrinks to a footnote, the opposite of what the request asked for.</li><li>Replaces the confirm step’s watch illustration, which is the clearest cue for pressing Allow.</li></ul></div>
+      <div class="con"><b>C · Explain first</b><ul><li>Costs every user a screen to serve the stock-firmware case, and asks people to read before the app knows whether it applies.</li><li>The progress ring implies a percentage the app can’t see. That’s a false claim.</li><li>“Step 1 of 3” before the watch is even found reads as a longer setup than it is.</li></ul></div>
+      <div class="pro" style="grid-column: 1 / -1"><b>Changed while building A (see built-before-after.png)</b><ul><li>A2 says “Your Pebble,” never “Your Pebble Time 2”: nothing readable before the install names the model. “Built for Pebble Time 2 · version · size” sits under the reasons instead.</li><li>A3’s callout can’t be drawn over the iOS menu. The screen’s own title and line become “Choose Pebble” while the menu is up, and stay visible above it.</li><li>Back is a “‹ Connect” bar at the top rather than a Cancel under the buttons, so the offer keeps two actions.</li><li>A6’s “offers to install it again” is made true: a watch that answers without the service now says “Your Pebble needs the audio firmware” on Today, with Install Firmware, and Settings → Watch has the same row.</li><li>A5’s green text became a green check beside full-contrast text.</li></ul></div>
+      <div class="pro"><b>Taken into A from the others</b><ul><li>From B: a short “Firmware installed.” line where the existing confirm step picks up, so the jump back is clear.</li><li>From C: “What it adds” stated plainly (in A6), so the open-source claim has substance behind it.</li></ul></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

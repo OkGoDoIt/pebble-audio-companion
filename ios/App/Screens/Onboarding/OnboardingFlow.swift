@@ -20,6 +20,9 @@ struct OnboardingFlow: View {
             case .confirm:
                 OnboardingConfirmView(model: model)
                     .transition(Motion.transition(stepTransition))
+            case .firmware:
+                OnboardingFirmwareView(model: model)
+                    .transition(Motion.transition(stepTransition))
             case .transcripts:
                 OnboardingProcessingView(model: model)
                     .transition(Motion.transition(stepTransition))
@@ -51,7 +54,6 @@ struct OnboardingFlow: View {
 
 private struct OnboardingConnectView: View {
     let model: OnboardingViewModel
-    @State private var showFirmwareGuide = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,40 +82,52 @@ private struct OnboardingConnectView: View {
                 }
                 .buttonStyle(.primaryFilled)
 
-                firmwareFootnote
+                // The one hard prerequisite, said before anyone invests in setup — and no
+                // longer a dead end: setup itself installs the firmware when the watch needs it
+                // (the firmware step), so there is nothing here to tap.
+                Text(Copy.Onboarding.connectFootnote)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
-        .sheet(isPresented: $showFirmwareGuide) { FirmwareSetupGuideSheet() }
     }
+}
 
-    /// "Requires the custom audio firmware." has always been true and has never been actionable
-    /// — the one hard prerequisite of the whole product, stated as a dead end. The sentence is
-    /// unchanged; the tinted half after it is the way out, and the whole line is the tap target
-    /// so it does not become a second line on the screen.
-    private var firmwareFootnote: some View {
-        Button {
-            showFirmwareGuide = true
-        } label: {
-            // Two runs in one label, by interpolating styled `Text` — the `+` operator on
-            // `Text` is deprecated in iOS 26.
-            Text(
-                "\(Text(Copy.Onboarding.connectFootnote).foregroundStyle(Tokens.meta)) \(Text(Copy.FirmwareGuidance.howToInstall).foregroundStyle(Tokens.tint))"
-            )
-                .font(AppFont.footnote)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                // 13pt of text is not a tap target; the padding is.
-                .padding(.vertical, 6)
-                .padding(.horizontal, 12)
-                .contentShape(Rectangle())
+// MARK: - Firmware (direction A of docs/mockups/firmware-onboarding)
+
+/// The watch answered without the audio service. The install, then a quiet check for the watch
+/// every so often until it comes back offering it — at which point the flow moves on to the
+/// on-watch prompt by itself.
+private struct OnboardingFirmwareView: View {
+    let model: OnboardingViewModel
+    @State private var install = FirmwareInstallModel()
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Often enough that coming back from the Pebble app feels immediate (the first check runs
+    /// the moment the app is in front again), rare enough that a watch mid-install is not
+    /// pestered. Nothing runs while the app is in the background.
+    private static let checkInterval: Duration = .seconds(15)
+
+    var body: some View {
+        VStack(spacing: 0) {
+            OnboardingBackBar(label: Copy.Onboarding.firmwareBack) {
+                model.cancelPairing()
+            }
+            FirmwareInstallView(model: install)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            "\(Copy.Onboarding.connectFootnote) \(Copy.FirmwareGuidance.howToInstall)"
-        )
-        .accessibilityAddTraits(.isButton)
+        .task(id: install.hasSent && scenePhase == .active) {
+            guard install.hasSent, scenePhase == .active else { return }
+            while !Task.isCancelled {
+                model.checkForAudioFirmware()
+                try? await Task.sleep(for: Self.checkInterval)
+            }
+        }
     }
 }
 
@@ -202,7 +216,22 @@ private struct OnboardingConfirmView: View {
                 .font(AppFont.screenTitle)
                 .foregroundStyle(Tokens.label)
                 .multilineTextAlignment(.center)
-            waitingLine(Copy.Status.confirmOnWatchLine)
+            VStack(spacing: 8) {
+                // Arriving from the firmware step: say the install worked, so "Installing"
+                // turning into "Confirm" reads as the next step rather than a different flow.
+                if model.firmwareJustInstalled {
+                    // The check carries the green; the words stay at full contrast.
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Tokens.good)
+                            .accessibilityHidden(true)
+                        Text(Copy.FirmwareInstall.installed)
+                            .foregroundStyle(Tokens.label)
+                    }
+                    .font(AppFont.cardHead)
+                }
+                waitingLine(Copy.Status.confirmOnWatchLine)
+            }
         }
         .padding(.horizontal, 32)
     }

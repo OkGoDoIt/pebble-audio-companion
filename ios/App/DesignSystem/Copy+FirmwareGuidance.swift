@@ -78,11 +78,14 @@ extension Copy {
         static let releaseLinkTitle = "Get the latest build"
         static let releaseUnavailable = "Builds are not published yet."
 
+        /// The guide opened from the install flow's "Install It Myself", where step 1's file is
+        /// already downloaded and checked.
+        static let installYourselfTitle = "Install It Yourself"
+        static let saveToFiles = "Save to Files"
+        static let gitHub = "GitHub"
+
         // ─── Ways in ─────────────────────────────────────────────────────────
 
-        /// Tacked onto the connect screen's existing "Requires the custom audio firmware."
-        /// so the statement finally has a next step, without adding a second line to the screen.
-        static let howToInstall = "How to install it"
 
         /// Offered under the "No Pebble found" branch. A watch on stock firmware is invisible to
         /// this app in exactly the same way as a watch that is out of range, so the two are worth

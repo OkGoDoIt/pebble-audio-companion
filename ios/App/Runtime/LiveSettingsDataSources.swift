@@ -214,6 +214,7 @@ final class LiveWatchStatusSource: WatchStatusSource {
     private(set) var firmwareRevision: String?
     private(set) var watchReports = watchServiceStateLabel(nil)
     private(set) var isConnected = false
+    private(set) var needsAudioFirmware = false
 
     init(composition: AppComposition) {
         self.composition = composition
@@ -230,6 +231,9 @@ final class LiveWatchStatusSource: WatchStatusSource {
                     isConnected = true
                 default:
                     isConnected = false
+                }
+                if let needs = Self.needsAudioFirmware(state), needs != needsAudioFirmware {
+                    needsAudioFirmware = needs
                 }
             }
         }
@@ -318,6 +322,21 @@ final class LiveWatchStatusSource: WatchStatusSource {
         let minor = (packed >> 16) & 0xFF
         let patch = packed & 0xFFFF
         return patch == 0 ? "v\(major).\(minor)" : "v\(major).\(minor).\(patch)"
+    }
+
+    /// What a receiver state says about the audio firmware: true when the watch answered
+    /// without the service, false once a connection has got past discovery (only a watch
+    /// offering the service can be authorizing or asking), nil when the state says nothing —
+    /// a watch out of range is no evidence either way.
+    static func needsAudioFirmware(_ state: ReceiverSessionState) -> Bool? {
+        switch state {
+        case .connectionFailed(kind: .audioServiceMissing, _):
+            return true
+        case .authorizing, .pendingConsent, .pendingEnable, .authorized, .streaming:
+            return false
+        case .disconnected, .connecting, .connectionFailed, .denied, .revoked:
+            return nil
+        }
     }
 }
 

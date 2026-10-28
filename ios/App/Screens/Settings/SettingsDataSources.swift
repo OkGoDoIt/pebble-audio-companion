@@ -60,6 +60,9 @@ protocol WatchStatusSource: AnyObject {
     /// The watch's own reported state — approved vocabulary ("Recording", "Paused", …).
     var watchReports: String { get }
     var isConnected: Bool { get }
+    /// The watch answered without the audio service (an official update replaced the audio
+    /// firmware, or it never had it). Stays true until a connection gets past that point.
+    var needsAudioFirmware: Bool { get }
     /// Attempts a connection. NO capture side effects (anti-B3).
     func findWatch()
     /// Drops the receiver binding so the next connection re-consents on the watch.
@@ -75,6 +78,8 @@ final class MockWatchStatusSource: WatchStatusSource {
     var firmwareRevision: String? = "v4.36.0-12-g1a2b3c4d5"
     var watchReports = Copy.Status.recording
     var isConnected = true
+    /// `-demo.needsFirmware` stages a watch whose audio firmware was replaced.
+    var needsAudioFirmware = ProcessInfo.processInfo.arguments.contains("-demo.needsFirmware")
 
     func findWatch() {}
     func forget() { isConnected = false }

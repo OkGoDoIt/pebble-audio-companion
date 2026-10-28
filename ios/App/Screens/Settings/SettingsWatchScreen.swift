@@ -28,6 +28,8 @@ struct SettingsWatchScreen: View {
     @State private var showNoOpenerAlert = false
     /// The result of the last hand-off from this screen. Cleared by the next tap.
     @State private var handoffNote: String?
+    /// The watch answered without the audio service: the same install onboarding runs.
+    @State private var showFirmwareInstall = false
 
     var body: some View {
         SettingsScroll {
@@ -83,6 +85,7 @@ struct SettingsWatchScreen: View {
             updateAwaitingDownload = false
             if download.verifiedFile != nil { confirmUpdate = true }
         }
+        .sheet(isPresented: $showFirmwareInstall) { FirmwareInstallSheet() }
         .alert(Copy.Firmware.noOpenerTitle, isPresented: $showNoOpenerAlert) {
             Button(Copy.Common.done, role: .cancel) {}
         } message: {
@@ -177,7 +180,14 @@ struct SettingsWatchScreen: View {
                     showsChevron: false
                 )
             }
-            if let update = offeredUpdate {
+            if watch.needsAudioFirmware {
+                TintActionRow(
+                    title: Copy.FirmwareInstall.install,
+                    subtitle: Copy.FirmwareInstall.settingsRowLine
+                ) {
+                    showFirmwareInstall = true
+                }
+            } else if let update = offeredUpdate {
                 TintActionRow(
                     title: Copy.Firmware.updateWatch,
                     subtitle: updateSubtitle(update),

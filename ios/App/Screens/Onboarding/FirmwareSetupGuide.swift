@@ -24,6 +24,9 @@ struct FirmwareSetupGuide: View {
     /// screen backed by the release feed passes the `.pbz` itself. Nil renders a sentence saying
     /// nothing is published rather than a link that goes nowhere.
     var releaseURL: URL? = Guide.releaseURL
+    /// The install flow this guide was opened from, when there is one: its verified download is
+    /// the file step 1 asks for, one tap away instead of a GitHub page to navigate.
+    var install: FirmwareInstallModel? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -49,10 +52,39 @@ struct FirmwareSetupGuide: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// A real link once there is one; the honest sentence until then.
+    /// A real link once there is one; the honest sentence until then. With an install flow
+    /// behind it, the file itself comes first.
     @ViewBuilder
     private var releaseAffordance: some View {
-        if let releaseURL {
+        if let install, install.release != nil {
+            HStack(spacing: 8) {
+                Button {
+                    install.saveToFiles()
+                } label: {
+                    if install.firmware.download.isBusy {
+                        Label(Copy.Firmware.downloadingUpdate, systemImage: "arrow.down.circle")
+                    } else {
+                        Label(Guide.saveToFiles, systemImage: "folder")
+                    }
+                }
+                .buttonStyle(.smallBordered)
+                .disabled(install.firmware.download.isBusy)
+                if let releaseURL {
+                    Link(destination: releaseURL) {
+                        Label(Guide.gitHub, systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.smallBordered)
+                }
+            }
+            .padding(.top, 8)
+            if install.savedToFiles {
+                Label(Copy.Firmware.savedToFiles, systemImage: "checkmark.circle.fill")
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.tertiary)
+                    .labelStyle(SavedLabelStyle())
+                    .padding(.top, 6)
+            }
+        } else if let releaseURL {
             Link(Guide.releaseLinkTitle, destination: releaseURL)
                 .font(AppFont.footnote)
                 .foregroundStyle(Tokens.tint)
@@ -72,6 +104,16 @@ struct FirmwareSetupGuide: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The saved line: a green check, then the sentence.
+private struct SavedLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon.foregroundStyle(Tokens.good)
+            configuration.title
+        }
     }
 }
 
@@ -127,18 +169,20 @@ private struct StepRow<Accessory: View>: View {
 
 /// The guide as a sheet, for the two places in onboarding that raise it.
 struct FirmwareSetupGuideSheet: View {
+    /// The install flow that opened this, if any — see `FirmwareSetupGuide.install`.
+    var install: FirmwareInstallModel? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitleRow(title: Guide.title) {
+                SheetTitleRow(title: install == nil ? Guide.title : Guide.installYourselfTitle) {
                     Button(Copy.Common.done) { dismiss() }
                         .font(AppFont.headline)
                         .foregroundStyle(Tokens.tint)
                         .buttonStyle(.plain)
                 }
-                FirmwareSetupGuide()
+                FirmwareSetupGuide(install: install)
             }
             .padding(.horizontal, Tokens.screenMargin)
             .padding(.top, 20)
@@ -146,6 +190,27 @@ struct FirmwareSetupGuideSheet: View {
         }
         .background(Tokens.ground)
         .presentationDetents([.medium, .large])
+        .modifier(GuideFilesExport(install: install))
+    }
+}
+
+/// Save to Files, presented from the guide itself so the exporter sits on top of it.
+private struct GuideFilesExport: ViewModifier {
+    let install: FirmwareInstallModel?
+
+    func body(content: Content) -> some View {
+        if let install {
+            @Bindable var install = install
+            content
+                .firmwareFilesExport(
+                    isPresented: $install.showFilesExport,
+                    fileURL: install.firmware.download.verifiedFile
+                ) { outcome in
+                    install.handle(outcome)
+                }
+        } else {
+            content
+        }
     }
 }
 

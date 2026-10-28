@@ -16,6 +16,9 @@ struct TodayScreen: View {
     @State private var openSwipeRow: String?
     /// What waits for review and what today added, for the Reminders section's top rows.
     @State private var reminderDigest = ReminderDigestModel()
+    /// The status card's Install Firmware: the install opens here, over Today, rather than
+    /// sending someone to Settings to find it.
+    @State private var showFirmwareInstall = false
 
     var body: some View {
         ScrollView {
@@ -47,6 +50,7 @@ struct TodayScreen: View {
         .navigationDestination(for: Route.self) { route in
             destination(for: route)
         }
+        .sheet(isPresented: $showFirmwareInstall) { FirmwareInstallSheet() }
         // Its snackbars post to `UndoCenter.shared`, which `RootView` hosts once for the
         // whole app — a second host here would stack one snackbar on top of the other.
         .task { await viewModel.observe() }
@@ -134,7 +138,11 @@ struct TodayScreen: View {
                         case .stop: Haptics.captureEnded()
                         default: break
                         }
-                        viewModel.perform(action)
+                        if action == .installFirmware {
+                            showFirmwareInstall = true
+                        } else {
+                            viewModel.perform(action)
+                        }
                     }
                 }
             )

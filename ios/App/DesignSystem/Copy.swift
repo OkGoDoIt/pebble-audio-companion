@@ -158,7 +158,12 @@ enum Copy {
         static let connectBody =
             "Your watch records in the background and streams to this phone."
         static let connectButton = "Connect Watch"
-        static let connectFootnote = "Requires the custom audio firmware."
+        /// The prerequisite, and that setup takes care of it: the firmware step installs it when
+        /// the watch turns out not to have it.
+        static let connectFootnote =
+            "Works with Pebble Time 2. Setup installs the audio firmware if your watch needs it."
+        /// The firmware step's back bar names the step it returns to (B15).
+        static let firmwareBack = "Connect"
 
         static let confirmTitle = "Confirm on your watch"
         static let waiting = "Waiting for your Pebble…"

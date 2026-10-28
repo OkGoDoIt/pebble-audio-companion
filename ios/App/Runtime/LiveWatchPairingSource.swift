@@ -149,10 +149,14 @@ final class LiveWatchPairingSource: WatchPairingSource {
             // The ATT server refused a handle — in practice a stale iOS GATT cache after a
             // firmware update. Retrying the same handles never clears it.
             return .needsReconnect
-        case .unknown:
-            // `.unknown` is only produced by the two discovery guards — the audio-companion
-            // service or its characteristics were not on the watch — i.e. the wrong firmware.
+        case .audioServiceMissing:
+            // The watch answered, without the audio service: the wrong firmware. Onboarding
+            // turns this into its firmware step rather than a card.
             return .cantSendAudio
+        case .unknown:
+            // An unclassified platform error mid-connection. Not evidence about the firmware
+            // (that has its own kind now), so the honest ask is the retry one.
+            return .noPebbleFound
         }
     }
 
