@@ -1422,6 +1422,7 @@ final class AppComposition {
         MuseComposition.startPushToTalk()
         RemindersComposition.start()
         installTelemetry()
+        installSonioxLevelTest()
 
         // The device conditions the catch-up policy judges on. Pushed into the shared foreground
         // state (which the pass closures already read synchronously) and the pipeline woken on
