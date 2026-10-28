@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pebble Audio</title>
+<style>
+:root { color-scheme: light dark; --bg: #f2f2f7; --card: #fff; --ink: #1c1c1e; --muted: #6c6c70; --line: #d8d8de; --field: #f2f2f7; --accent: #5b5bd6; --on-accent: #fff; --bad: #c4302b; --good: #248a3d; font: 16px/1.4 -apple-system, system-ui, sans-serif; }
+@media (prefers-color-scheme: dark) { :root { --bg: #000; --card: #1c1c1e; --ink: #f2f2f7; --muted: #a1a1a6; --line: #38383a; --field: #2c2c2e; --accent: #7d7aff; --bad: #ff6961; --good: #30d158; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 20px 16px 32px; background: var(--bg); color: var(--ink); }
+main { max-width: 520px; margin: 0 auto; }
+h1 { font-size: 28px; line-height: 1.15; margin: 0 0 4px; }
+.lede { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--card); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.state { display: flex; gap: 12px; align-items: flex-start; }
+.dot { flex: 0 0 10px; height: 10px; border-radius: 5px; margin-top: 7px; background: var(--muted); }
+.dot.on { background: var(--good); }
+.h { font-weight: 600; margin: 0; }
+.line { color: var(--muted); margin: 2px 0 0; overflow-wrap: anywhere; }
+label { font-size: 13px; font-weight: 600; color: var(--muted); }
+input { width: 100%; min-height: 48px; padding: 10px 12px; border: 0; border-radius: 10px; background: var(--field); color: var(--ink); font: 600 20px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+button, .link { font: inherit; font-weight: 600; min-height: 46px; border-radius: 12px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.primary { width: 100%; border: 0; background: var(--accent); color: var(--on-accent); }
+.quiet { align-self: flex-start; border: 0; background: transparent; color: var(--accent); padding: 0; min-height: 44px; }
+.link { align-self: flex-start; min-height: 44px; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+.error { color: var(--bad); margin: 0; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+<h1>Pebble Audio</h1>
+<p class="lede">Your recording status and today's conversations, on your watch.</p>
+
+<p id="starting" class="line" role="status">Starting…</p>
+
+<section id="signedOut" class="card" hidden>
+  <div class="state">
+    <span class="dot" aria-hidden="true"></span>
+    <div>
+      <p class="h">Not connected</p>
+      <p class="line">On your Pebble Audio server, open Connect an app › Pebble plugin and show a code.</p>
+    </div>
+  </div>
+  <a class="link" href="https://pebbleaudio.okgodoit.com/connect/pebble-plugin" target="_blank" rel="noopener">Show a Code</a>
+  <form id="form">
+    <label for="code">Code</label>
+    <input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="80" placeholder="K7QM-3XWD" required>
+  </form>
+  <p id="error" class="error" role="alert" hidden></p>
+  <button id="connect" class="primary" type="submit" form="form">Connect</button>
+</section>
+
+<section id="signedIn" class="card" hidden>
+  <div class="state">
+    <span class="dot on" aria-hidden="true"></span>
+    <div>
+      <p class="h">Connected</p>
+      <p id="line" class="line"></p>
+    </div>
+  </div>
+  <button id="disconnect" class="quiet" type="button">Disconnect</button>
+</section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let busy = false;
+
+async function send(message) {
+  const reply = await Pebble.sendMessage('plugin', message);
+  return reply || {};
+}
+
+function render(state) {
+  $('starting').hidden = true;
+  $('signedOut').hidden = !!state.connected;
+  $('signedIn').hidden = !state.connected;
+  $('line').textContent = state.line || '';
+  $('error').textContent = state.error || '';
+  $('error').hidden = !state.error;
+  if (state.connected) $('code').value = '';
+}
+
+async function run(work) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+  try {
+    render(await work());
+  } catch (e) {
+    render({ connected: false, error: 'Couldn\'t reach the plugin. Close settings and open them again.' });
+  } finally {
+    busy = false;
+    document.querySelectorAll('button, input').forEach((el) => { el.disabled = false; });
+  }
+}
+
+$('form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  run(() => send({ type: 'connect', code: $('code').value }));
+});
+$('disconnect').addEventListener('click', () => run(() => send({ type: 'disconnect' })));
+
+Pebble.addEventListener('ready', (event) => {
+  if (event && event.target && event.target !== 'plugin') return;
+  run(() => send({ type: 'status' }));
+});
+</script>
+</body>
+</html>

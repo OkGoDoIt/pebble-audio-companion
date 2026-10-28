@@ -1,0 +1,18 @@
+# The Pebble SDK's build rules for a plugin-only project: a pbw holding the plugin's script and its
+# settings page, and nothing to install on the watch. Released pebble-tool cannot build these yet;
+# until it can, tools/pack-pbw.py packages the same pbw without the SDK.
+top = '.'
+out = 'build'
+
+
+def options(ctx):
+    ctx.load('pebble_sdk')
+
+
+def configure(ctx):
+    ctx.load('pebble_sdk')
+
+
+def build(ctx):
+    ctx.load('pebble_sdk')
+    ctx.pbl_bundle(binaries=[])

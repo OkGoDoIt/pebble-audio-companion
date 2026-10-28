@@ -1,0 +1,115 @@
+{
+  "name": "pebble-audio",
+  "author": "OkGoDoIt",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "pack": "python3 tools/pack-pbw.py ."
+  },
+  "pebble": {
+    "displayName": "Pebble Audio",
+    "uuid": "dd26acba-10b0-4424-b196-afea043c2526",
+    "sdkVersion": "3",
+    "projectType": "plugin",
+    "configPage": "src/config.html",
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "pebbleaudio.okgodoit.com"
+          ]
+        }
+      }
+    ],
+    "plugin": {
+      "description": "Pebble Audio at a glance: whether the watch is recording, its link and battery, today's recorded and lost minutes, and today's conversations, read from the user's Pebble Audio archive. audio/status has one instance, watch; audio/conversation has one instance, today. Connect it in settings.",
+      "script": "src/plugin/index.js",
+      "sources": [
+        {
+          "category": "audio",
+          "items": [
+            "status"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "recording": [
+              "boolean",
+              "shortText"
+            ],
+            "capture": [
+              "shortText"
+            ],
+            "link": [
+              "shortText"
+            ],
+            "last_audio": [
+              "timestamp",
+              "shortText"
+            ],
+            "watch_battery": [
+              "numericValue",
+              "shortText"
+            ],
+            "today_recorded": [
+              "numericValue",
+              "shortText"
+            ],
+            "today_lost": [
+              "numericValue",
+              "shortText"
+            ],
+            "storage_used": [
+              "numericValue",
+              "shortText"
+            ],
+            "stale": [
+              "boolean"
+            ]
+          },
+          "supportsMultiple": false,
+          "suggestedRefreshIntervalSec": 120
+        },
+        {
+          "category": "audio",
+          "items": [
+            "conversation"
+          ],
+          "properties": {
+            "name": [
+              "shortText"
+            ],
+            "conversations": [
+              "numericValue",
+              "shortText"
+            ],
+            "current_title": [
+              "shortText",
+              "longText"
+            ],
+            "current_started": [
+              "timestamp",
+              "shortText"
+            ],
+            "last_title": [
+              "shortText",
+              "longText"
+            ],
+            "last_started": [
+              "timestamp",
+              "shortText"
+            ],
+            "recap": [
+              "longText"
+            ]
+          },
+          "supportsMultiple": false,
+          "suggestedRefreshIntervalSec": 900
+        }
+      ]
+    }
+  }
+}
