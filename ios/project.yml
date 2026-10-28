@@ -75,6 +75,26 @@ targets:
               static let gitRevision = "$GIT_REV"
           }
           SWIFT
+    # Packs the Pebble Audio plugin from ../pebble-plugin straight into the built app's resources
+    # on every build that changes it, so Settings › Watch › Install in Pebble App always installs
+    # the plugin exactly as it is in the repo: nothing is committed, nothing is copied by hand.
+    # After the resources are copied and before signing (Xcode signs after every phase). The four
+    # inputs are everything pack-pbw.py reads, declared for ENABLE_USER_SCRIPT_SANDBOXING; a
+    # manifest that names another file fails this phase under the sandbox, loudly, until it is
+    # listed here too.
+    postBuildScripts:
+      - name: Bundle Pebble Plugin
+        inputFiles:
+          - $(SRCROOT)/../pebble-plugin/package.json
+          - $(SRCROOT)/../pebble-plugin/src/plugin/index.js
+          - $(SRCROOT)/../pebble-plugin/src/config.html
+          - $(SRCROOT)/../pebble-plugin/tools/pack-pbw.py
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/PebbleAudioPlugin.pbw
+        script: |
+          set -eu
+          /usr/bin/python3 -B "$SRCROOT/../pebble-plugin/tools/pack-pbw.py" \
+            "$SRCROOT/../pebble-plugin" --out "$SCRIPT_OUTPUT_FILE_0"
     settings:
       base:
         INFOPLIST_FILE: App/Info.plist
