@@ -281,6 +281,104 @@ public sealed partial class PluginTests(ArchiveServerFactory factory)
 		Assert.Contains("Pebble plugin is connected.", connected, StringComparison.Ordinal);
 	}
 
+	[Fact]
+	public async Task The_phone_shows_the_plugin_s_code_and_sees_it_connect()
+	{
+		var userId = await factory.CreateUserAsync();
+		using var phone = await Phone.LinkAsync(factory, userId);
+		using var http = factory.CreateClient();
+
+		// The phone's door only: no token, a personal token, or a phone without the protocol header get nothing.
+		foreach (var (method, path) in new[] { (HttpMethod.Post, "/sync/plugin-code"), (HttpMethod.Get, "/sync/plugin") })
+		{
+			Assert.Equal(HttpStatusCode.Unauthorized, (await http.SendAsync(new HttpRequestMessage(method, path))).StatusCode);
+			var withKey = new HttpRequestMessage(method, path);
+			withKey.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await TokenAsync(await factory.CreateUserAsync()));
+			withKey.Headers.Add(SyncProtocol.VersionHeader, "1");
+			Assert.Equal(HttpStatusCode.Unauthorized, (await http.SendAsync(withKey)).StatusCode);
+			var noHeader = new HttpRequestMessage(method, path);
+			noHeader.Headers.Authorization = new AuthenticationHeaderValue("Bearer", phone.Token);
+			Assert.Equal(HttpStatusCode.UpgradeRequired, (await http.SendAsync(noHeader)).StatusCode);
+		}
+
+		// Not connected yet.
+		var before = await phone.GetJsonAsync("/sync/plugin");
+		Assert.False(before.GetProperty("connected").GetBoolean());
+		Assert.Equal(JsonValueKind.Null, before.GetProperty("lastUsedAtMs").ValueKind);
+
+		// A code as it is typed, for ten minutes, never cached; a newer one ends it.
+		var first = await CodeAsync(phone);
+		var minted = await phone.SendAsync(HttpMethod.Post, "/sync/plugin-code");
+		Assert.Equal(HttpStatusCode.Created, minted.StatusCode);
+		Assert.True(minted.Headers.CacheControl?.NoStore);
+		var answer = JsonDocument.Parse(await minted.Content.ReadAsStringAsync()).RootElement;
+		var code = answer.GetProperty("code").GetString()!;
+		Assert.Matches("^[A-Z2-9]{4}-[A-Z2-9]{4}$", code);
+		Assert.InRange(
+			answer.GetProperty("expiresAtMs").GetInt64() - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			(long)SyncProtocol.LinkCodeLifetime.TotalMilliseconds - 60_000,
+			(long)SyncProtocol.LinkCodeLifetime.TotalMilliseconds);
+		Assert.NotEqual(first, code);
+
+		using var plugin = factory.CreateClient();
+		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = first }))).StatusCode);
+		// A plugin code never links a phone, and a phone's code never connects the plugin.
+		Assert.Equal(HttpStatusCode.Conflict, (await plugin.SendAsync(Phone.LinkRequest(code))).StatusCode);
+		string phoneCode;
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			phoneCode = (await scope.ServiceProvider.GetRequiredService<PhoneLinkService>().MintAsync(userId, CancellationToken.None)).Code;
+		}
+
+		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = phoneCode }))).StatusCode);
+
+		// Typed the way a person might, it is exchanged once for a read-only token named for the plugin.
+		var linked = await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = code.ToLowerInvariant() }));
+		Assert.Equal(HttpStatusCode.Created, linked.StatusCode);
+		var token = JsonDocument.Parse(await linked.Content.ReadAsStringAsync()).RootElement.GetProperty("token").GetString()!;
+		Assert.StartsWith(ApiTokenService.Prefix, token);
+		Assert.Equal(HttpStatusCode.Conflict, (await plugin.PostAsync("/plugin/link", Phone.Json(new JsonObject { ["code"] = code }))).StatusCode);
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			var made = Assert.Single(await scope.ServiceProvider.GetRequiredService<ApiTokenService>().ListAsync(userId, CancellationToken.None));
+			Assert.Equal((PluginLinkService.TokenName, TokenAccess.Read), (made.Name, made.Access));
+		}
+
+		// Connected at once; its last read once it reads.
+		var connected = await phone.GetJsonAsync("/sync/plugin");
+		Assert.True(connected.GetProperty("connected").GetBoolean());
+		Assert.Equal(JsonValueKind.Null, connected.GetProperty("lastUsedAtMs").ValueKind);
+		Assert.Equal(HttpStatusCode.OK, (await plugin.SendAsync(Get("/plugin/today", token))).StatusCode);
+		var read = await phone.GetJsonAsync("/sync/plugin");
+		Assert.True(read.GetProperty("connected").GetBoolean());
+		Assert.InRange(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - read.GetProperty("lastUsedAtMs").GetInt64(), 0, 60_000);
+
+		// Another account's phone sees nothing of it.
+		using (var stranger = await Phone.LinkAsync(factory, await factory.CreateUserAsync()))
+		{
+			Assert.False((await stranger.GetJsonAsync("/sync/plugin")).GetProperty("connected").GetBoolean());
+		}
+
+		// Disconnected in Who can read: the phone sees it go.
+		await using (var scope = factory.Services.CreateAsyncScope())
+		{
+			var tokens = scope.ServiceProvider.GetRequiredService<ApiTokenService>();
+			Assert.True(await tokens.RevokeAsync(userId, Assert.Single(await tokens.ListAsync(userId, CancellationToken.None)).Id, CancellationToken.None));
+		}
+
+		var gone = await phone.GetJsonAsync("/sync/plugin");
+		Assert.False(gone.GetProperty("connected").GetBoolean());
+		Assert.Equal(JsonValueKind.Null, gone.GetProperty("lastUsedAtMs").ValueKind);
+	}
+
+	/// <summary><c>POST /sync/plugin-code</c>'s code.</summary>
+	private static async Task<string> CodeAsync(Phone phone)
+	{
+		var response = await phone.SendAsync(HttpMethod.Post, "/sync/plugin-code");
+		Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+		return JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString()!;
+	}
+
 	private static JsonObject Status(
 		DateTimeOffset updatedAt,
 		DateTimeOffset? lastAudio,

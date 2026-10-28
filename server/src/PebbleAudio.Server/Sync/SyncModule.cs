@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using PebbleAudio.Server.Auth;
 using PebbleAudio.Server.Data;
 using PebbleAudio.Server.Jobs;
+using PebbleAudio.Server.Plugin;
 using PebbleAudio.Server.Sync;
 
 // In the root namespace, so Program.cs needs only its two calls.
@@ -65,6 +66,8 @@ public static class SyncModule
 		sync.MapDelete("/access/{kind}/{id}", RevokeAccessAsync);
 		sync.MapGet("/preferences", GetPreferencesAsync);
 		sync.MapPut("/preferences", PutPreferencesAsync);
+		sync.MapPost("/plugin-code", PluginCodeAsync);
+		sync.MapGet("/plugin", PluginAsync);
 
 		// The signature is the authorization: a widget or a browser plays the clip without a token.
 		app.MapGet("/clips/{clipId:guid}.m4a", ServeClipAsync).AllowAnonymous();
@@ -377,6 +380,37 @@ public static class SyncModule
 		return Results.Json(PreferencesWire.From(preferences, await scopes.GetAsync(userId, cancellationToken)), SyncJson.Options);
 	}
 
+	// §5, the Pebble plugin
+
+	/// <summary>
+	/// A one-time code for the Pebble plugin's settings page, which the phone shows beside the plugin's install. The
+	/// same codes <c>POST /plugin/link</c> takes: eight characters, ten minutes, once, and a new one ends the last.
+	/// </summary>
+	private static async Task<IResult> PluginCodeAsync(
+		HttpContext context,
+		PluginLinkService links,
+		CancellationToken cancellationToken)
+	{
+		var (userId, _) = Caller(context.User);
+		var minted = await links.MintAsync(userId, cancellationToken);
+		context.Response.Headers.CacheControl = "no-store";
+		return Results.Json(
+			new PluginCodeResponse(PhoneLinkService.Display(minted.Code), minted.ExpiresAt.ToUnixTimeMilliseconds()),
+			SyncJson.Options,
+			statusCode: StatusCodes.Status201Created);
+	}
+
+	/// <summary>Whether the plugin is connected to this account, and when it last read.</summary>
+	private static async Task<IResult> PluginAsync(HttpContext context, PluginLinkService links, CancellationToken cancellationToken)
+	{
+		var (userId, _) = Caller(context.User);
+		var connection = await links.ConnectionAsync(userId, cancellationToken);
+		context.Response.Headers.CacheControl = "no-store";
+		return Results.Json(
+			new PluginResponse(connection.Connected, connection.LastUsedAt?.ToUnixTimeMilliseconds()),
+			SyncJson.Options);
+	}
+
 	// Clips
 
 	private static async Task<IResult> ServeClipAsync(
@@ -521,6 +555,12 @@ public static class SyncModule
 		[property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Days);
 
 	internal sealed record PreferencesUpdate(bool? Clips, bool? Edits, ScopeUpdate? Scope);
+
+	/// <param name="Code">Shown as it is typed, <c>K7QM-3XWD</c>.</param>
+	/// <param name="ExpiresAtMs">When it stops working, epoch milliseconds.</param>
+	internal sealed record PluginCodeResponse(string Code, long ExpiresAtMs);
+
+	internal sealed record PluginResponse(bool Connected, long? LastUsedAtMs);
 
 	internal sealed record ScopeUpdate(string? Kind, DateTimeOffset? Since, int? Days);
 }

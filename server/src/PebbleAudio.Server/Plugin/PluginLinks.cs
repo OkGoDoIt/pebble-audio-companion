@@ -8,11 +8,12 @@ using PebbleAudio.Server.Sync;
 namespace PebbleAudio.Server.Plugin;
 
 /// <summary>
-/// Connecting the Pebble plugin: the connect page (<c>/connect/pebble-plugin</c>) shows a one-time code, and the
-/// plugin's settings page exchanges it at <c>POST /plugin/link</c> for a read-only personal token named
-/// <see cref="TokenName"/>, which then lists, and is disconnected, like any other access in Who can read. Codes look
-/// and behave like a phone's (eight characters, ten minutes, once) but live in their own table, so a plugin code never
-/// links a phone and a phone code never makes a token.
+/// Connecting the Pebble plugin: the phone app asks for a one-time code (<c>POST /sync/plugin-code</c>, under its
+/// device token) and shows it beside the plugin's install, and the plugin's settings page exchanges it at
+/// <c>POST /plugin/link</c> for a read-only personal token named <see cref="TokenName"/>, which then lists, and is
+/// disconnected, in Who can read under its own heading. Codes look and behave like a phone's (eight characters, ten
+/// minutes, once) but live in their own table, so a plugin code never links a phone and a phone code never makes a
+/// token.
 /// </summary>
 public sealed class PluginLinkService(ArchiveDbContext db, ApiTokenService tokens, TimeProvider time)
 {
@@ -50,6 +51,24 @@ public sealed class PluginLinkService(ArchiveDbContext db, ApiTokenService token
 			}
 		}
 	}
+
+	/// <summary>
+	/// Whether the plugin is connected (a live personal token named for it), and when it last read with one. What the
+	/// phone's Settings › Watch shows (<c>GET /sync/plugin</c>).
+	/// </summary>
+	public async Task<PluginConnection> ConnectionAsync(Guid userId, CancellationToken cancellationToken)
+	{
+		var uses = await db.ApiTokens
+			.AsNoTracking()
+			.Where(t => t.UserId == userId && t.RevokedAt == null && t.Name == TokenName)
+			.Select(t => t.LastUsedAt)
+			.ToListAsync(cancellationToken);
+		return new PluginConnection(uses.Count > 0, uses.Max());
+	}
+
+	/// <summary>An access entry that is the plugin, not an assistant: the name its link gives it.</summary>
+	public static bool IsPlugin(AccessEntry entry) =>
+		entry.Kind == TokenAssistantSource.KindName && string.Equals(entry.Name.Trim(), TokenName, StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// Exchanges a live, unused code for a new read-only token, returned once. Null when the code is unknown, used, or
@@ -91,3 +110,7 @@ public sealed class PluginLinkService(ArchiveDbContext db, ApiTokenService token
 		return secret;
 	}
 }
+
+/// <param name="Connected">A live token named for the plugin exists.</param>
+/// <param name="LastUsedAt">The latest read with one; null before the first.</param>
+public sealed record PluginConnection(bool Connected, DateTimeOffset? LastUsedAt);

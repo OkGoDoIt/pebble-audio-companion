@@ -527,6 +527,19 @@ with its request and its file, and asking for that span again asks the phone aga
     a time or with one more than an hour after the server's clock, or `days` outside 1 to 36,500.
     The account's time zone is the one of the latest
     conversation the phone sent (UTC before the first).
+- `POST /sync/plugin-code` (device token, no body): a one-time code for the Pebble plugin
+  (`pebble-plugin/README.md`), which the app shows on Settings › Watch beside the plugin's install.
+  `201 { "code": "K7QM-3XWD", "expiresAtMs": 1792000375292 }`, with `Cache-Control: no-store`. The
+  plugin's settings page exchanges it at `POST /plugin/link` for a read-only personal token named
+  "Pebble plugin". A code is eight characters, valid ten minutes, and works once; asking for a new one
+  ends the last unused one. Plugin codes and phone link codes (§1) are kept apart: each is refused at the
+  other's endpoint. This is the only place a plugin code is made.
+- `GET /sync/plugin` (device token): `200 { "connected": true, "lastUsedAtMs": 1791999175292 }`, with
+  `Cache-Control: no-store`. `connected` is whether the account has a live (not disconnected) personal
+  token named "Pebble plugin"; `lastUsedAtMs` is the latest read with one, `null` before its first read
+  and whenever `connected` is false. The server notes a token's use at most once a minute.
+- Both answer in epoch milliseconds, as §2.8 does, so the app compares them with its own clock without
+  parsing.
 
 ## 6. What the server derives and never asks the phone for
 
