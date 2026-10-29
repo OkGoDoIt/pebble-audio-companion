@@ -123,6 +123,9 @@ struct VoiceRunDisplay: Equatable, Identifiable {
     var failed = 0
     /// Recordings checked, with the one in progress counted by how far through it is.
     var progress: Double = 0
+    /// New recordings waiting ahead of the run, which are checked first. Without it a run behind
+    /// a day of new audio sat at "0 of 651" for hours, the same look as a run that was stuck.
+    var newerFirst = 0
 
     /// How far through the run is, 0...1; nil while it is still counting.
     var fraction: Double? {
@@ -134,6 +137,7 @@ struct VoiceRunDisplay: Equatable, Identifiable {
         var line = total.map { Copy.Voices.recordingsChecked(completed, of: $0) }
             ?? (completed == 0 ? Copy.Voices.counting : Copy.Voices.recordingsChecked(completed))
         if matched > 0 { line += " · \(Copy.Voices.matches(matched))" }
+        if isRunning, newerFirst > 0 { line += " · \(Copy.Voices.newerFirst(newerFirst))" }
         return line
     }
 }

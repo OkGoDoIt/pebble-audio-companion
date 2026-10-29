@@ -39,6 +39,13 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             composition.settings.backgroundCatchUp, composition.foregroundState.devicePower, foreground: true) {
             display.waiting = reason
         }
+        // New recordings are checked before a run's older ones.
+        let newerFirst = try await composition.database.reader.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(DISTINCT segmentId) FROM voice_jobs
+                WHERE runID LIKE 'recent:%' AND state IN ('pending', 'running')
+                """) ?? 0
+        }
         if let run {
             let runID = run.runID
             let matches = try await composition.database.reader.read { db in
@@ -52,7 +59,8 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             display.run = VoiceRunDisplay(id: run.runID,
                 completed: run.done + run.failed, total: left.map { queued + $0 },
                 matched: matches, isRunning: discovering || run.pending + run.running > 0, canUndo: matches > 0,
-                stopped: plan?.state != "active", failed: run.failed, progress: run.progress)
+                stopped: plan?.state != "active", failed: run.failed, progress: run.progress,
+                newerFirst: newerFirst)
         }
         if display.run == nil, let plan {
             let discovering = plan.state == "active" && !plan.discoveryComplete
