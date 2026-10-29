@@ -118,6 +118,9 @@ public struct VoiceRunSummary: Equatable, Sendable {
     public var runID: String
     public var pending, running, done, failed, cancelled: Int
     public var completedMediaMs, totalMediaMs, updatedAtMs: Int64
+    /// Recordings checked, counting one in progress by how far through it is: it moves with every
+    /// window, where `done` moves once per recording.
+    public var progress: Double = 0
 }
 public enum VoiceIdentityError: Error, Equatable, Sendable, LocalizedError {
     case invalidRecord, sourceDeleted, sourceInvalidated, missingSource, disabled, capacityExceeded

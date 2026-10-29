@@ -54,9 +54,14 @@ extension VoiceIdentityStore {
         try await db.writer.write { d in
             try Self.cancelStaleJobs(d)
             // New recordings before a history run: the conversations just had are the ones being read.
+            // One recording is finished before the next is started: the newest new recording, then
+            // the history run in the order it was found. Ordering by `updatedAtMs` (which every
+            // window bumps) took turns across the whole queue, so a 700-recording run advanced
+            // every one of them 20 s at a time and finished none (2026-10-29).
             guard let row = try Row.fetchOne(d, sql: """
                 SELECT * FROM voice_jobs WHERE state = 'pending'
-                ORDER BY (runID LIKE 'recent:%') DESC, updatedAtMs, id LIMIT 1
+                ORDER BY (runID LIKE 'recent:%') DESC,
+                    CASE WHEN runID LIKE 'recent:%' THEN -rowid ELSE rowid END LIMIT 1
                 """) else { return nil }
             var job = Self.job(row)
             try d.execute(sql: "UPDATE voice_jobs SET state = 'running', updatedAtMs = ? WHERE id = ?", arguments: [nowMs, job.id])
@@ -142,6 +147,21 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// A history run that now covers a recording takes over its waiting new-recording job, so the
+    /// run's progress is the whole of what is left and the recording is checked once, in the
+    /// run's order. Windows already analysed are kept as prints, which the run adopts for free.
+    @discardableResult public func foldRecentJobs(segmentId: String, startMediaMs: Int64,
+                                                  endMediaMs: Int64) async throws -> Int {
+        try await db.writer.write { d in
+            try d.execute(sql: """
+                UPDATE voice_jobs SET state = 'cancelled'
+                WHERE segmentId = ? AND runID LIKE 'recent:%' AND state = 'pending'
+                    AND startMediaMs >= ? AND endMediaMs <= ?
+                """, arguments: [segmentId, startMediaMs, endMediaMs])
+            return d.changesCount
+        }
+    }
+
     /// Backgrounding or memory pressure pauses the window without spending a retry attempt.
     public func releaseJob(id: String) async throws {
         try await db.writer.write { d in
@@ -212,12 +232,15 @@ extension VoiceIdentityStore {
                 SELECT runID, SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,
                     SUM(state = 'done') AS done, SUM(state = 'failed') AS failed, SUM(state = 'cancelled') AS cancelled,
                     SUM(cursorMediaMs - startMediaMs) AS completedMediaMs,
-                    SUM(endMediaMs - startMediaMs) AS totalMediaMs, MAX(updatedAtMs) AS updatedAtMs
+                    SUM(endMediaMs - startMediaMs) AS totalMediaMs, MAX(updatedAtMs) AS updatedAtMs,
+                    SUM(CASE WHEN state IN ('done', 'failed') THEN 1.0 WHEN state = 'cancelled' THEN 0.0
+                        ELSE CAST(cursorMediaMs - startMediaMs AS REAL) / MAX(1, endMediaMs - startMediaMs) END) AS progress
                 FROM voice_jobs GROUP BY runID ORDER BY updatedAtMs DESC LIMIT ?
                 """, arguments: [max(1, min(100, limit))]).map { row in
                     VoiceRunSummary(runID: row["runID"], pending: row["pending"], running: row["running"], done: row["done"],
                         failed: row["failed"], cancelled: row["cancelled"], completedMediaMs: row["completedMediaMs"],
-                        totalMediaMs: row["totalMediaMs"], updatedAtMs: row["updatedAtMs"])
+                        totalMediaMs: row["totalMediaMs"], updatedAtMs: row["updatedAtMs"],
+                        progress: row["progress"] ?? 0)
                 }
         }
     }

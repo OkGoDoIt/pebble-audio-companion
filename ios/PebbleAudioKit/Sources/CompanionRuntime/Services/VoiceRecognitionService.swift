@@ -66,6 +66,9 @@ public actor VoiceRecognitionService {
     private var lastMessage: String?
     private var discoveryAtMs: Int64 = 0
     private var discovered = Set<String>()
+    /// Recordings each history run has still to look at, as of its last discovery step; this
+    /// launch's only, so a relaunch knows again after one pass.
+    private var historyLeft: [String: Int] = [:]
     private var changedSegments = Set<String>()
     private nonisolated let enrollmentGeneration = Mutex<UInt64>(0)
 
@@ -132,6 +135,8 @@ public actor VoiceRecognitionService {
     }
     public func runs() async throws -> [VoiceRunSummary] { try await store.runs() }
     public func historyPlans() async throws -> [VoiceHistoryPlan] { try await history.plans() }
+    /// How many recordings a history run has yet to find and queue; nil until it has looked.
+    public func historyRecordingsLeft(runID: String) -> Int? { historyLeft[runID] }
 
     public func setEnabled(_ enabled: Bool) async throws {
         if !enabled { cancelEnrollment() }
@@ -598,10 +603,12 @@ public actor VoiceRecognitionService {
                     && ($0.startWallMs > plan.cursorStartMs
                         || ($0.startWallMs == plan.cursorStartMs && $0.segmentId > plan.cursorSegmentId))
             }
+            historyLeft[plan.runID] = candidates.count
             if candidates.isEmpty { try await history.finishDiscovery(runID: plan.runID); advanced = true; continue }
             for meta in candidates {
                 try Task.checkCancellation()
                 guard inspected < 2 else { if advanced { changed() }; return advanced }
+                historyLeft[plan.runID] = max(0, (historyLeft[plan.runID] ?? 1) - 1)
                 var queued = false
                 do {
                     let source = try await load(meta.segmentId)
@@ -614,6 +621,7 @@ public actor VoiceRecognitionService {
                         _ = try await store.prepareSource(segmentId: meta.segmentId, revision: source.revision)
                         try await store.enqueueJob(runID: plan.runID, segmentId: meta.segmentId,
                             startMediaMs: start, endMediaMs: end, recipeID: recipeID, explicitRerun: true)
+                        try await store.foldRecentJobs(segmentId: meta.segmentId, startMediaMs: start, endMediaMs: end)
                         changedSegments.insert(meta.segmentId)
                         queued = true
                     }

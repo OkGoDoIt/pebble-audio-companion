@@ -112,14 +112,30 @@ struct VoicePersonDisplay: Equatable, Identifiable {
 
 struct VoiceRunDisplay: Equatable, Identifiable {
     var id: String
+    /// Recordings checked.
     var completed: Int
-    var total: Int
+    /// Recordings the run covers; nil while it is still counting them.
+    var total: Int?
     var matched: Int
     var isRunning: Bool
     var canUndo: Bool
-    var discovering = false
     var stopped = false
     var failed = 0
+    /// Recordings checked, with the one in progress counted by how far through it is.
+    var progress: Double = 0
+
+    /// How far through the run is, 0...1; nil while it is still counting.
+    var fraction: Double? {
+        total.map { $0 > 0 ? min(1, progress / Double($0)) : 1 }
+    }
+
+    /// The line under the heading: how many recordings, and how many voices it has named.
+    var detail: String {
+        var line = total.map { Copy.Voices.recordingsChecked(completed, of: $0) }
+            ?? (completed == 0 ? Copy.Voices.counting : Copy.Voices.recordingsChecked(completed))
+        if matched > 0 { line += " · \(Copy.Voices.matches(matched))" }
+        return line
+    }
 }
 
 struct VoiceSettingsDisplay: Equatable {

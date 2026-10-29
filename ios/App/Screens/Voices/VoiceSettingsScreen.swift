@@ -107,34 +107,8 @@ struct VoiceSettingsScreen: View {
                 SettingsSectionHeader(title: Copy.Voices.history)
                 SettingsFooter(text: Copy.Voices.historyDetail)
                 if let run = model.display.run {
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text(run.isRunning ? model.display.runHeading : (run.stopped ? "Voice matching stopped" : "Voice matching finished"))
-                                    .font(AppFont.cardHead).foregroundStyle(Tokens.label)
-                                Spacer()
-                                if run.isRunning, model.display.waiting == nil { ProgressView() }
-                            }
-                            if !run.discovering {
-                                ProgressView(value: Double(run.completed), total: Double(max(run.total, 1)))
-                                    .tint(Tokens.tint)
-                            }
-                            Text(run.discovering
-                                 ? "\(run.completed) audio clips checked · finding more"
-                                 : "\(run.completed) of \(run.total) audio clips checked · \(run.matched) voice matches")
-                                .font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                            if run.failed > 0 {
-                                Text("\(run.failed) audio clips could not be checked. Run another pass to try again.")
-                                    .font(AppFont.footnote).foregroundStyle(Tokens.meta)
-                            }
-                            if run.isRunning {
-                                Button(Copy.Voices.cancelRun) { Task { await model.cancel(run) } }
-                                    .buttonStyle(.borderedTint)
-                            } else if run.canUndo {
-                                Button(Copy.Voices.undo) { undoRun = run }.buttonStyle(.borderedTint)
-                            }
-                        }
-                    }
+                    VoiceRunCard(run: run, heading: model.display.runHeading, waiting: model.display.waiting != nil,
+                                 onStop: { Task { await model.cancel(run) } }, onUndo: { undoRun = run })
                 }
                 if model.display.run?.isRunning != true {
                     ListCard {
@@ -172,6 +146,44 @@ struct VoiceSettingsScreen: View {
             titleVisibility: .visible, presenting: undoRun) { run in
                 Button(Copy.Voices.undo, role: .destructive) { Task { await model.undo(run) } }
             } message: { _ in Text(Copy.Voices.undoDetail) }
+    }
+}
+
+/// A history run: what it is doing, how far through it is, and the one action that fits.
+struct VoiceRunCard: View {
+    let run: VoiceRunDisplay
+    /// What a run with work left is doing now: finding voices, or waiting for a charger.
+    let heading: String
+    let waiting: Bool
+    let onStop: () -> Void
+    let onUndo: () -> Void
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(run.isRunning ? heading : (run.stopped ? "Voice matching stopped" : "Voice matching finished"))
+                        .font(AppFont.cardHead).foregroundStyle(Tokens.label)
+                    Spacer()
+                    if run.isRunning, !waiting { ProgressView() }
+                }
+                if run.isRunning, let fraction = run.fraction {
+                    ProgressView(value: fraction).tint(Tokens.tint)
+                }
+                Text(run.detail)
+                    .font(AppFont.footnote).foregroundStyle(Tokens.meta)
+                if run.failed > 0 {
+                    Text(run.failed == 1 ? "1 recording couldn’t be checked. Run another pass to try again."
+                         : "\(run.failed) recordings couldn’t be checked. Run another pass to try again.")
+                        .font(AppFont.footnote).foregroundStyle(Tokens.meta)
+                }
+                if run.isRunning {
+                    Button(Copy.Voices.cancelRun, action: onStop).buttonStyle(.borderedTint)
+                } else if run.canUndo {
+                    Button(Copy.Voices.undo, action: onUndo).buttonStyle(.borderedTint)
+                }
+            }
+        }
     }
 }
 

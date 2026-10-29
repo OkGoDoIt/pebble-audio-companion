@@ -209,6 +209,48 @@ import Testing
         #expect(try await store.runs().first?.completedMediaMs == 10_000)
     }
 
+    /// The queue finishes one recording before starting the next: the newest new recording
+    /// first, then a history run in the order it was found. It used to take turns across every
+    /// waiting recording, so a long run advanced all of them and finished none.
+    @Test func oneRecordingIsFinishedBeforeTheNextAndARunTakesOverWaitingRecordings() async throws {
+        let (_, store, person) = try await ready()
+        try await enroll(store, person)
+        for id in ["a", "b", "c"] { _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)") }
+        func claimAndAdvance(_ by: Int64) async throws -> String {
+            let job = try #require(try await store.claimNextJob())
+            #expect(try await store.advanceJob(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
+                nextCursorMediaMs: min(job.cursorMediaMs + by, job.endMediaMs), attributions: []))
+            return job.segmentId
+        }
+        for id in ["a", "b", "c"] {
+            _ = try await store.enqueueJob(runID: "history", segmentId: id, startMediaMs: 0, endMediaMs: 30_000,
+                                           recipeID: "recipe", explicitRerun: true)
+        }
+        // The first-found recording is worked through to its end before the second is touched.
+        #expect(try await claimAndAdvance(10_000) == "a")
+        #expect(try await claimAndAdvance(10_000) == "a")
+        #expect(try await claimAndAdvance(10_000) == "a")
+        #expect(try await claimAndAdvance(10_000) == "b")
+        let run = try #require(try await store.runs().first { $0.runID == "history" })
+        #expect(run.done == 1)
+        #expect(abs(run.progress - 4.0 / 3.0) < 0.001)
+
+        // New recordings go ahead of the run, newest first, each to its end.
+        _ = try await store.enqueueJob(runID: "recent:s", segmentId: "s", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
+        _ = try await store.prepareSource(segmentId: "d", revision: "digest-d")
+        _ = try await store.enqueueJob(runID: "recent:d", segmentId: "d", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
+        #expect(try await claimAndAdvance(10_000) == "d")
+        #expect(try await claimAndAdvance(10_000) == "d")
+        #expect(try await claimAndAdvance(10_000) == "s")
+
+        // A run that covers a waiting new recording takes it over; the new-recording job stops.
+        _ = try await store.enqueueJob(runID: "history", segmentId: "s", startMediaMs: 0, endMediaMs: 20_000,
+                                       recipeID: "recipe", explicitRerun: true)
+        #expect(try await store.foldRecentJobs(segmentId: "s", startMediaMs: 0, endMediaMs: 20_000) == 1)
+        #expect(try await claimAndAdvance(10_000) == "b")
+        #expect(try await store.runs().first { $0.runID == "recent:s" }?.cancelled == 1)
+    }
+
     @Test func undoSuppressesReapplicationUntilExplicitRerun() async throws {
         let (db, store, person) = try await ready()
         try await enroll(store, person)

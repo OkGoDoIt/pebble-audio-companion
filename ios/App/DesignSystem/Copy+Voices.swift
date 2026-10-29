@@ -26,6 +26,16 @@ extension Copy {
         static func checking(_ count: Int) -> String {
             count == 1 ? "Checking 1 recording" : "Checking \(count) recordings"
         }
+        static func recordingsChecked(_ count: Int, of total: Int) -> String {
+            total == 1 ? "\(count) of 1 recording checked" : "\(count) of \(total) recordings checked"
+        }
+        static func recordingsChecked(_ count: Int) -> String {
+            count == 1 ? "1 recording checked" : "\(count) recordings checked"
+        }
+        static let counting = "Counting recordings…"
+        static func matches(_ count: Int) -> String {
+            count == 1 ? "1 voice match" : "\(count) voice matches"
+        }
         static let lastWeek = "Find voices in the past week"
         static let allRecordings = "Find voices in all recordings"
         static let cancelRun = "Stop finding voices"

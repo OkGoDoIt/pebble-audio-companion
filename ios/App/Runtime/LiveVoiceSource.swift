@@ -46,16 +46,19 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
                                  arguments: [runID]) ?? 0
             }
             let discovering = plan?.state == "active" && plan?.discoveryComplete == false
+            // Still finding recordings: the ones queued so far plus the ones it has yet to look at.
+            let left = discovering ? await service.historyRecordingsLeft(runID: runID) : 0
+            let queued = run.pending + run.running + run.done + run.failed
             display.run = VoiceRunDisplay(id: run.runID,
-                completed: run.done + run.failed + run.cancelled,
-                total: run.pending + run.running + run.done + run.failed + run.cancelled,
+                completed: run.done + run.failed, total: left.map { queued + $0 },
                 matched: matches, isRunning: discovering || run.pending + run.running > 0, canUndo: matches > 0,
-                discovering: discovering, stopped: plan?.state != "active", failed: run.failed)
+                stopped: plan?.state != "active", failed: run.failed, progress: run.progress)
         }
         if display.run == nil, let plan {
-            display.run = VoiceRunDisplay(id: plan.runID, completed: 0, total: 0, matched: 0,
-                isRunning: plan.state == "active" && !plan.discoveryComplete, canUndo: false,
-                discovering: plan.state == "active" && !plan.discoveryComplete, stopped: plan.state != "active")
+            let discovering = plan.state == "active" && !plan.discoveryComplete
+            display.run = VoiceRunDisplay(id: plan.runID, completed: 0,
+                total: discovering ? await service.historyRecordingsLeft(runID: plan.runID) : 0, matched: 0,
+                isRunning: discovering, canUndo: false, stopped: plan.state != "active")
         }
         return display
     }

@@ -56,7 +56,7 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
         display.pendingRecordings = 4
         display.waiting = .onBattery
         display.run = VoiceRunDisplay(id: "demo-week", completed: 12, total: 40, matched: 3,
-                                      isRunning: true, canUndo: false)
+                                      isRunning: true, canUndo: false, progress: 12.4)
         return display
     }
     func updates() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
