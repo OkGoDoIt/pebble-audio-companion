@@ -14,6 +14,7 @@ private final class FakeUploader: BackgroundUploader, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [CloudUploadRequest] = []
     private var inFlight: Set<String> = []
+    private var missing: [String] = []
 
     let outcomes: AsyncStream<CloudUploadOutcome>
     private let continuation: AsyncStream<CloudUploadOutcome>.Continuation
@@ -26,10 +27,16 @@ private final class FakeUploader: BackgroundUploader, @unchecked Sendable {
 
     var enqueued: [CloudUploadRequest] { lock.withLock { recorded } }
 
+    /// Jobs whose body file was already gone when they reached the transport — the point at which
+    /// the real URLSession raises an exception Swift cannot catch.
+    var missingBodies: [String] { lock.withLock { missing } }
+
     func enqueue(_ request: CloudUploadRequest) async {
+        let present = FileManager.default.fileExists(atPath: request.bodyFilePath)
         lock.withLock {
             recorded.append(request)
             inFlight.insert(request.jobId)
+            if !present { missing.append(request.jobId) }
         }
     }
 
@@ -200,7 +207,12 @@ private final class FakeUploadQueue: @unchecked Sendable {
         let cloud: SelectableCloudTranscriptionProvider
         let coordinator: BackgroundCloudUploadCoordinator
 
-        init(provider: CloudProvider, hold: CloudAccountHold? = nil) throws {
+        init(
+            provider: CloudProvider,
+            hold: CloudAccountHold? = nil,
+            hooks adjust: (BackgroundCloudUploadCoordinator.QueueHooks) ->
+                BackgroundCloudUploadCoordinator.QueueHooks = { $0 }
+        ) throws {
             root = try makeTempRoot("upload-coord")
             jobStore = CloudUploadJobStore(root: root)
             cloud = SelectableCloudTranscriptionProvider(
@@ -213,7 +225,7 @@ private final class FakeUploadQueue: @unchecked Sendable {
                 uploader: uploader,
                 cloudProvider: cloud,
                 jobStore: jobStore,
-                queue: queue.hooks,
+                queue: adjust(queue.hooks),
                 audioSource: { _, _ in
                     SegmentAudio(wav: Data(repeating: 1, count: 64), sampleRateHz: 16_000)
                 },
@@ -396,6 +408,22 @@ private final class FakeUploadQueue: @unchecked Sendable {
 
         #expect(calls.value == 1)
     }
+
+    @Test func aMissingBodyFailsTheJobInsteadOfReachingURLSession() async {
+        let uploader = URLSessionBackgroundUploader(sessionIdentifier: "test.\(UUID().uuidString)")
+        await uploader.enqueue(
+            CloudUploadRequest(
+                jobId: "seg-gone",
+                url: "https://example.invalid/upload",
+                headers: [:],
+                bodyFilePath: "/nonexistent/seg-gone.body"
+            )
+        )
+        var outcomes = uploader.outcomes.makeAsyncIterator()
+        let outcome = await outcomes.next()
+        #expect(outcome?.jobId == "seg-gone")
+        #expect(outcome?.isSuccess == false)
+    }
 }
 
 private final class Counter: @unchecked Sendable {
@@ -467,5 +495,76 @@ private final class Counter: @unchecked Sendable {
             FileManager.default.fileExists(atPath: live.path),
             "the transport still needs this body; deleting it would fail the upload"
         )
+    }
+}
+
+/// Holds the first caller until `open()`, so a test can act in the gap a real submission spends
+/// awaiting the queue.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parked: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    var isHolding: Bool { lock.withLock { parked != nil } }
+
+    func pass() async {
+        await withCheckedContinuation { continuation in
+            let go = lock.withLock { () -> Bool in
+                if opened { return true }
+                parked = continuation
+                return false
+            }
+            if go { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            opened = true
+            defer { parked = nil }
+            return parked
+        }
+        continuation?.resume()
+    }
+}
+
+// 2026-10-29, G17: woken in the background behind the lock screen, the launch reconcile ran while
+// the first pipeline pass was submitting. It found the job the submission had just saved, not yet
+// in flight and not yet `Uploading`, and cleaned it up — deleting the body URLSession was handed a
+// moment later. URLSession answers a missing body with "Cannot read file", an Objective-C
+// exception, and the app died.
+@Suite struct UploadReconcileRaceTests {
+
+    @Test func aReconcileDuringASubmissionLeavesItsBodyInPlace() async throws {
+        let gate = Gate()
+        let fixture = try BackgroundUploadTests.Fixture(provider: .openAi) { hooks in
+            var hooks = hooks
+            let markUploading = hooks.markUploading
+            hooks.markUploading = { segmentId in
+                await gate.pass()
+                await markUploading(segmentId)
+            }
+            return hooks
+        }
+        fixture.queue.enqueue("seg1")
+
+        let submission = Task { try await fixture.coordinator.submitPending() }
+        let deadline = Date().addingTimeInterval(2)
+        while !gate.isHolding {
+            if Date() > deadline { throw AssertionError("the submission never reached the queue") }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        // The job is saved and its body written; the queue has not marked it Uploading yet.
+        let reconcile = Task { await fixture.coordinator.reconcile() }
+        // Room for the reconcile to run into the gap, which it did unchecked before the fix.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        gate.open()
+        try await submission.value
+        await reconcile.value
+
+        #expect(fixture.uploader.missingBodies.isEmpty, "the transport was handed a deleted body")
+        #expect(fixture.uploader.enqueued.map(\.jobId) == ["seg1"])
+        #expect(fixture.jobStore.load(jobId: "seg1") != nil, "the in-flight upload lost its job")
+        #expect(fixture.queue.state("seg1") == .uploading)
     }
 }

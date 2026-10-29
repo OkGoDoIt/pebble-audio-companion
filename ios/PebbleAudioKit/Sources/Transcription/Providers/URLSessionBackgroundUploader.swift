@@ -85,6 +85,16 @@ public final class URLSessionBackgroundUploader: NSObject, BackgroundUploader, @
 
     public func enqueue(_ request: CloudUploadRequest) async {
         guard let urlRequest = uploadRequest(for: request) else { return }
+        // URLSession answers an unreadable body with an Objective-C exception, which Swift cannot
+        // catch: the app dies. Whatever removed the file, the job fails and is retried instead.
+        guard FileManager.default.isReadableFile(atPath: request.bodyFilePath) else {
+            outcomeContinuation.yield(
+                CloudUploadOutcome(
+                    jobId: request.jobId, httpStatus: 0, error: "the upload body was missing"
+                )
+            )
+            return
+        }
         let task = session.uploadTask(
             with: urlRequest, fromFile: URL(fileURLWithPath: request.bodyFilePath)
         )

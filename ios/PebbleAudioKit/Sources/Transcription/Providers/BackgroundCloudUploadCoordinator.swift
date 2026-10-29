@@ -176,6 +176,14 @@ public actor BackgroundCloudUploadCoordinator {
 
     private let maxConcurrentUploads: Int
 
+    /// Submitting and reconciling each read what the transport holds and act on it across several
+    /// awaits, and actor isolation does not stop them interleaving at those awaits. Interleaved, a
+    /// reconcile cleaned up a job a submission had saved but not yet marked `Uploading`, deleting
+    /// the body URLSession was handed next; URLSession raised "Cannot read file" and the app died
+    /// (2026-10-29, woken in the background with the phone locked). So they take turns.
+    private var transportBusy = false
+    private var transportWaiters: [CheckedContinuation<Void, Never>] = []
+
     /// Loudest-second RMS below which a segment is settled as `.noSpeech` instead of uploaded,
     /// or nil to disable the check. See `SegmentEnergy.provableSilenceFloorRms`.
     private let silenceFloorRms: Double?
@@ -228,6 +236,8 @@ public actor BackgroundCloudUploadCoordinator {
     /// come back immediately. A PERIODIC reconcile needs the grace instead, because it can land in
     /// the window between marking a task `Uploading` and the transport registering it.
     public func reconcile(registrationGraceMs: Int64 = 0) async {
+        await takeTransportTurn()
+        defer { endTransportTurn() }
         await uploader.reconcile()
         let inFlight = await uploader.inFlightJobIds()
         _ = await queue.resetAbandonedUploads(inFlight, registrationGraceMs)
@@ -286,6 +296,8 @@ public actor BackgroundCloudUploadCoordinator {
     /// cap.
     public func submitPending() async throws {
         guard cloudPrimary() else { return }
+        await takeTransportTurn()
+        defer { endTransportTurn() }
         // An account that has refused (402/401/403) gets nothing new — every segment sent to it
         // would be encoded and uploaded in full only to be refused. See `CloudAccountHold`.
         guard !cloudProvider.isSendingHeld else { return }
@@ -507,6 +519,22 @@ public actor BackgroundCloudUploadCoordinator {
     private func noSpeech(_ job: CloudUploadJob, reason: String) async {
         await queue.markNoSpeech(job.jobId, reason)
         cleanup(job)
+    }
+
+    private func takeTransportTurn() async {
+        guard transportBusy else {
+            transportBusy = true
+            return
+        }
+        await withCheckedContinuation { transportWaiters.append($0) }
+    }
+
+    private func endTransportTurn() {
+        if transportWaiters.isEmpty {
+            transportBusy = false
+        } else {
+            transportWaiters.removeFirst().resume()
+        }
     }
 
     private func cleanup(_ job: CloudUploadJob) {
