@@ -209,6 +209,17 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// Recordings with a job that failed for good and nothing still waiting for them.
+    public func failedRecordingCount() async throws -> Int {
+        try await db.reader.read { d in
+            try Int.fetchOne(d, sql: """
+                SELECT COUNT(DISTINCT segmentId) FROM voice_jobs f WHERE f.state = 'failed'
+                    AND NOT EXISTS (SELECT 1 FROM voice_jobs p WHERE p.segmentId = f.segmentId
+                                    AND p.state IN ('pending', 'running', 'done') AND p.updatedAtMs > f.updatedAtMs)
+                """) ?? 0
+        }
+    }
+
     /// Recordings with audio still to check, whichever run asked for them, and recordings
     /// whose names are still from voices that have changed since.
     public func pendingRecordingCount() async throws -> Int {

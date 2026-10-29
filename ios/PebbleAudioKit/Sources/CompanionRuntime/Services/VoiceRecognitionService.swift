@@ -29,6 +29,16 @@ public struct VoiceRecognitionStatus: Equatable, Sendable {
     public let lastMessage: String?
     /// Recordings with audio still to check.
     public var pendingRecordings = 0
+    /// When this launch last finished a stretch of audio, for Diagnostics: "checking" and
+    /// "stuck" look the same from a count alone.
+    public var lastWorkAtMs: Int64?
+    /// Recordings whose check failed for good.
+    public var failedRecordings = 0
+    public init(configuration: VoiceRecognitionConfiguration, models: SpeakerModelInstallState,
+                isProcessing: Bool, lastMessage: String?) {
+        self.configuration = configuration; self.models = models
+        self.isProcessing = isProcessing; self.lastMessage = lastMessage
+    }
 }
 
 /// Model installation is explicit and separate from audio processing. The seam also permits
@@ -64,6 +74,7 @@ public actor VoiceRecognitionService {
     private var enrolling = false
     private var resumed = false
     private var lastMessage: String?
+    private var lastWorkAtMs: Int64?
     private var discoveryAtMs: Int64 = 0
     private var discovered = Set<String>()
     /// Recordings each history run has still to look at, as of its last discovery step; this
@@ -101,6 +112,8 @@ public actor VoiceRecognitionService {
         var status = VoiceRecognitionStatus(configuration: try await store.configuration(),
             models: await models.state(), isProcessing: processing || enrolling, lastMessage: lastMessage)
         status.pendingRecordings = try await store.pendingRecordingCount()
+        status.failedRecordings = try await store.failedRecordingCount()
+        status.lastWorkAtMs = lastWorkAtMs
         return status
     }
     /// Missing device-bound keys after restore invalidate only derived voice state. A locked
@@ -715,6 +728,7 @@ public actor VoiceRecognitionService {
                         nextCursorMediaMs: next, attributions: attributions, unmatched: unmatched,
                         window: window, prints: saved, matchedCorpus: context.configuration.corpusRevision)
                     if committed && !attributions.isEmpty { changedSegments.insert(job.segmentId) }
+                    lastWorkAtMs = Int64(Date().timeIntervalSince1970 * 1000)
                     didWork = true; changed()
                 } catch {
                     if !mayRun() || error is CancellationError || (error as? SpeakerRecognitionError) == .disabled {

@@ -10,7 +10,15 @@ struct SettingsDiagnosticsScreen: View {
     private var diagnostics: DiagnosticsSource { SettingsDataSources.current.diagnostics }
 
     var body: some View {
-        SettingsScroll {
+        SettingsScroll { sections }
+            .navigationTitle(Copy.Settings.Diagnostics.title)
+            // The source only works while it is being looked at; see `DiagnosticsSource.setVisible`.
+            .onAppear { diagnostics.setVisible(true) }
+            .onDisappear { diagnostics.setVisible(false) }
+    }
+
+    /// The screen's cards, apart from the scroll view, so a test can render them whole.
+    @ViewBuilder var sections: some View {
             ListCard {
                 // First, because every row below it is read in its light: a report from a build
                 // that is two deploys old answers a different question than the reader thinks.
@@ -20,22 +28,24 @@ struct SettingsDiagnosticsScreen: View {
                     showsChevron: false
                 )
                 if let alert = diagnostics.powerAlert {
-                    SettingsRow(
-                        title: Copy.Settings.Diagnostics.powerAlert,
-                        value: alert,
-                        showsChevron: false
-                    )
+                    DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.powerAlert, notice: alert)
                 }
                 SettingsRow(
                     title: Copy.Settings.Diagnostics.receiver,
                     value: diagnostics.receiverStatus,
                     showsChevron: false
                 )
+                if let residency = diagnostics.residency {
+                    DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.residency, notice: residency)
+                }
                 SettingsRow(
                     title: Copy.Settings.Diagnostics.watchReports,
                     value: diagnostics.watchReports,
                     showsChevron: false
                 )
+                if let restart = diagnostics.watchRestart {
+                    DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.watchRestart, notice: restart)
+                }
                 // The watch's own count of audio it could not hand over. Absent until a watch
                 // has actually been read — and when the watch's firmware is older than the
                 // counter it says "not reported by this watch", which is NOT "never": the
@@ -69,10 +79,14 @@ struct SettingsDiagnosticsScreen: View {
                     value: Copy.Settings.Diagnostics.queueValue(
                         waiting: diagnostics.queueWaiting,
                         failed: diagnostics.queueFailed,
-                        heldInBackground: diagnostics.transcriptionHeldInBackground
+                        heldInBackground: diagnostics.transcriptionHeldInBackground,
+                        parked: diagnostics.queueParked
                     ),
                     showsChevron: false
                 )
+                if let account = diagnostics.cloudAccount {
+                    DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.cloudAccount, notice: account)
+                }
                 SettingsRow(
                     title: Copy.Settings.Diagnostics.aiEnrichment,
                     value: Copy.Settings.Diagnostics.enrichmentValue(
@@ -81,6 +95,10 @@ struct SettingsDiagnosticsScreen: View {
                     ),
                     showsChevron: false
                 )
+                DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.voices, notice: diagnostics.voices)
+                if let archive = diagnostics.archive {
+                    DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.archive, notice: archive)
+                }
                 // Whether the loop that does all of the above is turning at all. Everything
                 // else on this card is a count of work; this is the one row that says whether
                 // anything is picking that work up.
@@ -89,6 +107,9 @@ struct SettingsDiagnosticsScreen: View {
                     value: diagnostics.pipeline.summary,
                     showsChevron: false
                 )
+                // Last, because it is the answer to "why is nothing above moving?" on the days
+                // the answer is the phone: hot, in Low Power Mode, or off the charger.
+                DiagnosticNoticeRow(title: Copy.Settings.Diagnostics.phone, notice: diagnostics.phone)
             }
 
             // What the app's files add up to, bucketed — because the one number iOS shows for
@@ -273,11 +294,6 @@ struct SettingsDiagnosticsScreen: View {
             #if DEBUG
             designSection
             #endif
-        }
-        .navigationTitle(Copy.Settings.Diagnostics.title)
-        // The source only works while it is being looked at; see `DiagnosticsSource.setVisible`.
-        .onAppear { diagnostics.setVisible(true) }
-        .onDisappear { diagnostics.setVisible(false) }
     }
 
     #if DEBUG
@@ -362,6 +378,32 @@ private struct FailedTranscriptionRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A row whose value sometimes needs a sentence: a plain row until there is one, then the
+/// sentence beneath it in full, where a trailing value would have truncated it.
+private struct DiagnosticNoticeRow: View {
+    let title: String
+    let notice: DiagnosticNotice
+
+    var body: some View {
+        if let detail = notice.detail {
+            // The row itself is a `SettingsRow`, so it stacks at accessibility sizes like the
+            // rows around it instead of truncating both halves.
+            VStack(alignment: .leading, spacing: 3) {
+                SettingsRow(title: title, value: notice.value, showsChevron: false)
+                Text(detail)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.secondaryBody)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        } else {
+            SettingsRow(title: title, value: notice.value, showsChevron: false)
+        }
     }
 }
 

@@ -150,7 +150,7 @@ final class AppComposition {
     private let telemetry = HeartbeatTelemetry()
 
     /// The CPU watchdog's verdict for the Diagnostics screen (see `HeartbeatTelemetry`).
-    var powerWatchdogAlert: String? { telemetry.alertText }
+    var powerWatchdogAlert: DiagnosticNotice? { telemetry.alert }
     private var foregroundReleaseToken: NSObjectProtocol?
     private var backgroundMarkToken: NSObjectProtocol?
 
@@ -1492,10 +1492,12 @@ final class AppComposition {
         // inbound-notification path to take again once we are backgrounded.
         let activity = self.backgroundActivity
         let link = self.gattLink
+        let telemetry = self.telemetry
         foregroundReleaseToken = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
         ) { _ in
             activity.release()
+            telemetry.noteForeground()
             // The link arms its give-up watchdog only when someone is watching — see
             // `CoreBluetoothAudioGattLink.setForeground`.
             link.setForeground(true)
@@ -1536,6 +1538,7 @@ final class AppComposition {
         let telemetry = self.telemetry
         let deviceStatus = self.deviceStatus
         let phoneBatteryPercent = self.phoneBatteryPercent
+        let foregroundState = self.foregroundState
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
@@ -1557,7 +1560,8 @@ final class AppComposition {
                     UIApplication.shared.applicationState == .background
                 }
                 let cost = telemetry.sample(
-                    controlWrites: receiver.outboundControlCount.value, backgrounded: backgrounded)
+                    controlWrites: receiver.outboundControlCount.value, backgrounded: backgrounded,
+                    pluggedIn: foregroundState.devicePower.isPluggedIn)
                 let (phone, phonePercent) = await MainActor.run {
                     (HeartbeatTelemetry.phoneBattery(), HeartbeatTelemetry.phoneBatteryPercent())
                 }
@@ -2139,17 +2143,35 @@ final class HeartbeatTelemetry: @unchecked Sendable {
     /// watchdog that cries wolf is a watchdog nobody reads.
     static let backgroundCpuBudgetSecondsPerMinute = 6.0
 
-    /// Set while the last backgrounded heartbeat exceeded the budget, for the Diagnostics screen.
+    /// Set while the last judged minute exceeded the budget, for the Diagnostics screen.
     private(set) var budgetExceededAt: Date?
     private(set) var lastBackgroundCpuSeconds: Double = 0
+    /// The app came on screen since the last heartbeat. A minute that was partly in the
+    /// foreground is not a background minute, whatever the state reads at the moment of the
+    /// sample: on 2026-10-29 eleven seconds on screen made a 6.01 s minute "background", and the
+    /// row then told the person who had just opened the app that something was looping.
+    private var sawForeground = false
+
+    /// Called when the app becomes active.
+    func noteForeground() {
+        lock.withLock { sawForeground = true }
+    }
+
+    /// Whether a minute is judged against the budget at all: wholly in the background and on
+    /// battery. Charger minutes are left alone, as `phone-cost-report.sh` leaves them, because
+    /// that is where the app is meant to spend (voice recognition runs only there).
+    static func judges(backgroundedWholeMinute: Bool, pluggedIn: Bool) -> Bool {
+        backgroundedWholeMinute && !pluggedIn
+    }
 
     /// One heartbeat's worth of deltas, formatted for the log line, and the baseline advanced.
     ///
-    /// While backgrounded the CPU delta is judged against `backgroundCpuBudgetSecondsPerMinute`
-    /// and the line says so in capitals, because "cpu=+63.5s" in a log nobody grepped for it is
-    /// how a full core went unnoticed for weeks. The same verdict is kept for the Diagnostics
-    /// screen, so the phone can report the problem without a Mac attached.
-    func sample(controlWrites: Int, backgrounded: Bool) -> String {
+    /// A judged minute's CPU delta is held against `backgroundCpuBudgetSecondsPerMinute` and the
+    /// line says so in capitals, because "cpu=+63.5s" in a log nobody grepped for it is how a
+    /// full core went unnoticed for weeks. The same verdict is kept for the Diagnostics screen,
+    /// so the phone can report the problem without a Mac attached. A minute that is not judged
+    /// keeps the last verdict: opening the app to read it must not clear it.
+    func sample(controlWrites: Int, backgrounded: Bool, pluggedIn: Bool) -> String {
         let cpu = Self.cpuSeconds()
         return lock.withLock {
             let notificationDelta = notifications - lastNotifications
@@ -2160,7 +2182,9 @@ final class HeartbeatTelemetry: @unchecked Sendable {
             lastControlWrites = controlWrites
             var line = String(
                 format: "cpu=+%.2fs notif=+%d ctl=+%d", cpuDelta, notificationDelta, controlDelta)
-            if backgrounded {
+            let wholeMinute = backgrounded && !sawForeground
+            sawForeground = !backgrounded
+            if Self.judges(backgroundedWholeMinute: wholeMinute, pluggedIn: pluggedIn) {
                 lastBackgroundCpuSeconds = cpuDelta
                 if cpuDelta > Self.backgroundCpuBudgetSecondsPerMinute {
                     budgetExceededAt = Date()
@@ -2175,14 +2199,16 @@ final class HeartbeatTelemetry: @unchecked Sendable {
         }
     }
 
-    /// The Diagnostics row, or nil when the last backgrounded minute was within budget.
-    var alertText: String? {
+    /// The Diagnostics row, or nil when the last judged minute was within budget. It names the
+    /// minute, because the verdict outlives it.
+    var alert: DiagnosticNotice? {
         lock.withLock {
-            guard budgetExceededAt != nil else { return nil }
-            return String(
-                format: "Using %.0f s of CPU a minute in the background (budget %.0f s). "
-                    + "Something is looping; share the log.",
-                lastBackgroundCpuSeconds, Self.backgroundCpuBudgetSecondsPerMinute)
+            guard let at = budgetExceededAt else { return nil }
+            return DiagnosticNotice(
+                value: Copy.Settings.Diagnostics.powerAlertValue(
+                    seconds: lastBackgroundCpuSeconds, at: TimeFmt.time(at)),
+                detail: Copy.Settings.Diagnostics.powerAlertDetail(
+                    budget: Self.backgroundCpuBudgetSecondsPerMinute))
         }
     }
 

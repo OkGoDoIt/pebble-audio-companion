@@ -132,7 +132,7 @@ struct DataSourceContractTests {
         #expect(none == "never")
         #expect(notReported != none)
         #expect(Copy.Settings.Diagnostics.watchCouldNotSendValue(1) == "once")
-        #expect(Copy.Settings.Diagnostics.watchCouldNotSendValue(1487) == "1487 times")
+        #expect(Copy.Settings.Diagnostics.watchCouldNotSendValue(1487) == "1,487 times")
     }
 
     /// `.notReported` carries no count, so the copy takes the "cannot say" branch; a real
@@ -158,7 +158,7 @@ struct DataSourceContractTests {
         let source = MockDiagnosticsSource()
         source.watchSend = .refusals(1487)
         let text = source.supportReportText
-        #expect(text.contains("Watch couldn’t send: 1487 times"))
+        #expect(text.contains("Watch waited for Bluetooth: 1487 times"))
         #expect(text.contains("the link couldn’t keep up"))
         #expect(text.contains("stopped acknowledging"))
     }

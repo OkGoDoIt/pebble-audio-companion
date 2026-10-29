@@ -7,6 +7,7 @@ import Intelligence
 import Observation
 import Receiver
 import SegmentStore
+import SpeakerRecognition
 import StatusUI
 import Transcription
 import UIKit
@@ -1465,7 +1466,14 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
     private(set) var detailedLogLines: [String] = AppRuntimeLog.shared.recent
 
     private(set) var supportReportText = ""
-    private(set) var powerAlert: String?
+    private(set) var powerAlert: DiagnosticNotice?
+    private(set) var phone = DiagnosticNotice(value: "")
+    private(set) var queueParked = 0
+    private(set) var cloudAccount: DiagnosticNotice?
+    private(set) var residency: DiagnosticNotice?
+    private(set) var watchRestart: DiagnosticNotice?
+    private(set) var archive: DiagnosticNotice?
+    private(set) var voices = DiagnosticNotice(value: Copy.Settings.Diagnostics.voicesOff)
     /// The Storage card. The measurement behind it walks every file the app owns (about 6,000
     /// on the phone), so it is taken at most once a minute and only while this screen is up;
     /// the flags beside it (pause floor, refused write) come from the runtime's snapshot and
@@ -1577,13 +1585,33 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         // loop so expensive (a third of the whole profile was JSON-decoding sidecars).
         let metas = await composition.store.listSegments()
         recentSegments = Self.segments(metas, openId: diagnostics.openSegmentId)
-        failedItems = Self.failures(
-            (try? composition.queue.all()) ?? [], segments: metas
-        )
+        let tasks = (try? composition.queue.all()) ?? []
+        failedItems = Self.failures(tasks, segments: metas)
+        queueParked = tasks.filter { $0.state == .disabled }.count
+        cloudAccount = composition.settings.transcriptionMode == .localOnly ? nil
+            : composition.cloudHold.active(for: composition.settings.cloudTranscriptionProvider)
+                .map { hold in
+                    DiagnosticNotice(
+                        value: Copy.Settings.Diagnostics.cloudAccountValue(
+                            provider: hold.provider.rawValue, short: hold.kind.shortReason),
+                        detail: hold.kind.reason)
+                }
+        residency = Self.residency(composition.residency.state.value)
+        watchRestart = Self.watchRestart(composition.runtime.watchInfo.value?.restart)
+        archive = Self.archive(composition.archiveSync.status.value, nowMs: composition.clock.nowMs)
         pipeline = Self.pipeline(
             composition.runtime.pipelineHealth.health, nowMs: composition.clock.nowMs)
         detailedLogLines = AppRuntimeLog.shared.recent
         powerAlert = composition.powerWatchdogAlert
+        let power = composition.foregroundState.devicePower
+        phone = Self.phone(power, percent: HeartbeatTelemetry.phoneBatteryPercent())
+        if let status = try? await composition.voiceRecognition.status() {
+            voices = Self.voices(
+                status,
+                hold: BackgroundWorkPolicy.decideVoiceRecognition(
+                    composition.settings.backgroundCatchUp, power, foreground: true),
+                nowMs: composition.clock.nowMs)
+        }
         buildInfo = BuildFormatting.describe(
             builtAtISO8601: BuildInfo.builtAtISO8601, revision: BuildInfo.gitRevision,
             nowMs: composition.clock.nowMs)
@@ -1626,8 +1654,99 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         )
         supportReportText = Self.report(
             report, segments: recentSegments, failures: failedItems, link: watchLink,
-            watchSend: watchSend, pipeline: pipeline, storage: storage
+            watchSend: watchSend, pipeline: pipeline, storage: storage, buildInfo: buildInfo,
+            notices: [
+                ("Background CPU", powerAlert), (Copy.Settings.Diagnostics.residency, residency),
+                (Copy.Settings.Diagnostics.watchRestart, watchRestart), (Copy.Settings.Diagnostics.cloudAccount, cloudAccount),
+                (Copy.Settings.Diagnostics.voices, voices), (Copy.Settings.Diagnostics.archive, archive), (Copy.Settings.Diagnostics.phone, phone),
+            ],
+            parked: queueParked
         )
+    }
+
+    /// What the phone itself is doing to model work. Heat and Low Power Mode get the sentence:
+    /// on 2026-10-29 a charging phone at "serious" held every model for an hour, and nothing on
+    /// this screen said so.
+    static func phone(_ power: DevicePowerSnapshot, percent: Int?) -> DiagnosticNotice {
+        let hot = power.thermalState >= .serious
+        return DiagnosticNotice(
+            value: Copy.Settings.Diagnostics.phoneValue(
+                pluggedIn: power.isPluggedIn, percent: percent, lowPower: power.isLowPowerMode,
+                hot: hot),
+            detail: hot
+                ? Copy.Settings.Diagnostics.phoneHotDetail
+                : power.isLowPowerMode ? Copy.Settings.Diagnostics.phoneLowPowerDetail : nil)
+    }
+
+    static func residency(_ state: BackgroundResidency.State) -> DiagnosticNotice? {
+        typealias D = Copy.Settings.Diagnostics
+        switch state {
+        case .notNeeded, .held: return nil
+        case .failed: return DiagnosticNotice(value: D.residencyFailed, detail: D.residencyFailedDetail)
+        case .interrupted:
+            return DiagnosticNotice(value: D.residencyInterrupted, detail: D.residencyInterruptedDetail)
+        }
+    }
+
+    /// The restart the watch reports about itself: a crash loop, or the guard standing down,
+    /// otherwise reads as "Connected, waiting for audio".
+    static func watchRestart(_ restart: InfoSnapshot.WatchRestart?) -> DiagnosticNotice? {
+        guard let restart else { return nil }
+        typealias D = Copy.Settings.Diagnostics
+        return DiagnosticNotice(
+            value: D.watchRestartValue(
+                reason: restart.reasonName, crash: restart.isFault, inARow: restart.faultBoots),
+            detail: D.watchRestartDetail(
+                cause: restart.isFault ? restart.reasonName : nil,
+                crashesLogged: restart.errorReboots, stoodDown: restart.stoodDown))
+    }
+
+    static func archive(_ status: ArchiveSyncStatus, nowMs: Int64) -> DiagnosticNotice? {
+        typealias D = Copy.Settings.Diagnostics
+        switch status.link {
+        case .notLinked: return nil
+        case .revoked: return DiagnosticNotice(value: D.archiveRevoked)
+        case .linked: break
+        }
+        guard status.enabled else { return DiagnosticNotice(value: D.archivePaused) }
+        let value = D.archiveValue(
+            pending: status.pending,
+            lastSyncAgo: status.lastBatchAtMs.map { Formatting.duration(max(0, nowMs - $0)) },
+            sending: status.sending)
+        let detail = status.lastError ?? (status.parked > 0 ? D.archiveParked(status.parked) : nil)
+        return DiagnosticNotice(value: value, detail: detail)
+    }
+
+    /// Voice recognition in one line, by the same rule People & voices uses while it is on
+    /// screen. The service's last error goes underneath, as the only place it can be read.
+    static func voices(
+        _ status: VoiceRecognitionStatus, hold: BackgroundWorkDecision, nowMs: Int64
+    ) -> DiagnosticNotice {
+        typealias D = Copy.Settings.Diagnostics
+        guard status.configuration.mode == .local else { return DiagnosticNotice(value: D.voicesOff) }
+        let value: String
+        switch status.models {
+        case .notInstalled: value = D.voicesModelsMissing
+        case .downloading(let received, let total):
+            value = D.voicesDownloading(total > 0 ? Int(received * 100 / total) : 0)
+        case .installing: value = D.voicesInstalling
+        case .failed(let message): return DiagnosticNotice(value: D.voicesModelsFailed, detail: message)
+        case .installed:
+            let reason: String?
+            switch hold {
+            case .run: reason = nil
+            case .hold(.onBattery), .hold(.userTurnedItOff): reason = D.voicesWaitForCharging
+            case .hold(.tooHot): reason = D.voicesWaitTooHot
+            case .hold(.lowPowerMode): reason = D.voicesWaitLowPower
+            }
+            value = D.voicesValue(
+                waiting: status.pendingRecordings, hold: reason,
+                lastCheckAgo: status.lastWorkAtMs.map { Formatting.duration(max(0, nowMs - $0)) },
+                checking: status.isProcessing)
+        }
+        let failed = status.failedRecordings > 0 ? D.voicesFailed(status.failedRecordings) : nil
+        let detail = [failed, status.lastMessage].compactMap { $0 }.joined(separator: " ")
+        return DiagnosticNotice(value: value, detail: detail.isEmpty ? nil : detail)
     }
 
     /// Whether the processing pass is turning, and which of its steps are not.
@@ -1857,8 +1976,16 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         link: DiagnosticLinkFault?,
         watchSend: WatchSendHealth,
         pipeline: DiagnosticPipeline,
-        storage: DiagnosticStorage?
+        storage: DiagnosticStorage?,
+        buildInfo: String,
+        notices: [(String, DiagnosticNotice?)],
+        parked: Int
     ) -> String {
+        let noticeLines = notices.compactMap { title, notice in
+            notice.map {
+                "\(title): \($0.value)" + ($0.detail.map { " — \($0)" } ?? "") + "\n"
+            }
+        }.joined()
         // The refusal, if there is one, sits directly under the receiver state it explains —
         // the sentence the user was shown, then the raw code, which is the one thing a reader
         // of this report needs and the one thing the screen must never print.
@@ -1870,17 +1997,19 @@ final class LiveDiagnosticsSource: DiagnosticsSource {
         return """
         Audio Companion support report
         Generated: \(Date(timeIntervalSince1970: Double(report.generatedAtMs) / 1000))
+        Build: \(buildInfo)
         Receiver: \(report.receiverState)
         \(watchLink)Capture intent: \(report.captureIntent)
         \(SupportReportText.watchSend(watchSend))Segments stored: \(report.diagnostics.segmentCount)
         Transcription queue: \(Copy.Settings.Diagnostics.queueValue(
             waiting: report.diagnostics.queuedTranscriptionTasks,
             failed: report.diagnostics.failedTranscriptionTasks,
-            heldInBackground: report.diagnostics.transcriptionDeferredInBackground))
+            heldInBackground: report.diagnostics.transcriptionDeferredInBackground,
+            parked: parked))
         \(SupportReportText.failures(failures))AI titles & summaries: \(report.diagnostics.conversationsAwaitingEnrichment) waiting · \
         running: \(report.diagnostics.enrichmentRunning)
         Processing: \(pipeline.summary)
-        \(SupportReportText.pipeline(pipeline))Low storage: \(report.diagnostics.lowStorage)
+        \(SupportReportText.pipeline(pipeline))\(noticeLines)Low storage: \(report.diagnostics.lowStorage)
         \(storage?.reportLines ?? "")Recent segments:
         \(segments.map { "  \($0.title) — \($0.detail)" }.joined(separator: "\n"))
         (Counters and gap metadata only — never audio or transcript text.)

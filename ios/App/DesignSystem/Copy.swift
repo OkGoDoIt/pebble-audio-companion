@@ -1090,6 +1090,115 @@ enum Copy {
             static let build = "Build"
             static let buildUnknown = "Unknown — rebuild through Xcode to stamp it"
             static let powerAlert = "Battery"
+            /// e.g. "9 s of CPU a minute at 12:24 PM". Only minutes wholly in the background
+            /// and on battery are judged, so this is never the minute someone opened the app.
+            static func powerAlertValue(seconds: Double, at: String) -> String {
+                "\(Int(seconds.rounded())) s of CPU a minute at \(at)"
+            }
+            static func powerAlertDetail(budget: Double) -> String {
+                "Over the \(Int(budget)) s a minute the app should use in the background on "
+                    + "battery. Something may be looping; share the log."
+            }
+            /// The phone's own conditions, which hold model work (transcription on this phone,
+            /// voice recognition) without anything being wrong with the app.
+            static let phone = "Phone"
+            /// e.g. "charging · 50%" / "on battery · 52% · Low Power Mode".
+            static func phoneValue(pluggedIn: Bool, percent: Int?, lowPower: Bool, hot: Bool)
+                -> String
+            {
+                var parts = [pluggedIn ? "charging" : "on battery"]
+                if let percent { parts[0] += " · \(percent)%" }
+                if lowPower { parts.append("Low Power Mode") }
+                if hot { parts.append("hot") }
+                return parts.joined(separator: " · ")
+            }
+            static let phoneHotDetail =
+                "Transcription on this phone and voice recognition wait until it cools down."
+            static let phoneLowPowerDetail =
+                "Transcription on this phone and voice recognition wait while Low Power Mode is on."
+
+            /// A cloud account the provider refused (out of credit, a key it will not take). While
+            /// it lasts nothing is sent, and before this row nothing on this screen said so.
+            static let cloudAccount = "Cloud transcription"
+            static func cloudAccountValue(provider: String, short: String) -> String {
+                "\(provider) · \(short)"
+            }
+
+            /// Whether iOS let the app keep running in the background. Present only when it did
+            /// not: then the watch's audio waits for Bluetooth wakes, or for the app to open.
+            static let residency = "Background"
+            static let residencyFailed = "can’t stay running"
+            static let residencyFailedDetail =
+                "iOS wouldn’t let the app keep running. Audio waits until the app is opened."
+            static let residencyInterrupted = "interrupted"
+            static let residencyInterruptedDetail =
+                "A call or another app took the audio session. Recording continues when it ends."
+
+            /// The watch's own account of its last restart.
+            static let watchRestart = "Watch last restart"
+            /// e.g. "software update" / "crash" / "3 crashes in a row". The crash's own cause is
+            /// firmware vocabulary, so it goes in the sentence underneath.
+            static func watchRestartValue(reason: String, crash: Bool, inARow: Int) -> String {
+                guard crash else { return reason }
+                return inARow > 1 ? "\(inARow) crashes in a row" : "crash"
+            }
+            static func watchRestartDetail(
+                cause: String?, crashesLogged: Int, stoodDown: Bool
+            ) -> String? {
+                var parts: [String] = []
+                if let cause { parts.append("Cause: \(cause).") }
+                if stoodDown {
+                    parts.append("The watch turned background audio off after crashing repeatedly. "
+                        + "Turn it back on in the watch’s Audio Companion settings.")
+                } else if crashesLogged > 0 {
+                    parts.append(crashesLogged == 1
+                        ? "1 crash restart logged on this watch."
+                        : "\(crashesLogged.formatted()) crash restarts logged on this watch.")
+                }
+                return parts.isEmpty ? nil : parts.joined(separator: " ")
+            }
+
+            /// The archive server, when one is linked.
+            static let archive = "Archive server"
+            static func archiveValue(pending: Int, lastSyncAgo: String?, sending: Bool) -> String {
+                var parts = [pending == 0 ? "up to date" : "\(pending.formatted()) waiting"]
+                if sending { parts.append("sending") }
+                else if let lastSyncAgo { parts.append("last sync \(lastSyncAgo) ago") }
+                return parts.joined(separator: " · ")
+            }
+            static let archivePaused = "paused"
+            static let archiveRevoked = "unlinked by the server"
+            static func archiveParked(_ count: Int) -> String {
+                count == 1 ? "1 change couldn’t be synced." : "\(count.formatted()) changes couldn’t be synced."
+            }
+
+            /// Voice recognition, which runs only while the phone charges.
+            static let voices = "Voices"
+            static let voicesOff = "off"
+            static let voicesModelsMissing = "models not downloaded"
+            static func voicesDownloading(_ percent: Int) -> String { "downloading models · \(percent)%" }
+            static let voicesInstalling = "installing models"
+            static let voicesModelsFailed = "models couldn’t install"
+            static let voicesUpToDate = "up to date"
+            /// e.g. "12 waiting · waits for charging" / "12 waiting · last check 3 sec ago".
+            static func voicesValue(waiting: Int, hold: String?, lastCheckAgo: String?, checking: Bool)
+                -> String
+            {
+                var parts = [waiting == 0 ? voicesUpToDate : "\(waiting.formatted()) waiting"]
+                if waiting > 0 {
+                    if let hold { parts.append(hold) }
+                    else if checking { parts.append("checking") }
+                    else if let lastCheckAgo { parts.append("last check \(lastCheckAgo) ago") }
+                }
+                return parts.joined(separator: " · ")
+            }
+            /// Under the row, beside the service's last error, so the value stays one line.
+            static func voicesFailed(_ count: Int) -> String {
+                count == 1 ? "1 recording couldn’t be checked." : "\(count.formatted()) recordings couldn’t be checked."
+            }
+            static let voicesWaitForCharging = "waits for charging"
+            static let voicesWaitTooHot = "phone too hot"
+            static let voicesWaitLowPower = "Low Power Mode"
             static let receiver = "Receiver"
             static let receiverRecording = "Recording from Pebble"
             static let watchReports = "Watch reports"
@@ -1194,10 +1303,14 @@ enum Copy {
             /// and no surface ever read it, so a queue that was simply waiting for the user to
             /// open the app looked identical to one that was stuck.
             static func queueValue(
-                waiting: Int, failed: Int, heldInBackground: Bool = false
+                waiting: Int, failed: Int, heldInBackground: Bool = false, parked: Int = 0
             ) -> String {
                 var line = "\(waiting) waiting"
                 if waiting > 0, heldInBackground { line += " · held in the background" }
+                // Parked: no transcription service could take them (a paused cloud account, a
+                // local model that will not load, Wi-Fi only off Wi-Fi). Counted in neither of
+                // the others, so the row used to read "0 waiting · 0 failed" with nothing moving.
+                if parked > 0 { line += " · \(parked) parked" }
                 return line + " · \(failed) failed"
             }
             /// Audio the watch tried to hand over and the link would not take, counted by the
@@ -1226,8 +1339,12 @@ enum Copy {
                 return amount + " · kept by the watch"
             }
 
-            static let watchCouldNotSend = "Watch couldn’t send"
-            /// e.g. "1487 times" / "never" / "not reported by this watch".
+            /// Each count is one send the watch's Bluetooth stack turned away and the watch
+            /// retried on its next drain: flow control, not audio lost. It used to say "Watch
+            /// couldn’t send", and 82,325 of those on 2026-10-29 read like a disaster on a day
+            /// with nothing missing.
+            static let watchCouldNotSend = "Watch waited for Bluetooth"
+            /// e.g. "1,487 times" / "never" / "not reported by this watch".
             ///
             /// The last case is NOT "never": firmware older than this counter leaves the field
             /// zero, so reading it as a count would answer the question confidently and wrongly.
@@ -1236,17 +1353,17 @@ enum Copy {
                 switch count {
                 case 0: return "never"
                 case 1: return "once"
-                default: return "\(count) times"
+                default: return "\(count.formatted()) times"
                 }
             }
             /// The support-report line: the number plus how to read it, because the person
             /// reading a pasted report is exactly the person who has to act on it.
             static func watchCouldNotSendReport(_ count: UInt32?) -> String {
                 guard let count else {
-                    return "Watch couldn’t send: not reported by this watch "
+                    return "Watch waited for Bluetooth: not reported by this watch "
                         + "(firmware older than the counter — not the same as never)"
                 }
-                return "Watch couldn’t send: \(count) times since the watch started "
+                return "Watch waited for Bluetooth: \(count) times since the watch started "
                     + "(with audio missing: climbing = the link couldn’t keep up, "
                     + "flat = this phone stopped acknowledging)"
             }

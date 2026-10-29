@@ -1005,6 +1005,13 @@ enum WatchSendHealth: Equatable {
 /// The wire protocol names its refusals precisely (`AuthStatus`, `RevokeReason`,
 /// `ProtocolErrorCode`, the version range in the Info snapshot) and the phone used to decode all
 /// of it and show none of it. `StatusUI.WatchLinkFault` classifies; these are the words.
+/// A row whose value needs a sentence beneath it some of the time: the value on the right, and
+/// the sentence (when there is one) under the whole row.
+struct DiagnosticNotice: Equatable {
+    var value: String
+    var detail: String?
+}
+
 struct DiagnosticLinkFault: Equatable {
     /// Two or three words for the row's trailing value, e.g. "another phone".
     let short: String
@@ -1096,7 +1103,21 @@ protocol DiagnosticsSource: AnyObject {
     var buildInfo: String { get }
     /// The app's own CPU watchdog: set when this process has been spending more than its budget
     /// while in the background. Nil is the calm case and the row is absent.
-    var powerAlert: String? { get }
+    var powerAlert: DiagnosticNotice? { get }
+    /// Charging, battery, Low Power Mode and heat: the conditions that hold model work.
+    var phone: DiagnosticNotice { get }
+    /// Whether voice recognition is on, what it has left, and why it is not running if it is not.
+    var voices: DiagnosticNotice { get }
+    /// Recordings no transcription service could take right now. Zero is the calm case.
+    var queueParked: Int { get }
+    /// A refused cloud account, while it holds sending. Nil is the calm case.
+    var cloudAccount: DiagnosticNotice? { get }
+    /// iOS would not keep the app running, or took the audio session. Nil is the calm case.
+    var residency: DiagnosticNotice? { get }
+    /// The watch's last restart, once a watch has been read.
+    var watchRestart: DiagnosticNotice? { get }
+    /// The archive server's sync, when one is linked.
+    var archive: DiagnosticNotice? { get }
     /// The Ask recall experiment's newest records, newest first. Empty until a question's
     /// range overflowed what one answer can read — the ordinary library is read whole and
     /// never gets there, and an empty card says so rather than showing zeros.
@@ -1132,7 +1153,18 @@ final class MockDiagnosticsSource: DiagnosticsSource {
     var enrichmentRunning = false
     var failedItems: [DiagnosticFailure] = []
     var pipeline = DiagnosticPipeline(summary: Copy.Settings.Diagnostics.pipelineWorking("2 s"))
-    var powerAlert: String?
+    var powerAlert: DiagnosticNotice?
+    var phone = DiagnosticNotice(
+        value: Copy.Settings.Diagnostics.phoneValue(
+            pluggedIn: true, percent: 64, lowPower: false, hot: false))
+    var voices = DiagnosticNotice(
+        value: Copy.Settings.Diagnostics.voicesValue(
+            waiting: 12, hold: nil, lastCheckAgo: "3 sec", checking: false))
+    var queueParked = 0
+    var cloudAccount: DiagnosticNotice?
+    var residency: DiagnosticNotice?
+    var watchRestart: DiagnosticNotice? = DiagnosticNotice(value: "software update")
+    var archive: DiagnosticNotice?
     var buildInfo = "Sep 9, 2026 at 3:24 PM · 84ca738 · 12 min ago"
     /// The artboard case is the phone on 2026-10-12: audio a fifth of what iOS blamed on the
     /// app, and a `tmp/` folder bigger than the recordings.
