@@ -2150,7 +2150,9 @@ final class HeartbeatTelemetry: @unchecked Sendable {
     /// foreground is not a background minute, whatever the state reads at the moment of the
     /// sample: on 2026-10-29 eleven seconds on screen made a 6.01 s minute "background", and the
     /// row then told the person who had just opened the app that something was looping.
-    private var sawForeground = false
+    /// Starts true: a process's first minute is launch work (store recovery, catch-up), 12.9 s
+    /// on 2026-10-29, which `phone-cost-report.sh` flags as "launch" rather than judging.
+    private var sawForeground = true
 
     /// Called when the app becomes active.
     func noteForeground() {
