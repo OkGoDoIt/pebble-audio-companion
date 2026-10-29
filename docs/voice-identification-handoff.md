@@ -22,6 +22,15 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
+- **2026-10-29, the queue took turns:** claims ordered by `updatedAtMs` round-robined every
+  pending recording, 20 s per visit, so "Find voices in all recordings" showed 0 checked for
+  hours. `3b62e47c` claims newest new recording first, then the history run in discovery order,
+  each to its end; discovery folds covered new-recording jobs into the run; the card counts
+  recordings with a per-window bar (`VoiceRunCard`). Pace unchanged (~4.4x realtime
+  backgrounded on a charger). Not on G17 yet: it went unavailable at 09:46, and
+  `scratchpad/deploy-runs-when-back.sh` installs it on return. What to check after the install:
+  `voice_jobs` rows reaching `done` one at a time, and the card's count rising.
+
 - **2026-10-28, noise suggestions:** "Who is this?" now has **Ignore All Clips** below "More than
   one person", plus **Ignore Clip** in each clip menu. Both save audio-range dismissals, never
   embedding-based negative evidence. All includes the group's crops beyond the three previews.
