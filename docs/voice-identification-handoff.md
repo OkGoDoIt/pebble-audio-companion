@@ -22,6 +22,15 @@ Living notes for whichever agent continues this. Newest state first. The design 
 
 ## State of the phone
 
+- **2026-10-29 13:20, after 3b62e47c went on G17 (12:17):**
+  - **Status:** cost PASS. No voice work, because the phone was hot on the charger
+    (`thermal=serious`, model work held).
+  - **Queue:** 132 new-recording jobs are ahead of run f890de75, whose 575 jobs have 0 done.
+    The 132 are newer than its discovery cursor (Sept 25), so nothing folds yet.
+  - **Display:** `618d1df8` makes the run card say "N newer recordings first". `f712bb8d` adds
+    a Voices row to Diagnostics (waiting, hold reason, last check, failures, last error) and a
+    Phone row that shows the heat.
+  - **Next check:** whether `voice_jobs` reach `done` after a cool charge.
 - **2026-10-29, the queue took turns:** claims ordered by `updatedAtMs` round-robined every
   pending recording, 20 s per visit, so "Find voices in all recordings" showed 0 checked for
   hours. `3b62e47c` claims newest new recording first, then the history run in discovery order,
