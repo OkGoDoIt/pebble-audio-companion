@@ -19,12 +19,20 @@ public enum SpeakerGrouping {
     /// person, and a voice heard once is not worth asking about.
     public static func group(_ items: [Item], threshold: Double = 0.6, minimumItems: Int = 3,
                              minimumSources: Int = 2) -> [[String]] {
-        let n = items.count
-        guard n >= minimumItems else { return [] }
+        guard items.count >= minimumItems else { return [] }
+        return averageLinkage(items.map(\.embedding), threshold: threshold)
+            .filter { $0.count >= minimumItems && Set($0.map { items[$0].sourceID }).count >= minimumSources }
+            .sorted { $0.count > $1.count }
+            .map { $0.map { items[$0].id } }
+    }
+
+    /// Indices of `embeddings` grouped so every merge joins groups alike on average.
+    public static func averageLinkage(_ embeddings: [SpeakerEmbedding], threshold: Double) -> [[Int]] {
+        let n = embeddings.count
         var similarity = [[Double]](repeating: [Double](repeating: 0, count: n), count: n)
         for i in 0..<n {
-            for j in (i + 1)..<n {
-                let s = (try? items[i].embedding.cosineSimilarity(to: items[j].embedding)) ?? -1
+            for j in (i + 1)..<max(i + 1, n) {
+                let s = (try? embeddings[i].cosineSimilarity(to: embeddings[j])) ?? -1
                 similarity[i][j] = s; similarity[j][i] = s
             }
         }
@@ -35,7 +43,7 @@ public enum SpeakerGrouping {
             var best = (a: -1, b: -1, average: threshold)
             for a in 0..<n {
                 guard let ma = members[a] else { continue }
-                for b in (a + 1)..<n {
+                for b in (a + 1)..<max(a + 1, n) {
                     guard let mb = members[b] else { continue }
                     let average = sums[a][b] / Double(ma.count * mb.count)
                     if average >= best.average { best = (a, b, average) }
@@ -50,8 +58,5 @@ public enum SpeakerGrouping {
             }
         }
         return members.compactMap { $0 }
-            .filter { $0.count >= minimumItems && Set($0.map { items[$0].sourceID }).count >= minimumSources }
-            .sorted { $0.count > $1.count }
-            .map { $0.map { items[$0].id } }
     }
 }

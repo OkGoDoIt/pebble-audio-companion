@@ -53,6 +53,19 @@ public struct SpeakerEmbedding: Codable, Equatable, Sendable {
         return values.map { Float(Double($0) / norm) }
     }
 
+    /// One voice from several crops of it: their normalized mean. A 2–3 s crop of watch audio is
+    /// a noisy reading of a voice, and the noise averages out while the voice doesn't.
+    public static func pooled(_ embeddings: [SpeakerEmbedding]) throws -> SpeakerEmbedding {
+        guard let first = embeddings.first else { throw SpeakerRecognitionError.invalidEmbedding }
+        var sum = [Double](repeating: 0, count: first.values.count)
+        for embedding in embeddings {
+            guard embedding.recipe == first.recipe else { throw SpeakerRecognitionError.incompatibleRecipe }
+            let values = try normalized(embedding.values, dimensions: embedding.recipe.dimensions)
+            for index in sum.indices { sum[index] += Double(values[index]) }
+        }
+        return try SpeakerEmbedding(recipe: first.recipe, values: sum.map { Float($0) })
+    }
+
     public func cosineSimilarity(to other: SpeakerEmbedding) throws -> Double {
         guard recipe == other.recipe else { throw SpeakerRecognitionError.incompatibleRecipe }
         let a = try Self.normalized(values, dimensions: recipe.dimensions)

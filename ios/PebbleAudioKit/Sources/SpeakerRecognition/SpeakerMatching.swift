@@ -164,7 +164,10 @@ public struct SpeakerMatchRoster: Sendable {
         self.people = people
     }
 
-    public func match(_ query: SpeakerEmbedding) throws -> SpeakerMatch {
+    /// `policy` replaces the roster's own for this call: a whole speaker's pooled voice and a
+    /// single crop don't sit in the same score range, so they don't share a threshold.
+    public func match(_ query: SpeakerEmbedding, policy override: SpeakerMatchPolicy? = nil) throws -> SpeakerMatch {
+        let policy = override ?? self.policy
         _ = try SpeakerEmbedding(recipe: query.recipe, values: query.values)
         func abstain(_ reason: SpeakerAbstention, score: Double? = nil, margin: Double? = nil) -> SpeakerMatch {
             SpeakerMatch(personID: nil, score: score, margin: margin,
