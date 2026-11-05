@@ -123,6 +123,22 @@ struct VoiceSettingsModelTests {
         #expect(model.leadReview?.id == "c")
     }
 
+    /// A stray few seconds waits on the person's own screen rather than asking unprompted.
+    @Test func aFewSecondsOfAVoiceIsNotWorthAskingAbout() async {
+        let source = VoiceTestSource()
+        source.state.enabled = true
+        let dana = Person(id: "dana", name: "Dana")
+        source.unknown = [
+            UnknownVoiceDisplay(id: "brief-maybe", recordingCount: 1, detail: "", clips: [], speechMs: 20_000,
+                                suggestion: VoiceSuggestionDisplay(person: dana, colorIndex: 1, score: 0.5)),
+            UnknownVoiceDisplay(id: "brief", recordingCount: 2, detail: "", clips: [], speechMs: 20_000),
+        ]
+        let model = VoiceSettingsModel(source: source)
+        await model.refresh()
+        #expect(model.toReview.isEmpty && model.toName.isEmpty && model.leadReview == nil)
+        #expect(model.possibleMatches.map(\.id) == ["brief-maybe"], "Still there for them to look through")
+    }
+
     /// "Is this you?" comes up only for someone with no voice of their own, about a voice heard
     /// far more than any other.
     @Test func theFirstQuestionIsAboutTheVoiceHeardMost() async {

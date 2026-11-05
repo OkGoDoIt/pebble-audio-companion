@@ -56,10 +56,15 @@ final class VoiceSettingsModel {
         }
     }
 
-    /// Voices that might be someone, most heard first.
-    var toReview: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion != nil } }
-    /// Voices like nobody yet.
-    var toName: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion == nil } }
+    /// A stray few seconds can wait: on the phone, 51 of 61 possible matches held under a minute,
+    /// and the 5 largest held three-quarters of the speech.
+    static let worthAskingMs: Int64 = 60_000
+    /// Everything that might be someone, most heard first: their own screen lists these.
+    var possibleMatches: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion != nil } }
+    /// The ones worth asking about unprompted.
+    var toReview: [UnknownVoiceDisplay] { possibleMatches.filter { $0.speechMs >= Self.worthAskingMs } }
+    /// Voices like nobody yet, heard enough to be worth a name.
+    var toName: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion == nil && $0.speechMs >= Self.worthAskingMs } }
     /// No voice to go by for the person wearing the watch, and no voice to ask them about either.
     var needsOwnVoice: Bool { !hasOwnVoice(display) && firstAsk == nil }
 

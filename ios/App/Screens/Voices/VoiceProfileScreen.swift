@@ -94,7 +94,7 @@ struct VoiceProfileScreen: View {
                 }
             }
         }
-        .task(id: "\(personId):\(model.toReview.map(\.id).joined())") { await load() }
+        .task(id: "\(personId):\(model.possibleMatches.map(\.id).joined())") { await load() }
         .onDisappear { player.stop() }
         .fullScreenCover(item: $reviewing, onDismiss: { Task { await model.refresh(); await load() } }) { voice in
             VoiceReviewScreen(voice: voice) { UndoCenter.shared.snackbar = $0 }
@@ -161,7 +161,7 @@ struct VoiceProfileScreen: View {
     private func load() async {
         appearances = await model.appearances(personId: personId)
         var loaded: [UnknownVoiceDisplay] = []
-        for voice in model.toReview.filter({ $0.suggestion?.person.id == personId }).prefix(8) {
+        for voice in model.possibleMatches.filter({ $0.suggestion?.person.id == personId }).prefix(8) {
             loaded.append(await model.detail(voice) ?? voice)
         }
         possible = loaded
