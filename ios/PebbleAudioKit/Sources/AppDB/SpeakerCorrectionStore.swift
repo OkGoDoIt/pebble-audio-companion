@@ -77,6 +77,21 @@ public struct SpeakerIdentitySnapshot: Equatable, Sendable {
         return .named(first)
     }
 
+    /// Who a stretch might be, when nothing better names it: asked about, never asserted.
+    public func possiblePerson(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) -> Person? {
+        guard endMediaMs > startMediaMs else { return nil }
+        let rows = automaticAttributions.filter {
+            $0.attribution.segmentId == segmentId && $0.attribution.disposition == .suggestion
+                && $0.attribution.startMediaMs < endMediaMs && $0.attribution.endMediaMs > startMediaMs
+        }
+        guard let first = rows.first, rows.allSatisfy({ $0.person.id == first.person.id }) else { return nil }
+        let covered = rows.reduce(Int64(0)) { $0 + min(endMediaMs, $1.attribution.endMediaMs) - max(startMediaMs, $1.attribution.startMediaMs) }
+        guard Double(covered) >= 0.8 * Double(endMediaMs - startMediaMs) else { return nil }
+        var person = first.person
+        person.isCurrentUser = person.id == currentUserPersonId
+        return person
+    }
+
     /// Nil means no manual evidence intersects this interval, so legacy naming may be used.
     /// Exact coverage is intentional: a newly expanded ASR turn cannot inherit a name from a
     /// short corrected passage. Adjacent decisions for the same person can cover it together.

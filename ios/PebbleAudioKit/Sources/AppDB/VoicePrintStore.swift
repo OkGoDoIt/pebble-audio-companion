@@ -43,11 +43,11 @@ public struct VoiceNamingUpdate: Sendable {
     /// True when `names` were decided from the whole recording (a transcript speaker's turns can
     /// reach past the audio analysed): they replace all its names, not just those the prints cover.
     public var wholeRecording: Bool
-    /// The voices left unnamed, kept to be offered for naming. Nil leaves the crops as they are.
-    public var unmatched: [VoiceUnmatchedCrop]?
+    /// How much speech the recording holds, for how much of everything said has a name.
+    public var speechMs: Int64?
     public init(source: VoicePrintSource, names: [VoiceAutomaticAttribution], wholeRecording: Bool = false,
-                unmatched: [VoiceUnmatchedCrop]? = nil) {
-        self.source = source; self.names = names; self.wholeRecording = wholeRecording; self.unmatched = unmatched
+                speechMs: Int64? = nil) {
+        self.source = source; self.names = names; self.wholeRecording = wholeRecording; self.speechMs = speechMs
     }
 }
 
@@ -141,16 +141,16 @@ public struct VoicePrintStore: Sendable {
                       ready.generation == source.sourceGeneration, ready.revision == source.sourceRevision,
                       names.allSatisfy({ $0.segmentId == source.segmentId && $0.recipeID == source.recipeID
                           && $0.sourceRevision == source.sourceRevision }) else { continue }
-                struct Key: Hashable { let start, end: Int64; let person: String }
-                let wanted = Set(names.map { Key(start: $0.startMediaMs, end: $0.endMediaMs, person: $0.personId) })
+                struct Key: Hashable { let start, end: Int64; let person, disposition: String }
+                let wanted = Set(names.map { Key(start: $0.startMediaMs, end: $0.endMediaMs, person: $0.personId, disposition: $0.disposition.rawValue) })
                 var kept = Set<Key>()
                 var differs = false
                 let existing = try Row.fetchAll(d, sql: """
-                    SELECT id, personId, startMediaMs, endMediaMs FROM voice_auto_attributions
+                    SELECT id, personId, startMediaMs, endMediaMs, disposition FROM voice_auto_attributions
                     WHERE segmentId = ? AND recipeID = ? ORDER BY createdAtMs, id
                     """, arguments: [source.segmentId, source.recipeID])
                 for name in existing {
-                    let key = Key(start: name["startMediaMs"], end: name["endMediaMs"], person: name["personId"])
+                    let key = Key(start: name["startMediaMs"], end: name["endMediaMs"], person: name["personId"], disposition: name["disposition"])
                     // Only names on audio these prints cover are theirs to replace.
                     guard update.wholeRecording
                         || source.analyzed.contains(where: { $0.lowerBound <= key.start && key.end <= $0.upperBound }) else { continue }
@@ -158,13 +158,14 @@ public struct VoicePrintStore: Sendable {
                     try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE id = ?", arguments: [name["id"] as String])
                     differs = true
                 }
-                for name in names where !kept.contains(Key(start: name.startMediaMs, end: name.endMediaMs, person: name.personId)) {
+                for name in names where !kept.contains(Key(start: name.startMediaMs, end: name.endMediaMs, person: name.personId, disposition: name.disposition.rawValue)) {
                     if try Self.insertName(d, name) { differs = true }
                 }
                 try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = ? WHERE segmentId = ?",
                               arguments: [corpusRevision, source.segmentId])
-                if let unmatched = update.unmatched {
-                    try VoiceUnmatchedStore.replace(d, segmentId: source.segmentId, with: unmatched)
+                if let speechMs = update.speechMs {
+                    try d.execute(sql: "UPDATE voice_print_sources SET speechMs = ? WHERE segmentId = ?",
+                                  arguments: [speechMs, source.segmentId])
                 }
                 if differs { changed.append(source.segmentId) }
             }
@@ -177,8 +178,11 @@ public struct VoicePrintStore: Sendable {
     private static func insertName(_ d: Database, _ a: VoiceAutomaticAttribution) throws -> Bool {
         guard let state = try String.fetchOne(d, sql: "SELECT state FROM voice_runs WHERE runID = ?", arguments: [a.runID]),
               state != "undone",
-              try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM voice_examples WHERE personId = ? AND recipeID = ?",
-                               arguments: [a.personId, a.recipeID]) ?? 0 > 0 else { return false }
+              // Someone with a voice to go by: samples, or a voice they've named.
+              try Bool.fetchOne(d, sql: """
+                  SELECT EXISTS(SELECT 1 FROM voice_examples WHERE personId = ? AND recipeID = ?)
+                      OR EXISTS(SELECT 1 FROM voice_speaker_decisions WHERE personId = ? AND kind = 'confirmed')
+                  """, arguments: [a.personId, a.recipeID, a.personId]) == true else { return false }
         for table in ["speaker_corrections", "voice_suppressions"] {
             if try Bool.fetchOne(d, sql: "SELECT EXISTS(SELECT 1 FROM \(table) WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?)",
                                 arguments: [a.segmentId, a.endMediaMs, a.startMediaMs]) == true { return false }

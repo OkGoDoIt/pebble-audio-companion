@@ -59,18 +59,12 @@ public actor VoiceRecognitionService {
     public static let initialPolicy = SpeakerMatchPolicy(
         minimumSimilarity: 0.55, minimumMargin: 0.10, minimumExamples: 2,
         calibrationID: "public-read-speech-cactus-f145212-codec-variants-v2")
-    /// One speaker's pooled voice against a person's samples, calibrated on real watch recordings
-    /// (see `speakerNames`). Pooling is what makes watch audio separable at all.
-    public static let speakerPolicy = SpeakerMatchPolicy(
-        minimumSimilarity: 0.50, minimumMargin: 0.10, minimumExamples: 2,
-        calibrationID: "watch-speaker-pooled-v1")
-    /// Below this much heard of a speaker, the pooled voice is still a noisy reading.
-    static let minimumSpeakerCrops = 3
-    /// Clips kept of each speaker left unnamed, for "Who is this?".
-    static let unmatchedCropsPerSpeaker = 3
+    /// Recognized through a group of voices (`VoiceClustering`), not a per-crop score.
+    public static let clusterCalibrationID = "watch-voice-clusters-v1"
     private let store: VoiceIdentityStore
     private let history: VoiceHistoryPlanStore
     private let prints: VoicePrintStore
+    private let speakers: VoiceSpeakerStore
     private let files: SegmentFileReader
     private let models: any VoiceModelManaging
     private let analyzer: any SpeakerSpeechAnalyzing
@@ -78,7 +72,6 @@ public actor VoiceRecognitionService {
     private let recipeID: String
     private let protector: any VoiceProfileProtecting
     private var validatedCorpus: Int64?
-    private var groupCache: (key: String, groups: [UnknownVoiceGroup])?
     private var processing = false
     private var enrolling = false
     private var resumed = false
@@ -98,6 +91,8 @@ public actor VoiceRecognitionService {
     /// used to happen again for every slice.
     private var openRecording: (source: VoiceAudioSource, turns: [Range<Int64>]?)?
     private var seededDiscovery = false
+    /// What the voice groups were last worked out from.
+    private var clusterKey: String?
     private var settledThisLaunch = false
     private var lastAnalysisAtMs: Int64?
 
@@ -108,6 +103,7 @@ public actor VoiceRecognitionService {
         store = VoiceIdentityStore(db: database)
         history = VoiceHistoryPlanStore(db: database)
         prints = VoicePrintStore(db: database)
+        speakers = VoiceSpeakerStore(db: database)
         self.files = files; self.models = models; self.policy = policy
         analyzer = LocalSpeakerDiarizer(embeddingModelDirectory: models.embeddingDirectory,
                                        segmentationModelDirectory: models.segmentationDirectory)
@@ -123,6 +119,7 @@ public actor VoiceRecognitionService {
         store = VoiceIdentityStore(db: database)
         history = VoiceHistoryPlanStore(db: database)
         prints = VoicePrintStore(db: database)
+        speakers = VoiceSpeakerStore(db: database)
         self.files = files; self.models = models; self.analyzer = analyzer
         self.policy = policy; self.recipeID = recipeID; self.protector = protector
         self.transcriptTurns = transcriptTurns
@@ -222,9 +219,9 @@ public actor VoiceRecognitionService {
                      mayAnalyze: @escaping @Sendable () -> Bool) async -> (didWork: Bool, windows: Int, renamed: Int) {
         do { try await reconcileProfileProtection() }
         catch { lastMessage = error.localizedDescription; return (false, 0, 0) }
+        // Voices sort themselves with or without a single name yet: that's what gets asked about.
         guard let config = try? await store.configuration(), config.mode == .local,
-              await models.isInstalled(), let examples = try? await store.examples(), !examples.isEmpty,
-              let enabledAt = config.enabledAtMs else { return (false, 0, 0) }
+              await models.isInstalled(), let enabledAt = config.enabledAtMs else { return (false, 0, 0) }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         var queued = false
         let plans = (try? await history.plans()) ?? []
@@ -273,42 +270,41 @@ public actor VoiceRecognitionService {
         return (slice.didWork || queued || renamed > 0, slice.windows, renamed)
     }
 
-    /// Names recordings already analysed against the current voices from their saved prints: a
-    /// new or removed sample reaches every analysed recording here, without the models. At most
-    /// about `maxPrints` per call; returns how many recordings were read.
+    /// Brings names up to date from saved prints, without the models. A recording just heard is
+    /// sorted into its speakers; every speaker across the archive is sorted into voices when
+    /// anything they depend on changed; and each recording's turns take the names their speakers
+    /// now go by. At most about `maxPrints` per call; returns how many recordings were read.
     @discardableResult func renameFromPrints(maxPrints: Int = 2_000) async -> Int {
         do {
             let (config, examples) = try await store.corpus()
             guard config.mode == .local else { return 0 }
             let sources = try await prints.stale(corpusRevision: config.corpusRevision,
                                                  maxPrints: maxPrints, maxSources: 64)
+            let protector = protector
+            if !sources.isEmpty {
+                let known = try await speakers.cropCounts(segmentIds: sources.map(\.segmentId))
+                let toSort = sources.filter { known[$0.segmentId] != $0.prints.count }
+                if !toSort.isEmpty {
+                    // Thousands of comparisons: off this actor, so status reads don't wait on them.
+                    let sorted = try await Task.detached(priority: .utility) {
+                        try toSort.map { source in
+                            (segmentId: source.segmentId, drafts: try Self.speakerDrafts(source, protector: protector))
+                        }
+                    }.value
+                    try await speakers.replaceSpeakers(sorted)
+                }
+            }
+            try await sortVoicesIfNeeded(examples: examples)
             guard !sources.isEmpty else { return 0 }
-            let policy = policy, protector = protector, transcriptTurns = transcriptTurns, files = files
-            // Thousands of comparisons: off this actor, so status reads don't wait on them.
-            let updates = try await Task.detached(priority: .utility) {
-                var rosters: [String: SpeakerMatchRoster] = [:]
-                return try sources.map { source -> VoiceNamingUpdate in
-                    if rosters[source.recipeID] == nil {
-                        rosters[source.recipeID] = try Self.roster(examples: examples, recipeID: source.recipeID,
-                                                                   policy: policy, protector: protector)
-                    }
-                    // A print that no longer opens is left unnamed rather than holding up the rest.
-                    let opened = source.prints.compactMap { print in
-                        (try? Self.open(print, protector: protector)).map { (record: print, embedding: $0) }
-                    }
-                    let decided = try Self.speakerNames(opened, turns: transcriptTurns(source.segmentId),
-                        roster: rosters[source.recipeID]!, segmentId: source.segmentId,
-                        sourceRevision: source.sourceRevision, recipeID: source.recipeID)
-                    // Oldest recording's voices go first when the store fills.
-                    let heardAtMs = files.readMeta(source.segmentId)?.startWallMs ?? Int64(Date().timeIntervalSince1970 * 1000)
-                    let encoder = JSONEncoder()
-                    return VoiceNamingUpdate(source: source, names: decided.names, wholeRecording: true,
-                        unmatched: try decided.unnamed.map { clip in
-                            VoiceUnmatchedCrop(segmentId: source.segmentId, startMediaMs: clip.record.startMediaMs,
-                                endMediaMs: clip.record.endMediaMs, sourceRevision: source.sourceRevision,
-                                recipeID: source.recipeID, embeddingJSON: try protector.seal(encoder.encode(clip.voice)),
-                                speechConfidence: clip.record.speechConfidence, createdAtMs: heardAtMs)
-                        })
+            let inputs = try await speakers.namingInputs(segmentIds: sources.map(\.segmentId))
+            let transcriptTurns = transcriptTurns
+            let updates = await Task.detached(priority: .utility) {
+                zip(sources, inputs).map { source, recording -> VoiceNamingUpdate in
+                    let turns = transcriptTurns(source.segmentId)
+                    return VoiceNamingUpdate(source: source, names: Self.names(recording, turns: turns,
+                        sourceRevision: source.sourceRevision, recipeID: source.recipeID,
+                        runID: source.prints.first?.runID ?? ""),
+                        wholeRecording: true, speechMs: Self.speechMs(recording, turns: turns))
                 }
             }.value
             let renamed = try await prints.commitNames(updates, corpusRevision: config.corpusRevision,
@@ -320,6 +316,116 @@ public actor VoiceRecognitionService {
             lastMessage = error.localizedDescription
             return 0
         }
+    }
+
+    /// The speakers of one recording from its saved prints.
+    static func speakerDrafts(_ source: VoicePrintSource, protector: any VoiceProfileProtecting) throws -> [VoiceSpeakerDraft] {
+        // A print that no longer opens is left out rather than holding up the rest.
+        let opened = source.prints.sorted { $0.startMediaMs < $1.startMediaMs }.compactMap { print in
+            (try? open(print, protector: protector)).map { (record: print, embedding: $0) }
+        }
+        let crops = opened.map {
+            SpeakerDiarization.Crop(startMs: $0.record.startMediaMs, endMs: $0.record.endMediaMs, embedding: $0.embedding)
+        }
+        let assigned = SpeakerDiarization.speakers(crops)
+        let encoder = JSONEncoder()
+        return try Set(assigned).sorted().map { speaker in
+            let members = opened.indices.filter { assigned[$0] == speaker }.map { opened[$0] }
+            let spans = members.map {
+                VoiceSpeakerCrop(startMs: $0.record.startMediaMs, endMs: $0.record.endMediaMs,
+                                 confidencePercent: Int(($0.record.speechConfidence * 100).rounded()))
+            }
+            guard members.count >= SpeakerDiarization.minimumCrops else {
+                return VoiceSpeakerDraft(crops: spans, sealedVoice: nil, recipeJSON: nil)
+            }
+            let saved = try VoicePrintCodec.save(try SpeakerEmbedding.pooled(members.map(\.embedding)))
+            return VoiceSpeakerDraft(crops: spans, sealedVoice: try protector.seal(saved.bytes),
+                                     recipeJSON: try encoder.encode(saved.embedding.recipe))
+        }
+    }
+
+    /// Sorts every speaker into voices again when anything that decides it changed: new speakers,
+    /// or something a person said. Recordings whose names this changes are named on the next pass.
+    private func sortVoicesIfNeeded(examples: [VoiceConfirmedExample]) async throws {
+        let key = try await speakers.clusterKey()
+        guard key != clusterKey else { return }
+        let inputs = try await speakers.clusterInputs(minimumCrops: SpeakerDiarization.minimumCrops)
+        let protector = protector
+        // Samples recorded for the purpose belong to no recording's speakers: each is a labelled
+        // voice of its own, and they're how a first group gets its name.
+        let inRecordings = Set(inputs.map(\.segmentId))
+        let assignments = try await Task.detached(priority: .utility) { () -> [VoiceSpeakerAssignment] in
+            var ids: [Int64?] = []
+            var items: [VoiceClustering.Item] = []
+            for input in inputs {
+                guard let opened = try? VoicePrintCodec.open(protector.open(input.sealedVoice),
+                    recipe: JSONDecoder().decode(SpeakerEmbeddingRecipe.self, from: input.recipeJSON)) else { continue }
+                ids.append(input.id)
+                items.append(VoiceClustering.Item(source: input.segmentId, voice: opened.values, cropCount: input.cropCount,
+                    person: input.person, rejected: input.rejected, ignored: input.ignored))
+            }
+            let samples = Dictionary(grouping: examples.filter { !inRecordings.contains($0.segmentId) }, by: \.confirmationID)
+            for (confirmation, crops) in samples.sorted(by: { $0.key < $1.key }) {
+                let voices = crops.compactMap { try? StoredEnrollmentEmbedding.decode(protector.open($0.embeddingJSON)).primary }
+                guard let first = crops.first, !voices.isEmpty, let pooled = try? SpeakerEmbedding.pooled(voices),
+                      items.first.map({ $0.voice.count == pooled.values.count }) ?? true else { continue }
+                ids.append(nil)
+                items.append(VoiceClustering.Item(source: confirmation, voice: pooled.values, cropCount: crops.count, person: first.personId))
+            }
+            return VoiceClustering.cluster(items).flatMap { group -> [VoiceSpeakerAssignment] in
+                let speakerIds = group.members.compactMap { ids[$0] }
+                guard let clusterId = speakerIds.min() else { return [] }
+                return group.members.indices.compactMap { index in
+                    guard let id = ids[group.members[index]] else { return nil }
+                    return VoiceSpeakerAssignment(speakerId: id, clusterId: clusterId, personId: group.person,
+                        score: group.similarity[index], suggestedPersonId: group.suggestion?.person,
+                        suggestedScore: group.suggestion?.score, ignored: group.ignored)
+                }
+            }
+        }.value
+        let changedRecordings = try await speakers.applyClusters(assignments)
+        clusterKey = key
+        if changedRecordings > 0 { changed() }
+    }
+
+    /// Each turn takes its speaker's name; a name a person hasn't confirmed but might, as a
+    /// suggestion. Turns a person decided about stay theirs. With no transcript, the crops
+    /// themselves are all there is to name.
+    static func names(_ recording: VoiceNamingRecording, turns: [Range<Int64>]?, sourceRevision: String,
+                      recipeID: String, runID: String) -> [VoiceAutomaticAttribution] {
+        var spans: [SpeakerDiarization.Span] = []
+        for (index, speaker) in recording.speakers.enumerated() {
+            spans += speaker.crops.map { .init(startMs: $0.startMs, endMs: $0.endMs, speaker: index) }
+        }
+        let stretches = turns ?? spans.map { $0.startMs..<$0.endMs }
+        var out: [VoiceAutomaticAttribution] = []
+        var mergeable = false
+        for stretch in stretches.sorted(by: { $0.lowerBound < $1.lowerBound }) where !stretch.isEmpty {
+            guard !recording.blocked.contains(where: { $0.overlaps(stretch) }),
+                  let index = SpeakerDiarization.speaker(of: stretch, spans: spans) else { mergeable = false; continue }
+            let speaker = recording.speakers[index]
+            guard let person = speaker.personId ?? speaker.suggestedPersonId else { mergeable = false; continue }
+            let disposition: VoiceAttributionDisposition = speaker.personId != nil ? .recognized : .suggestion
+            if mergeable, let last = out.last, last.personId == person, last.disposition == disposition,
+               stretch.lowerBound - last.endMediaMs <= 1_000 {
+                out[out.count - 1] = VoiceAutomaticAttribution(personId: person, segmentId: recording.segmentId,
+                    startMediaMs: last.startMediaMs, endMediaMs: max(last.endMediaMs, stretch.upperBound),
+                    sourceRevision: sourceRevision, recipeID: recipeID, score: last.score, margin: nil,
+                    calibrationID: clusterCalibrationID, runID: runID, disposition: disposition)
+            } else {
+                out.append(VoiceAutomaticAttribution(personId: person, segmentId: recording.segmentId,
+                    startMediaMs: stretch.lowerBound, endMediaMs: stretch.upperBound, sourceRevision: sourceRevision,
+                    recipeID: recipeID, score: min(1, max(-1, speaker.score ?? 0)), margin: nil,
+                    calibrationID: clusterCalibrationID, runID: runID, disposition: disposition))
+            }
+            mergeable = true
+        }
+        return out
+    }
+
+    static func speechMs(_ recording: VoiceNamingRecording, turns: [Range<Int64>]?) -> Int64 {
+        if let turns { return turns.reduce(0) { $0 + max(0, $1.upperBound - $1.lowerBound) } }
+        return recording.speakers.reduce(0) { $0 + $1.crops.reduce(0) { $0 + $1.endMs - $1.startMs } }
     }
 
     public func takeChangedSegmentIds() -> [String] {
@@ -638,8 +744,7 @@ public actor VoiceRecognitionService {
     /// The normal foreground/new-recording hook. Repeating it is idempotent in the DB.
     public func enqueueSegment(segmentId: String) async throws {
         let config = try await store.configuration()
-        guard config.mode == .local,
-              !(try await store.examples()).isEmpty, await models.isInstalled() else { return }
+        guard config.mode == .local, await models.isInstalled() else { return }
         let source = try await load(segmentId)
         guard !source.meta.isOpen, source.endMediaMs >= 2_000 else { return }
         _ = try await store.prepareSource(segmentId: segmentId, revision: source.revision)
@@ -887,83 +992,40 @@ public actor VoiceRecognitionService {
                                  recipe: JSONDecoder().decode(SpeakerEmbeddingRecipe.self, from: print.recipeJSON))
     }
 
-    /// Names a recording speaker by speaker. The recording's crops are sorted into speakers
-    /// (`SpeakerDiarization`), each speaker's crops are pooled into one voice, and that voice is
-    /// named or not; then every transcript turn gets its speaker's name.
-    ///
-    /// Judging each 2–3 s crop alone named almost nothing on watch audio: a wearer's crops score a
-    /// median of 0.43 against their own samples, under the 0.55 bar, so names landed on scattered
-    /// clips (2.9% of words, in the recordings named most, 2026-11-05). Pooled, those speakers
-    /// score 0.5–0.75. Measured on 82 real recordings, this names about 40% of all speech, and got
-    /// none of the hand-labelled turns wrong. The bar is what keeps an unknown voice unnamed.
-    static func speakerNames(_ prints: [(record: VoiceTurnPrint, embedding: SpeakerEmbedding)], turns: [Range<Int64>]?,
-                             roster: SpeakerMatchRoster, segmentId: String, sourceRevision: String, recipeID: String)
-        throws -> (names: [VoiceAutomaticAttribution], unnamed: [(record: VoiceTurnPrint, voice: SpeakerEmbedding)]) {
-        let ordered = prints.sorted { $0.record.startMediaMs < $1.record.startMediaMs }
-        let crops = ordered.map {
-            SpeakerDiarization.Crop(startMs: $0.record.startMediaMs, endMs: $0.record.endMediaMs, embedding: $0.embedding)
-        }
-        let speakers = SpeakerDiarization.speakers(crops)
-        var matched: [Int: (person: String, match: SpeakerMatch, runID: String)] = [:]
-        var unnamed: [(record: VoiceTurnPrint, voice: SpeakerEmbedding)] = []
-        for speaker in Set(speakers).sorted() {
-            let members = ordered.indices.filter { speakers[$0] == speaker }.map { ordered[$0] }
-            guard members.count >= minimumSpeakerCrops else { continue }
-            let voice = try SpeakerEmbedding.pooled(members.map(\.embedding))
-            let match = try roster.match(voice, policy: speakerPolicy)
-            if let person = match.personID, match.score != nil {
-                matched[speaker] = (person.uuidString.lowercased(), match, members[0].record.runID)
-            } else {
-                // Its pooled voice is what can be recognised in another recording; a crop isn't.
-                unnamed += members.sorted { $0.record.speechConfidence > $1.record.speechConfidence }
-                    .prefix(unmatchedCropsPerSpeaker).map { ($0.record, voice) }
-            }
-        }
-        // Without a transcript, the crops themselves are all there is to name.
-        let stretches = turns ?? crops.map { $0.startMs..<$0.endMs }
-        var names: [VoiceAutomaticAttribution] = []
-        for stretch in stretches.sorted(by: { $0.lowerBound < $1.lowerBound }) where !stretch.isEmpty {
-            guard let speaker = SpeakerDiarization.speaker(of: stretch, crops: crops, speakers: speakers),
-                  let found = matched[speaker], let score = found.match.score else { continue }
-            if let last = names.last, last.personId == found.person, stretch.lowerBound - last.endMediaMs <= 1_000 {
-                names[names.count - 1] = VoiceAutomaticAttribution(personId: last.personId, segmentId: segmentId,
-                    startMediaMs: last.startMediaMs, endMediaMs: max(last.endMediaMs, stretch.upperBound),
-                    sourceRevision: sourceRevision, recipeID: recipeID, score: last.score, margin: last.margin,
-                    calibrationID: last.calibrationID, runID: last.runID)
-            } else {
-                names.append(VoiceAutomaticAttribution(personId: found.person, segmentId: segmentId,
-                    startMediaMs: stretch.lowerBound, endMediaMs: stretch.upperBound, sourceRevision: sourceRevision,
-                    recipeID: recipeID, score: score, margin: found.match.margin,
-                    calibrationID: found.match.calibrationID, runID: found.runID))
-            }
-        }
-        return (names, unnamed)
-    }
-
-    /// A voice heard in several recordings that recognition couldn't name, with its clearest crops.
+    /// A voice heard across recordings that nobody has named, with a clip from each.
     public struct UnknownVoiceGroup: Equatable, Sendable {
+        public let clusterId: Int64
         public let crops: [VoiceUnmatchedCrop]
+        public var speechMs: Int64 = 0
+        public var suggestedPersonId: String?
+        public var suggestedScore: Double?
         public var recordingCount: Int { Set(crops.map(\.segmentId)).count }
-        public init(crops: [VoiceUnmatchedCrop]) { self.crops = crops }
-        /// Only the crops from these recordings: the person said the rest are someone else.
-        public func limited(to recordings: Set<String>) -> UnknownVoiceGroup {
-            UnknownVoiceGroup(crops: crops.filter { recordings.contains($0.segmentId) })
+        public init(clusterId: Int64, crops: [VoiceUnmatchedCrop], speechMs: Int64 = 0,
+                    suggestedPersonId: String? = nil, suggestedScore: Double? = nil) {
+            self.clusterId = clusterId; self.crops = crops; self.speechMs = speechMs
+            self.suggestedPersonId = suggestedPersonId; self.suggestedScore = suggestedScore
         }
-        /// Its oldest crop: the same while the group's membership is.
-        public var id: String { crops.min { ($0.createdAtMs, $0.id) < ($1.createdAtMs, $1.id) }?.id ?? "" }
+        /// Only the clips from these recordings: the person said the rest are someone else.
+        public func limited(to recordings: Set<String>) -> UnknownVoiceGroup {
+            UnknownVoiceGroup(clusterId: clusterId, crops: crops.filter { recordings.contains($0.segmentId) },
+                              speechMs: speechMs, suggestedPersonId: suggestedPersonId, suggestedScore: suggestedScore)
+        }
+        public var id: String { "voice-\(clusterId)" }
     }
 
-    /// Recurring unnamed voices, largest first. Reads at most the 400 most recent unnamed crops;
-    /// grouping runs again only when those change, so screens can ask freely.
+    /// Voices nobody has named, most heard first. Those that might be someone are among them.
     public func unknownVoiceGroups(limit: Int = 6) async throws -> [UnknownVoiceGroup] {
-        let unmatched = VoiceUnmatchedStore(db: store.db)
-        let key = try await unmatched.fingerprint()
-        if let groupCache, groupCache.key == key { return Array(groupCache.groups.prefix(limit)) }
-        let crops = try await unmatched.recent(limit: 400).filter { $0.recipeID == recipeID }
-        let groups = try await groupUnknown(crops)
-        groupCache = (key, groups)
-        return Array(groups.prefix(limit))
+        try await speakers.unnamedClusters(limit: limit).map { cluster in
+            UnknownVoiceGroup(clusterId: cluster.id, crops: cluster.clips.map { clip in
+                VoiceUnmatchedCrop(id: String(clip.speakerId), segmentId: clip.segmentId, startMediaMs: clip.startMediaMs,
+                    endMediaMs: clip.endMediaMs, sourceRevision: "", recipeID: recipeID, embeddingJSON: Data(),
+                    speechConfidence: Double(clip.confidencePercent) / 100, createdAtMs: clip.heardAtMs)
+            }, speechMs: cluster.speechMs, suggestedPersonId: cluster.suggestedPersonId, suggestedScore: cluster.suggestedScore)
+        }
     }
+
+    /// How much of what's been said has a name, and whose.
+    public func coverage() async throws -> VoiceCoverage { try await speakers.coverage() }
 
     /// A stored crop's audio, for listening to before naming it.
     public func clipPCM(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws -> Data {
@@ -991,58 +1053,43 @@ public actor VoiceRecognitionService {
         return meta.startWallMs + SegmentMediaClock(meta).wall(fromMedia: mediaMs)
     }
 
-    private func groupUnknown(_ crops: [VoiceUnmatchedCrop]) async throws -> [UnknownVoiceGroup] {
-        let protector = protector
-        let items: [SpeakerGrouping.Item] = crops.compactMap { crop in
-            guard let data = try? protector.open(crop.embeddingJSON),
-                  let embedding = try? JSONDecoder().decode(SpeakerEmbedding.self, from: data) else { return nil }
-            return SpeakerGrouping.Item(id: crop.id, sourceID: crop.segmentId, embedding: embedding)
-        }
-        let byID = Dictionary(uniqueKeysWithValues: crops.map { ($0.id, $0) })
-        return await Task.detached(priority: .utility) { SpeakerGrouping.group(items) }.value
-            .map { ids in UnknownVoiceGroup(crops: ids.compactMap { byID[$0] }
-                .sorted { $0.speechConfidence > $1.speechConfidence }) }
-    }
-
-    /// The person said who an unnamed voice is: every crop carries their name, the clearest few
-    /// teach the voice, and the group is no longer asked about. `naming` widens a crop to the
-    /// range that should carry the name (the transcript paragraph it sits in): a name over part
-    /// of a paragraph leaves the paragraph unnamed.
-    public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String,
-                                 naming: @Sendable (VoiceUnmatchedCrop) -> Range<Int64>? = { _ in nil }) async throws -> Int {
-        let group = UnknownVoiceGroup(crops: try await VoiceUnmatchedStore(db: store.db).excludingIgnored(group.crops))
-        let corrections = SpeakerCorrectionStore(db: store.db)
-        for crop in group.crops {
-            let range = naming(crop) ?? crop.startMediaMs..<crop.endMediaMs
-            try await corrections.set(segmentId: crop.segmentId, startMediaMs: min(range.lowerBound, crop.startMediaMs),
-                                      endMediaMs: max(range.upperBound, crop.endMediaMs), personId: personId)
-        }
+    /// The person said who a voice is: it carries their name wherever it's heard, now and from
+    /// here on. Clips the person left out aren't them. The clearest few are kept as samples.
+    public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws -> Int {
+        let chosen = group.crops.compactMap { Int64($0.id) }
+        let everyone = try await speakers.speakers(inCluster: group.clusterId)
+        try await speakers.decide(speakers: chosen, kind: .confirmed, personId: personId)
+        try await speakers.decide(speakers: everyone.filter { !chosen.contains($0) }, kind: .rejected, personId: personId)
         var learned = 0
-        // One crop per recording first: different recordings are the independent evidence.
+        // One clip per recording: different recordings are the independent evidence.
         var seen = Set<String>()
-        let firsts = group.crops.filter { seen.insert($0.segmentId).inserted }
-        let firstIDs = Set(firsts.map(\.id))
-        let teaching = firsts + group.crops.filter { !firstIDs.contains($0.id) }
-        for crop in teaching.prefix(5) {
-            if let outcome = try? await enroll(personId: personId, segmentId: crop.segmentId,
-                                               startMediaMs: crop.startMediaMs, endMediaMs: min(crop.endMediaMs, crop.startMediaMs + 30_000)) {
+        for crop in group.crops.filter({ seen.insert($0.segmentId).inserted }).prefix(5) {
+            if let outcome = try? await enroll(personId: personId, segmentId: crop.segmentId, startMediaMs: crop.startMediaMs,
+                                               endMediaMs: min(crop.endMediaMs, crop.startMediaMs + 30_000)) {
                 learned += outcome.examplesAdded
             }
         }
-        try await VoiceUnmatchedStore(db: store.db).remove(ids: group.crops.map(\.id))
         changed()
         return learned
     }
 
-    /// Permanently dismiss these clips. Different recordings of a similar voice can still appear.
-    public func dismissUnknownVoice(_ group: UnknownVoiceGroup) async throws {
-        try await VoiceUnmatchedStore(db: store.db).ignore(group.crops)
+    /// "It's someone else": this voice stays unnamed, and isn't suggested as them again.
+    public func rejectSuggestion(_ group: UnknownVoiceGroup, personId: String) async throws {
+        try await speakers.decide(speakers: try await speakers.speakers(inCluster: group.clusterId),
+                                  kind: .rejected, personId: personId)
         changed()
     }
 
+    /// Stop asking about this voice, here and wherever else it's heard.
+    public func dismissUnknownVoice(_ group: UnknownVoiceGroup) async throws {
+        try await speakers.decide(speakers: try await speakers.speakers(inCluster: group.clusterId), kind: .ignored, personId: nil)
+        changed()
+    }
+
+    /// Leave this one recording's speaker out; the voice is still asked about elsewhere.
     public func ignoreUnknownClip(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) async throws {
-        try await VoiceUnmatchedStore(db: store.db).ignore(segmentId: segmentId,
-            startMediaMs: startMediaMs, endMediaMs: endMediaMs)
+        try await speakers.decide(speakers: try await speakers.speakers(segmentId: segmentId, overlapping: startMediaMs..<endMediaMs),
+                                  kind: .excluded, personId: nil)
         changed()
     }
 
@@ -1056,7 +1103,9 @@ public actor VoiceRecognitionService {
     public func forgetProfile(personId: String) async throws {
         cancelEnrollment()
         changedSegments.formUnion(try await store.automaticSegmentIds(personId: personId))
-        try await store.forgetProfile(personId: personId); changed()
+        try await store.forgetProfile(personId: personId)
+        try await speakers.forget(personId: personId)
+        changed()
     }
     public func removeExample(id: String) async throws { try await removeExamples(ids: [id]) }
     public func removeExamples(ids: [String]) async throws {

@@ -49,12 +49,12 @@ import Testing
 
     @Test func aStretchTakesItsSpeakerFromItsCropsOrFromBothSidesOfIt() throws {
         var noise = Noise(state: 1)
-        func crop(_ start: Int64, _ end: Int64) throws -> SpeakerDiarization.Crop {
-            .init(startMs: start, endMs: end, embedding: try Self.crop(Self.voice(0), 0, &noise))
-        }
-        let crops = try [crop(0, 2_000), crop(2_000, 4_000), crop(10_000, 12_000), crop(30_000, 32_000)]
-        let speakers = [0, 0, 1, 0]
-        func speaker(_ range: Range<Int64>) -> Int? { SpeakerDiarization.speaker(of: range, crops: crops, speakers: speakers) }
+        _ = noise.next()
+        let spans = [SpeakerDiarization.Span(startMs: 0, endMs: 2_000, speaker: 0),
+                     .init(startMs: 2_000, endMs: 4_000, speaker: 0),
+                     .init(startMs: 10_000, endMs: 12_000, speaker: 1),
+                     .init(startMs: 30_000, endMs: 32_000, speaker: 0)]
+        func speaker(_ range: Range<Int64>) -> Int? { SpeakerDiarization.speaker(of: range, spans: spans) }
         #expect(speaker(500..<3_500) == 0)
         #expect(speaker(1_000..<11_000) == 0, "Mostly the first speaker's crops")
         #expect(speaker(4_000..<4_500) == 0, "Only one side is close")

@@ -37,58 +37,43 @@ private actor ScriptedAnalyzer: SpeakerSpeechAnalyzing {
     static let recipe = SpeakerEmbeddingRecipe(modelID: "test", modelRevision: "1", weightsSHA256: "digest",
                                                runtimeID: "fake", preprocessingID: "16k", dimensions: 3)
     static let dana: [Float] = [1, 0, 0]
-    static let stranger: [Float] = [0, 1, 0]
-    static let danaID = UUID()
+    static let danaID = UUID().uuidString.lowercased()
 
-    private func roster() throws -> SpeakerMatchRoster {
-        try SpeakerMatchRoster(examples: try (0..<2).map { index in
-            ConfirmedSpeakerExample(id: "e\(index)", personID: Self.danaID, confirmationID: "c\(index)", sessionID: "s",
-                                    embedding: try SpeakerEmbedding(recipe: Self.recipe, values: Self.dana))
-        }, policy: VoiceRecognitionService.initialPolicy)
+    private func speaker(_ id: Int64, _ crops: [(Int64, Int64)], person: String? = nil, suggested: String? = nil) -> VoiceNamingSpeaker {
+        VoiceNamingSpeaker(id: id, crops: crops.map { VoiceSpeakerCrop(startMs: $0.0, endMs: $0.1, confidencePercent: 90) },
+                           personId: person, suggestedPersonId: suggested, score: 0.7)
     }
-    private func print(_ start: Int64, _ end: Int64, _ voice: [Float], confidence: Double = 0.9) throws
-        -> (record: VoiceTurnPrint, embedding: SpeakerEmbedding) {
-        (VoiceTurnPrint(startMediaMs: start, endMediaMs: end, speechConfidence: confidence, runID: "run",
-                        recipeJSON: Data("{}".utf8), sealedEmbedding: Data([1])),
-         try SpeakerEmbedding(recipe: Self.recipe, values: voice))
-    }
-    private func names(_ prints: [(record: VoiceTurnPrint, embedding: SpeakerEmbedding)], turns: [Range<Int64>]?) throws
-        -> (names: [VoiceAutomaticAttribution], unnamed: [(record: VoiceTurnPrint, voice: SpeakerEmbedding)]) {
-        try VoiceRecognitionService.speakerNames(prints, turns: turns, roster: roster(), segmentId: "seg",
-                                                 sourceRevision: "r", recipeID: "test-recipe")
+    private func names(_ speakers: [VoiceNamingSpeaker], turns: [Range<Int64>]?, blocked: [Range<Int64>] = []) -> [VoiceAutomaticAttribution] {
+        VoiceRecognitionService.names(VoiceNamingRecording(segmentId: "seg", speakers: speakers, blocked: blocked), turns: turns,
+                                      sourceRevision: "r", recipeID: "test-recipe", runID: "run")
     }
 
     /// The bug behind "no voices are ever matched": a clip at a time named scattered fragments.
     /// A recognised speaker's name now covers whole turns, the ones too short to have a crop too.
-    @Test func everyTurnOfARecognizedSpeakerCarriesTheName() throws {
-        let prints = try [print(0, 2_500, Self.dana), print(2_500, 5_000, Self.dana), print(5_000, 7_500, Self.dana),
-                          print(20_000, 22_500, Self.stranger), print(22_500, 25_000, Self.stranger), print(25_000, 27_500, Self.stranger)]
-        let turns: [Range<Int64>] = [0..<3_000, 3_000..<7_000, 7_500..<8_000, 21_000..<24_000, 24_000..<27_000]
-        let out = try names(prints, turns: turns)
-        #expect(out.names.map(\.personId) == [Self.danaID.uuidString.lowercased()])
-        #expect(out.names.map { $0.startMediaMs..<$0.endMediaMs } == [0..<8_000], "Adjacent turns read as one name")
-        #expect(out.names.first?.calibrationID == VoiceRecognitionService.speakerPolicy.calibrationID)
+    @Test func everyTurnOfARecognizedSpeakerCarriesTheName() {
+        let out = names([speaker(1, [(0, 2_500), (2_500, 5_000), (5_000, 7_500)], person: Self.danaID),
+                         speaker(2, [(20_000, 22_500), (22_500, 25_000), (25_000, 27_500)])],
+                        turns: [0..<3_000, 3_000..<7_000, 7_500..<8_000, 21_000..<24_000, 24_000..<27_000])
+        #expect(out.map(\.personId) == [Self.danaID])
+        #expect(out.map { $0.startMediaMs..<$0.endMediaMs } == [0..<8_000], "Adjacent turns read as one name")
+        #expect(out.first?.calibrationID == VoiceRecognitionService.clusterCalibrationID)
     }
 
-    /// An unknown voice is offered with its pooled voice: that, not a noisy crop, is what can be
-    /// recognised in another recording.
-    @Test func anUnknownSpeakerIsOfferedByItsClearestClipsWithItsPooledVoice() throws {
-        let prints = try [print(0, 2_500, Self.stranger, confidence: 0.8), print(2_500, 5_000, Self.stranger, confidence: 0.95),
-                          print(5_000, 7_500, Self.stranger, confidence: 0.9), print(7_500, 10_000, Self.stranger, confidence: 0.7)]
-        let out = try names(prints, turns: [0..<10_000])
-        #expect(out.names.isEmpty)
-        #expect(out.unnamed.map(\.record.startMediaMs).sorted() == [0, 2_500, 5_000], "The clearest three")
-        #expect(out.unnamed.allSatisfy { $0.voice.values == Self.stranger })
+    /// Who a voice might be is offered as a question and never read as a name.
+    @Test func aPossibleMatchIsASuggestionNotAName() {
+        let out = names([speaker(1, [(0, 2_500), (2_500, 5_000), (5_000, 7_500)], suggested: Self.danaID)], turns: [0..<7_000])
+        #expect(out.map(\.disposition) == [.suggestion])
     }
 
-    @Test func aSpeakerHeardTooBrieflyStaysUnnamed() throws {
-        let out = try names([try print(0, 2_500, Self.dana), try print(2_500, 5_000, Self.dana)], turns: [0..<5_000])
-        #expect(out.names.isEmpty && out.unnamed.isEmpty)
+    @Test func turnsAPersonDecidedAboutStayTheirsAndNothingIsNamedAcrossThem() {
+        let out = names([speaker(1, [(0, 2_500), (2_500, 5_000), (5_000, 7_500)], person: Self.danaID)],
+                        turns: [0..<2_000, 2_000..<4_000, 4_000..<7_000], blocked: [2_500..<3_000])
+        #expect(out.map { $0.startMediaMs..<$0.endMediaMs } == [0..<2_000, 4_000..<7_000])
     }
 
-    @Test func withNoTranscriptTheClipsThemselvesAreNamed() throws {
-        let prints = try [print(0, 2_500, Self.dana), print(2_500, 5_000, Self.dana), print(5_000, 7_500, Self.dana)]
-        #expect(try names(prints, turns: nil).names.map { $0.startMediaMs..<$0.endMediaMs } == [0..<7_500])
+    @Test func withNoTranscriptTheClipsThemselvesAreNamed() {
+        let out = names([speaker(1, [(0, 2_500), (2_500, 5_000), (5_000, 7_500)], person: Self.danaID)], turns: nil)
+        #expect(out.map { $0.startMediaMs..<$0.endMediaMs } == [0..<7_500])
     }
 
     // --- the service, end to end, on a real recording file ---
@@ -186,5 +171,229 @@ private actor ScriptedAnalyzer: SpeakerSpeechAnalyzing {
             try d.execute(sql: "UPDATE transcription_tasks SET state = 'Complete' WHERE segmentId = ?", arguments: [run.segment])
         }
         #expect(try await run.service.status().pendingRecordings == 1)
+    }
+}
+
+/// The workflow itself: voices sort themselves, one answer names a voice everywhere, and what
+/// arrives later follows. Recordings here are analysed prints, with no audio or models.
+@Suite struct VoiceClusterWorkflowTests {
+    static let recipe = SpeakerEmbeddingRecipe(modelID: "test", modelRevision: "1", weightsSHA256: "digest",
+                                               runtimeID: "fake", preprocessingID: "16k", dimensions: 4)
+    static let a: [Float] = [1, 0, 0, 0], b: [Float] = [0, 1, 0, 0], c: [Float] = [0, 0, 1, 0]
+    /// Close enough to `a` to ask about, not close enough to assume.
+    static let nearA: [Float] = [0.45, 0, 0, 0.893]
+
+    struct Archive {
+        let db: AppDatabase
+        let identity: VoiceIdentityStore
+        let service: VoiceRecognitionService
+        let protector = VoiceProfileCipher(ephemeralKey: SymmetricKey(size: .bits256))
+        var clock = 1_793_000_000_000
+
+        init() async throws {
+            db = try AppDatabase.inMemory()
+            identity = VoiceIdentityStore(db: db)
+            service = VoiceRecognitionService(database: db, files: SegmentFileReader(root: URL(fileURLWithPath: "/no-audio")),
+                models: ScriptedModels(), analyzer: ScriptedAnalyzer(), policy: VoiceRecognitionService.initialPolicy,
+                recipeID: "test-recipe", protector: protector)
+            try await service.setEnabled(true)
+        }
+
+        /// A recording in which one voice was heard for four crops.
+        mutating func record(_ voice: [Float]) async throws -> String {
+            clock += 900_000
+            let segment = "seg-\(clock)-test-1"
+            _ = try await identity.prepareSource(segmentId: segment, revision: "r")
+            try await identity.enqueueJob(runID: "recent:\(segment)", segmentId: segment, startMediaMs: 0, endMediaMs: 12_000, recipeID: "test-recipe")
+            let job = try #require(try await identity.claimNextJob())
+            let embedding = try SpeakerEmbedding(recipe: VoiceClusterWorkflowTests.recipe, values: voice)
+            let saved = try VoicePrintCodec.save(embedding)
+            let prints = try (0..<4).map { index in
+                VoiceTurnPrint(startMediaMs: Int64(index) * 3_000, endMediaMs: Int64(index + 1) * 3_000, speechConfidence: 0.9,
+                               runID: job.runID, recipeJSON: try JSONEncoder().encode(VoiceClusterWorkflowTests.recipe),
+                               sealedEmbedding: try protector.seal(saved.bytes))
+            }
+            let corpus = try await identity.configuration().corpusRevision
+            #expect(try await identity.advanceJob(id: job.id, expectedCursorMediaMs: 0, nextCursorMediaMs: 12_000, attributions: [],
+                window: 0..<12_000, prints: prints, matchedCorpus: corpus, nameWhenDone: true))
+            return segment
+        }
+
+        func settle() async throws {
+            for _ in 0..<8 {
+                _ = await service.renameFromPrints()
+                if try await service.status().pendingRecordings == 0 { break }
+            }
+        }
+
+        func names(_ segment: String) async throws -> [VoiceResolvedAttribution] {
+            try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: [segment]).automaticAttributions
+        }
+    }
+
+    /// Before anyone has named anything, there's already something to ask about.
+    @Test func voicesSortThemselvesBeforeAnyoneIsNamed() async throws {
+        var archive = try await Archive()
+        for _ in 0..<3 { _ = try await archive.record(Self.a) }
+        for _ in 0..<2 { _ = try await archive.record(Self.b) }
+        try await archive.settle()
+        let groups = try await archive.service.unknownVoiceGroups()
+        #expect(groups.map(\.recordingCount) == [3, 2], "Most heard first")
+        #expect(groups.allSatisfy { $0.suggestedPersonId == nil })
+    }
+
+    /// A voice heard once isn't worth asking about yet.
+    @Test func aVoiceHeardOnceIsNotAsked() async throws {
+        var archive = try await Archive()
+        _ = try await archive.record(Self.a)
+        try await archive.settle()
+        #expect(try await archive.service.unknownVoiceGroups().isEmpty)
+    }
+
+    /// The whole point: one answer names a voice everywhere, and later recordings need none.
+    @Test func oneAnswerNamesAVoiceEverywhereAndWhatArrivesLaterFollows() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.a)) }
+        let other = try await archive.record(Self.b)
+        _ = try await archive.record(Self.b)
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first { $0.recordingCount == 3 })
+        _ = try await archive.service.nameUnknownVoice(group, personId: dana.id)
+        try await archive.settle()
+        for recording in recordings {
+            #expect(try await archive.names(recording).map(\.person.name) == ["Dana"])
+        }
+        #expect(try await archive.names(other).isEmpty)
+        #expect(try await archive.service.unknownVoiceGroups().map(\.recordingCount) == [2], "One voice left to ask about")
+
+        let later = try await archive.record(Self.a)
+        try await archive.settle()
+        #expect(try await archive.names(later).map(\.person.name) == ["Dana"], "Nobody was asked")
+    }
+
+    /// A close voice is a question for them to answer, and "no" is remembered.
+    @Test func aNearbyVoiceIsAskedAboutAndNoIsRemembered() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        for _ in 0..<3 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let named = try #require(try await archive.service.unknownVoiceGroups().first)
+        _ = try await archive.service.nameUnknownVoice(named, personId: dana.id)
+        let near = try await archive.record(Self.nearA)
+        _ = try await archive.record(Self.nearA)
+        try await archive.settle()
+        let asked = try #require(try await archive.service.unknownVoiceGroups().first)
+        #expect(asked.suggestedPersonId == dana.id)
+        #expect(try await archive.names(near).map(\.attribution.disposition) == [.suggestion], "Asked, not assumed")
+
+        let coverage = try await archive.service.coverage()
+        #expect(coverage.byPerson.first { $0.personId == dana.id }?.possibleMatches == 1)
+
+        try await archive.service.rejectSuggestion(asked, personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.service.unknownVoiceGroups().first?.suggestedPersonId == nil)
+        #expect(try await archive.names(near).isEmpty)
+    }
+
+    /// A person's own label on one paragraph is enough to name the voice it's in.
+    @Test func aNameOnOneParagraphNamesTheVoiceItsIn() async throws {
+        var archive = try await Archive()
+        let oliver = try await PeopleStore(db: archive.db).createPerson(name: "Oliver")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.c)) }
+        try await archive.settle()
+        // What naming a paragraph does: the name on that audio, and a sample of the voice.
+        let labelled = recordings[0]
+        let sealed = try archive.protector.seal(JSONEncoder().encode(
+            try SpeakerEmbedding(recipe: VoiceClusterWorkflowTests.recipe, values: Self.c)))
+        try await SpeakerCorrectionStore(db: archive.db).set(segmentId: labelled, startMediaMs: 0, endMediaMs: 3_000, personId: oliver.id)
+        try await archive.db.writer.write { d in
+            let recipe = try JSONEncoder().encode(VoiceClusterWorkflowTests.recipe)
+            try d.execute(sql: """
+                INSERT INTO voice_examples(id,personId,confirmationID,sessionID,segmentId,startMediaMs,endMediaMs,
+                    sourceRevision,recipeID,recipeJSON,embeddingJSON,qualityJSON,createdAtMs)
+                VALUES ('e','\(oliver.id)','c','s',?,0,3000,'r','test-recipe',?,?,?,1)
+                """, arguments: [labelled, recipe, sealed, Data("{}".utf8)])
+            try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = -1")
+        }
+        try await archive.settle()
+        for recording in recordings.dropFirst() {
+            #expect(try await archive.names(recording).map(\.person.name) == ["Oliver"])
+        }
+        #expect(try await archive.service.unknownVoiceGroups().isEmpty)
+    }
+
+    /// "More than one person": the recordings they left out stay unnamed and aren't them.
+    @Test func recordingsLeftOutOfAnAnswerAreNotThatPerson() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<4 { recordings.append(try await archive.record(Self.a)) }
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first)
+        _ = try await archive.service.nameUnknownVoice(group.limited(to: Set(recordings.prefix(2))), personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).map(\.person.name) == ["Dana"])
+        #expect(try await archive.names(recordings[3]).isEmpty)
+    }
+
+    /// Don't ask about this voice: gone, and it stays gone as more of it is heard.
+    @Test func aVoiceYouStoppedAskingAboutStaysGone() async throws {
+        var archive = try await Archive()
+        for _ in 0..<3 { _ = try await archive.record(Self.b) }
+        try await archive.settle()
+        try await archive.service.dismissUnknownVoice(try #require(try await archive.service.unknownVoiceGroups().first))
+        try await archive.settle()
+        #expect(try await archive.service.unknownVoiceGroups().isEmpty)
+        _ = try await archive.record(Self.b)
+        _ = try await archive.record(Self.b)
+        try await archive.settle()
+        #expect(try await archive.service.unknownVoiceGroups().isEmpty)
+    }
+
+    /// One bad clip leaves that recording out without giving up on the voice.
+    @Test func ignoringOneClipLeavesTheRestOfTheVoice() async throws {
+        var archive = try await Archive()
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.b)) }
+        try await archive.settle()
+        try await archive.service.ignoreUnknownClip(segmentId: recordings[0], startMediaMs: 0, endMediaMs: 3_000)
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first)
+        #expect(group.recordingCount == 2)
+        #expect(!group.crops.contains { $0.segmentId == recordings[0] })
+    }
+
+    @Test func forgettingAVoiceTakesItsNamesAway() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.a)) }
+        try await archive.settle()
+        _ = try await archive.service.nameUnknownVoice(try #require(try await archive.service.unknownVoiceGroups().first), personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).count == 1)
+        try await archive.service.forgetProfile(personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).isEmpty)
+        #expect(try await archive.service.unknownVoiceGroups().first?.recordingCount == 3, "The voice is back to being asked about")
+    }
+
+    /// The person screen's counts: more audio found than was ever saved.
+    @Test func coverageCountsWhatEachPersonWasNamedOn() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        for _ in 0..<3 { _ = try await archive.record(Self.a) }
+        for _ in 0..<2 { _ = try await archive.record(Self.b) }
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first { $0.recordingCount == 3 })
+        _ = try await archive.service.nameUnknownVoice(group, personId: dana.id)
+        try await archive.settle()
+        let coverage = try await archive.service.coverage()
+        #expect(coverage.speechMs == 5 * 12_000)
+        #expect(coverage.namedMs == 3 * 12_000)
+        #expect(coverage.byPerson.first?.personId == dana.id)
     }
 }

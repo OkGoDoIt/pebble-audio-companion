@@ -175,14 +175,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         guard let whole = unknownGroups[id] else { throw SpeakerEditorError.voiceUnavailable }
         let group = recordings.map { whole.limited(to: $0) } ?? whole
         guard !group.crops.isEmpty else { return 0 }
-        let transcripts = composition.transcripts
-        let paragraphs = await Task.detached(priority: .userInitiated) {
-            Dictionary(Set(group.crops.map(\.segmentId)).compactMap { id in transcripts.load(id).map { (id, $0.segments) } },
-                       uniquingKeysWith: { a, _ in a })
-        }.value
-        _ = try await service.nameUnknownVoice(group, personId: personId) { crop in
-            Self.paragraph(around: crop.startMediaMs..<crop.endMediaMs, in: paragraphs[crop.segmentId] ?? [])
-        }
+        _ = try await service.nameUnknownVoice(group, personId: personId)
         unknownGroups[id] = nil
         let earliest = group.crops.compactMap { service.wallMs(segmentId: $0.segmentId, mediaMs: $0.startMediaMs) }.min()
         await recognizeAfterLearning(personId: personId, since: earliest)

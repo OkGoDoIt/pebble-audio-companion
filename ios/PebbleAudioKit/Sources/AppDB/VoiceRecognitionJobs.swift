@@ -321,9 +321,7 @@ extension VoiceIdentityStore {
                     UNION
                     SELECT p.segmentId FROM voice_print_sources p JOIN voice_sources s ON s.segmentId = p.segmentId
                     WHERE s.state = 'ready' AND s.generation = p.sourceGeneration AND s.revision = p.sourceRevision
-                        AND p.matchedCorpus NOT IN ((SELECT corpusRevision FROM voice_recognition_config WHERE id = 1), ?)
-                        -- With no voices at all there are no names to bring up to date.
-                        AND EXISTS (SELECT 1 FROM voice_examples))
+                        AND p.matchedCorpus NOT IN ((SELECT corpusRevision FROM voice_recognition_config WHERE id = 1), ?))
                 """, arguments: [VoicePrintStore.frozenCorpus]) ?? 0
         }
     }
