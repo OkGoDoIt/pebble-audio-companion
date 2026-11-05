@@ -165,6 +165,35 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// Finishes waiting jobs that need nothing from the models: the transcriber found no speech in
+    /// the recording, or another pass has already checked this audio to its end (its prints are
+    /// named for this run). So a new run starts from what is really left, not from zero, and
+    /// none of this waits behind newer recordings that do need the models. Returns how many.
+    @discardableResult public func settleCheckedRecordings(
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) async throws -> Int {
+        try await db.writer.write { d in
+            let rows = try Row.fetchAll(d, sql: """
+                SELECT j.id, j.segmentId, j.runID, j.startMediaMs, j.endMediaMs,
+                    EXISTS(SELECT 1 FROM transcription_tasks t WHERE t.segmentId = j.segmentId AND t.state = 'NoSpeech') AS noSpeech,
+                    EXISTS(SELECT 1 FROM voice_jobs o WHERE o.state = 'done' AND o.segmentId = j.segmentId AND o.id <> j.id
+                        AND o.startMediaMs <= j.startMediaMs AND o.endMediaMs >= j.endMediaMs AND o.recipeID = j.recipeID
+                        AND o.sourceRevision = j.sourceRevision AND o.sourceGeneration = j.sourceGeneration) AS checked
+                FROM voice_jobs j WHERE j.state = 'pending' AND (noSpeech OR checked)
+                """)
+            for row in rows {
+                let id: String = row["id"]
+                if row["checked"] as Bool {
+                    try VoicePrintStore.adopt(d, segmentId: row["segmentId"],
+                        range: (row["startMediaMs"] as Int64)..<(row["endMediaMs"] as Int64), runID: row["runID"])
+                }
+                try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = endMediaMs, state = 'done', updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
+                              arguments: [nowMs, id])
+            }
+            return rows.count
+        }
+    }
+
     /// Recordings whose audio has been read before and is still wanted.
     public func readySources() async throws -> Set<String> {
         try await db.reader.read { d in

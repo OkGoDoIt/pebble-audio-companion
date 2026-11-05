@@ -275,6 +275,33 @@ import Testing
         #expect(try await store.claimNextJob()?.segmentId == "seg-b")
     }
 
+    /// A new run starts from what's really left: known silence and audio already checked finish
+    /// straight away, however many newer recordings are ahead of them.
+    @Test func recordingsWithNothingLeftToCheckFinishWithoutWaitingTheirTurn() async throws {
+        let (db, store, person) = try await ready()
+        try await enroll(store, person)
+        for id in ["seg-checked", "seg-quiet", "seg-speech", "seg-unchecked"] {
+            _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)")
+        }
+        try await db.writer.write { d in
+            try d.execute(sql: "INSERT INTO transcription_tasks(segmentId,state,createdAtMs,updatedAtMs) VALUES ('seg-quiet','NoSpeech',1,1)")
+            try d.execute(sql: "INSERT INTO transcription_tasks(segmentId,state,createdAtMs,updatedAtMs) VALUES ('seg-speech','Complete',1,1)")
+        }
+        _ = try await store.enqueueJob(runID: "first", segmentId: "seg-checked", startMediaMs: 0, endMediaMs: 10_000, recipeID: "recipe")
+        let first = try #require(try await store.claimNextJob())
+        #expect(try await store.advanceJob(id: first.id, expectedCursorMediaMs: 0, nextCursorMediaMs: 10_000, attributions: []))
+        for id in ["seg-checked", "seg-quiet", "seg-speech", "seg-unchecked"] {
+            _ = try await store.enqueueJob(runID: "history", segmentId: id, startMediaMs: 0, endMediaMs: 10_000,
+                                           recipeID: "recipe", explicitRerun: true)
+        }
+        #expect(try await store.settleCheckedRecordings() == 2)
+        let run = try #require(try await store.runs().first { $0.runID == "history" })
+        #expect(run.done == 2 && run.pending == 2)
+        #expect(try await store.settleCheckedRecordings() == 0)
+        #expect(try await store.claimNextJob()?.segmentId == "seg-unchecked")
+        #expect(try await store.claimNextJob()?.segmentId == "seg-speech")
+    }
+
     /// Only the job about to run is checked, not the whole queue, and a stale one never runs.
     @Test func aRunStoppedOrARecordingChangedNeverRuns() async throws {
         let (_, store, person) = try await ready()

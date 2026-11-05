@@ -39,31 +39,36 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             composition.settings.backgroundCatchUp, composition.foregroundState.devicePower, foreground: true) {
             display.waiting = reason
         }
-        // New recordings are checked before a run's older ones.
-        let newerFirst = try await composition.database.reader.read { db in
-            try Int.fetchOne(db, sql: """
-                SELECT COUNT(DISTINCT segmentId) FROM voice_jobs
-                WHERE runID LIKE 'recent:%' AND state IN ('pending', 'running')
-                """) ?? 0
-        }
         if let run {
             let runID = run.runID
-            let (ownMatches, namedRecordings) = try await composition.database.reader.read { db in
+            let startedAtMs = plan?.createdAtMs ?? run.updatedAtMs
+            let (ownMatches, namedRecordings, newerWaiting, newerDone) = try await composition.database.reader.read { db in
                 (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM voice_auto_attributions WHERE runID = ? AND disposition = 'recognized'",
                                   arguments: [runID]) ?? 0,
                  // Every recording with a name, whichever pass found it: a run re-reading audio
                  // already named leaves those names under the pass that first found them.
-                 try Int.fetchOne(db, sql: "SELECT COUNT(DISTINCT segmentId) FROM voice_auto_attributions WHERE disposition = 'recognized'") ?? 0)
+                 try Int.fetchOne(db, sql: "SELECT COUNT(DISTINCT segmentId) FROM voice_auto_attributions WHERE disposition = 'recognized'") ?? 0,
+                 // One queue, one count: the recordings arriving while a run works are part of
+                 // what's left and what's been done. Counting only the run's own read
+                 // "0 of 3831" for hours while newer recordings were being checked.
+                 try Int.fetchOne(db, sql: """
+                    SELECT COUNT(DISTINCT segmentId) FROM voice_jobs WHERE runID LIKE 'recent:%' AND state IN ('pending', 'running')
+                        AND segmentId NOT IN (SELECT segmentId FROM voice_jobs WHERE runID = ?)
+                    """, arguments: [runID]) ?? 0,
+                 try Int.fetchOne(db, sql: """
+                    SELECT COUNT(DISTINCT segmentId) FROM voice_jobs WHERE runID LIKE 'recent:%' AND state = 'done' AND updatedAtMs >= ?
+                        AND segmentId NOT IN (SELECT segmentId FROM voice_jobs WHERE runID = ?)
+                    """, arguments: [startedAtMs, runID]) ?? 0)
             }
             let discovering = plan?.state == "active" && plan?.discoveryComplete == false
             // Still finding recordings: the ones queued so far plus the ones it has yet to look at.
             let left = discovering ? await service.historyRecordingsLeft(runID: runID) : 0
-            let queued = run.pending + run.running + run.done + run.failed
+            let queued = run.pending + run.running + run.done + run.failed + newerWaiting + newerDone
             display.run = VoiceRunDisplay(id: run.runID,
-                completed: run.done + run.failed, total: left.map { queued + $0 },
-                matched: namedRecordings, isRunning: discovering || run.pending + run.running > 0, canUndo: ownMatches > 0,
-                stopped: plan?.state != "active", failed: run.failed, progress: run.progress,
-                newerFirst: newerFirst)
+                completed: run.done + run.failed + newerDone, total: left.map { queued + $0 },
+                matched: namedRecordings, isRunning: discovering || run.pending + run.running + newerWaiting > 0,
+                canUndo: ownMatches > 0, stopped: plan?.state != "active", failed: run.failed,
+                progress: run.progress + Double(newerDone))
         }
         if display.run == nil, let plan {
             let discovering = plan.state == "active" && !plan.discoveryComplete

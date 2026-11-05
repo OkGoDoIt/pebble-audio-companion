@@ -98,6 +98,7 @@ public actor VoiceRecognitionService {
     /// used to happen again for every slice.
     private var openRecording: (source: VoiceAudioSource, turns: [Range<Int64>]?)?
     private var seededDiscovery = false
+    private var settledThisLaunch = false
     private var lastAnalysisAtMs: Int64?
 
     public init(database: AppDatabase, files: SegmentFileReader, models: SpeakerModelStore,
@@ -260,6 +261,11 @@ public actor VoiceRecognitionService {
             if attempted < 2 { discoveryAtMs = now }
         }
         // Naming from saved prints is comparisons, not models: on screen it needn't wait for a charger.
+        // New work may already be known to need no models. So may what a launch inherits.
+        if queued || !settledThisLaunch {
+            settledThisLaunch = true
+            if let settled = try? await store.settleCheckedRecordings(), settled > 0 { queued = true; changed() }
+        }
         guard mayAnalyze() || mayName else { return (queued, 0, 0) }
         let renamed = await renameFromPrints()
         guard mayAnalyze() else { return (queued || renamed > 0, 0, renamed) }

@@ -33,9 +33,6 @@ extension Copy {
             count == 1 ? "1 recording checked" : "\(count) recordings checked"
         }
         static let counting = "Counting recordings…"
-        static func newerFirst(_ count: Int) -> String {
-            count == 1 ? "1 newer recording first" : "\(count) newer recordings first"
-        }
         static func matches(_ count: Int) -> String {
             count == 1 ? "voices found in 1" : "voices found in \(count)"
         }
