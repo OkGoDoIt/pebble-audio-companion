@@ -209,46 +209,104 @@ import Testing
         #expect(try await store.runs().first?.completedMediaMs == 10_000)
     }
 
-    /// The queue finishes one recording before starting the next: the newest new recording
-    /// first, then a history run in the order it was found. It used to take turns across every
-    /// waiting recording, so a long run advanced all of them and finished none.
-    @Test func oneRecordingIsFinishedBeforeTheNextAndARunTakesOverWaitingRecordings() async throws {
-        let (_, store, person) = try await ready()
+    /// One order for everything, newest recording first, and each worked through to its end
+    /// until a newer one arrives. New recordings going ahead of a whole run starved the run
+    /// whenever new audio arrived faster than it could be checked: 21 windows in three days.
+    @Test func theNewestRecordingGoesFirstAndARunTakesOverWaitingRecordings() async throws {
+        let (db, store, person) = try await ready()
         try await enroll(store, person)
-        for id in ["a", "b", "c"] { _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)") }
+        for id in ["seg-a", "seg-b", "seg-c"] { _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)") }
         func claimAndAdvance(_ by: Int64) async throws -> String {
             let job = try #require(try await store.claimNextJob())
             #expect(try await store.advanceJob(id: job.id, expectedCursorMediaMs: job.cursorMediaMs,
                 nextCursorMediaMs: min(job.cursorMediaMs + by, job.endMediaMs), attributions: []))
             return job.segmentId
         }
-        for id in ["a", "b", "c"] {
+        for id in ["seg-a", "seg-b", "seg-c"] {
             _ = try await store.enqueueJob(runID: "history", segmentId: id, startMediaMs: 0, endMediaMs: 30_000,
                                            recipeID: "recipe", explicitRerun: true)
         }
-        // The first-found recording is worked through to its end before the second is touched.
-        #expect(try await claimAndAdvance(10_000) == "a")
-        #expect(try await claimAndAdvance(10_000) == "a")
-        #expect(try await claimAndAdvance(10_000) == "a")
-        #expect(try await claimAndAdvance(10_000) == "b")
+        #expect(try await claimAndAdvance(10_000) == "seg-c")
+        #expect(try await claimAndAdvance(10_000) == "seg-c")
+        #expect(try await claimAndAdvance(10_000) == "seg-c")
+        #expect(try await claimAndAdvance(10_000) == "seg-b")
         let run = try #require(try await store.runs().first { $0.runID == "history" })
         #expect(run.done == 1)
         #expect(abs(run.progress - 4.0 / 3.0) < 0.001)
 
-        // New recordings go ahead of the run, newest first, each to its end.
-        _ = try await store.enqueueJob(runID: "recent:s", segmentId: "s", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
-        _ = try await store.prepareSource(segmentId: "d", revision: "digest-d")
-        _ = try await store.enqueueJob(runID: "recent:d", segmentId: "d", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
-        #expect(try await claimAndAdvance(10_000) == "d")
-        #expect(try await claimAndAdvance(10_000) == "d")
-        #expect(try await claimAndAdvance(10_000) == "s")
+        // A newer recording takes over, and the one in progress is picked up after it.
+        _ = try await store.prepareSource(segmentId: "seg-d", revision: "digest-d")
+        _ = try await store.enqueueJob(runID: "recent:d", segmentId: "seg-d", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
+        #expect(try await claimAndAdvance(10_000) == "seg-d")
+        #expect(try await claimAndAdvance(10_000) == "seg-d")
+        #expect(try await claimAndAdvance(10_000) == "seg-b")
 
         // A run that covers a waiting new recording takes it over; the new-recording job stops.
-        _ = try await store.enqueueJob(runID: "history", segmentId: "s", startMediaMs: 0, endMediaMs: 20_000,
+        _ = try await store.prepareSource(segmentId: "seg-e", revision: "digest-e")
+        _ = try await store.enqueueJob(runID: "recent:e", segmentId: "seg-e", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
+        _ = try await store.enqueueJob(runID: "history", segmentId: "seg-e", startMediaMs: 0, endMediaMs: 20_000,
                                        recipeID: "recipe", explicitRerun: true)
-        #expect(try await store.foldRecentJobs(segmentId: "s", startMediaMs: 0, endMediaMs: 20_000) == 1)
-        #expect(try await claimAndAdvance(10_000) == "b")
-        #expect(try await store.runs().first { $0.runID == "recent:s" }?.cancelled == 1)
+        #expect(try await store.foldRecentJobs(segmentId: "seg-e", startMediaMs: 0, endMediaMs: 20_000) == 1)
+        #expect(try await store.runs().first { $0.runID == "recent:e" }?.cancelled == 1)
+        _ = db
+    }
+
+    /// A transcript says where the speech is, so a recording waits for its own.
+    @Test func aRecordingBeingTranscribedWaitsItsTurn() async throws {
+        let (db, store, person) = try await ready()
+        try await enroll(store, person)
+        for id in ["seg-a", "seg-b"] {
+            _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)")
+            _ = try await store.enqueueJob(runID: "run", segmentId: id, startMediaMs: 0, endMediaMs: 10_000, recipeID: "recipe")
+        }
+        func task(_ id: String, _ state: String) async throws {
+            try await db.writer.write { d in
+                try d.execute(sql: """
+                    INSERT INTO transcription_tasks(segmentId,state,createdAtMs,updatedAtMs) VALUES (?,?,1,1)
+                    ON CONFLICT(segmentId) DO UPDATE SET state = excluded.state
+                    """, arguments: [id, state])
+            }
+        }
+        try await task("seg-b", "Uploading")
+        let older = try #require(try await store.claimNextJob())
+        #expect(older.segmentId == "seg-a")
+        #expect(try await store.claimNextJob() == nil)
+        try await task("seg-b", "Complete")
+        #expect(try await store.claimNextJob()?.segmentId == "seg-b")
+    }
+
+    /// Only the job about to run is checked, not the whole queue, and a stale one never runs.
+    @Test func aRunStoppedOrARecordingChangedNeverRuns() async throws {
+        let (_, store, person) = try await ready()
+        try await enroll(store, person)
+        for id in ["seg-a", "seg-b"] { _ = try await store.prepareSource(segmentId: id, revision: "digest-\(id)") }
+        _ = try await store.enqueueJob(runID: "run", segmentId: "seg-a", startMediaMs: 0, endMediaMs: 10_000, recipeID: "recipe")
+        let newest = try await store.enqueueJob(runID: "run", segmentId: "seg-b", startMediaMs: 0, endMediaMs: 10_000, recipeID: "recipe")
+        // The recording changing removes its work; a generation bump without that is caught at claim.
+        _ = try await store.db.writer.write { d in
+            try d.execute(sql: "UPDATE voice_sources SET generation = generation + 1 WHERE segmentId = 'seg-b'")
+        }
+        #expect(try await store.claimNextJob()?.segmentId == "seg-a")
+        #expect(try await store.jobs(runID: "run").first { $0.id == newest.id }?.state == .cancelled)
+    }
+
+    @Test func aStretchWithNoSpeechMovesTheCursorAndFinishingMarksTheNamesDue() async throws {
+        let (db, store, person) = try await ready()
+        try await enroll(store, person)
+        _ = try await store.prepareSource(segmentId: "seg-a", revision: "digest-a")
+        _ = try await store.enqueueJob(runID: "run", segmentId: "seg-a", startMediaMs: 0, endMediaMs: 20_000, recipeID: "recipe")
+        let job = try #require(try await store.claimNextJob())
+        let corpus = try await store.configuration().corpusRevision
+        let turn = VoiceTurnPrint(startMediaMs: 0, endMediaMs: 2_000, speechConfidence: 0.9, runID: "run",
+                                  recipeJSON: Data("{}".utf8), sealedEmbedding: Data([1]))
+        #expect(try await store.advanceJob(id: job.id, expectedCursorMediaMs: 0, nextCursorMediaMs: 10_000, attributions: [],
+            window: 0..<10_000, prints: [turn], matchedCorpus: corpus, nameWhenDone: true))
+        let prints = VoicePrintStore(db: db)
+        #expect(try await prints.stale(corpusRevision: corpus, maxPrints: 10, maxSources: 10).isEmpty, "Not yet: still being heard")
+        _ = try #require(try await store.claimNextJob())
+        #expect(try await store.skipJob(id: job.id, expectedCursorMediaMs: 10_000, nextCursorMediaMs: 20_000))
+        #expect(try await store.runs().first?.done == 1)
+        #expect(try await prints.stale(corpusRevision: corpus, maxPrints: 10, maxSources: 10).map(\.segmentId) == ["seg-a"])
     }
 
     @Test func undoSuppressesReapplicationUntilExplicitRerun() async throws {

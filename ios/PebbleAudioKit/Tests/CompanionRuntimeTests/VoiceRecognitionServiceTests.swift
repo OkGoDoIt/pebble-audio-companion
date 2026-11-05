@@ -124,28 +124,23 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         _ = try await store.prepareSource(segmentId: "query", revision: "query-digest")
         try await store.enqueueJob(runID: "query", segmentId: "query", startMediaMs: 0,
             endMediaMs: 2_000, recipeID: "test-recipe")
-        let job = try #require(try await store.claimNextJob())
         let raw = try Self.embedding()
         let query = try SpeakerEmbedding(recipe: raw.recipe, values: [0, 1])
-        let turn = SpeakerTurn(startSample: 0, endSample: 32_000, clusterID: "query", embedding: query,
-            overlap: false, speechConfidence: 0.95)
-        let analysis = SpeakerAnalysis(turns: [turn], recipeID: "test-recipe", elapsedMilliseconds: 0)
-        let matches = try VoiceRecognitionService.match(analysis, job: job, examples: examples,
-            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
-        #expect(matches.map(\.personId) == [person.id])
-        #expect(matches.first?.score == 1)
-        let oneCrop = try VoiceRecognitionService.match(analysis, job: job, examples: Array(examples.prefix(1)),
-            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
-        #expect(oneCrop.isEmpty, "A codec variant never satisfies the second independent-crop requirement")
+        func match(_ examples: [VoiceConfirmedExample]) throws -> SpeakerMatch {
+            try VoiceRecognitionService.roster(examples: examples, recipeID: "test-recipe",
+                policy: VoiceRecognitionService.initialPolicy, protector: cipher).match(query)
+        }
+        let matched = try match(examples)
+        #expect(matched.personID?.uuidString.lowercased() == person.id)
+        #expect(matched.score == 1)
+        #expect(try match(Array(examples.prefix(1))).personID == nil,
+                "A codec variant never satisfies the second independent-crop requirement")
         let legacyExamples = try examples.map { source in
             var source = source
             source.embeddingJSON = try cipher.seal(JSONEncoder().encode(query))
             return source
         }
-        let legacy = try VoiceRecognitionService.match(analysis, job: job, examples: legacyExamples,
-            policy: VoiceRecognitionService.initialPolicy, window: 0..<2_000, protector: cipher)
-        #expect(legacy.map(\.personId) == [person.id])
-
+        #expect(try match(legacyExamples).personID?.uuidString.lowercased() == person.id)
     }
 
     @Test func cancelDuringInferenceCannotSavePartialEnrollment() async throws {
@@ -303,18 +298,21 @@ private struct UnavailableVoiceKey: VoiceProfileProtecting {
         #expect(sleep == 3_000)
     }
 
-    /// The conversations just had are checked before a history run's backlog.
-    @Test func newRecordingsAreCheckedBeforeAHistoryRun() async throws {
+    /// Whichever run asked for it, the most recent recording comes first.
+    @Test func theNewestRecordingIsCheckedFirst() async throws {
         let db = try AppDatabase.inMemory()
         let store = VoiceIdentityStore(db: db)
         try await store.setMode(.local)
-        for id in ["old", "new"] { _ = try await store.prepareSource(segmentId: id, revision: id) }
-        try await store.enqueueJob(runID: "history-run", segmentId: "old", startMediaMs: 0,
+        for id in ["seg-1", "seg-2", "seg-3"] { _ = try await store.prepareSource(segmentId: id, revision: id) }
+        try await store.enqueueJob(runID: "history-run", segmentId: "seg-1", startMediaMs: 0,
             endMediaMs: 2_000, recipeID: "test-recipe", nowMs: 1)
-        try await store.enqueueJob(runID: "recent:new:1:1:new", segmentId: "new", startMediaMs: 0,
+        try await store.enqueueJob(runID: "recent:seg-3:1:1:seg-3", segmentId: "seg-3", startMediaMs: 0,
             endMediaMs: 2_000, recipeID: "test-recipe", nowMs: 2)
-        #expect(try await store.claimNextJob()?.segmentId == "new")
-        #expect(try await store.claimNextJob()?.segmentId == "old")
+        try await store.enqueueJob(runID: "history-run", segmentId: "seg-2", startMediaMs: 0,
+            endMediaMs: 2_000, recipeID: "test-recipe", nowMs: 3)
+        #expect(try await store.claimNextJob()?.segmentId == "seg-3")
+        #expect(try await store.claimNextJob()?.segmentId == "seg-2")
+        #expect(try await store.claimNextJob()?.segmentId == "seg-1")
     }
 }
 

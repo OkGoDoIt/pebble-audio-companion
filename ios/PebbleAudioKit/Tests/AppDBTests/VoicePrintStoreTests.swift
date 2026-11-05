@@ -202,6 +202,9 @@ import Testing
         #expect(try await store.commitAutomatic(name(alex, run: "older", start: 20_000, end: 22_000), token: token(store)))
         try await store.enqueueJob(runID: "history", segmentId: "s", startMediaMs: 0, endMediaMs: 30_000,
                                    recipeID: "recipe", explicitRerun: true)
-        #expect(try await names(db).map(\.id) == [analysed], "Only the name on audio without prints is cleared for the rerun")
+        // A name can reach past the audio analysed (it covers a whole transcript turn), so a
+        // recording with prints keeps every name until they are decided again, together.
+        #expect(try await names(db).map(\.id).contains(analysed))
+        #expect(try await names(db).count == 2)
     }
 }

@@ -55,7 +55,10 @@ private struct InstalledEvaluationVoiceModels: VoiceModelManaging {
         // No transcript, ASR provider, credential or network service exists in this fixture.
         try await service.enqueueSegment(segmentId: known)
         try await service.enqueueSegment(segmentId: unknown)
-        #expect(await service.processPending(maxWindows: 2))
+        // Names come once a recording has been heard to its end.
+        for _ in 0..<64 where try await service.status().pendingRecordings > 0 {
+            _ = await service.pass(segmentStore: segments, maxWindows: 2, mayAnalyze: { true })
+        }
         let identity = try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: [known, unknown])
         let matched = identity.automaticAttributions.filter { $0.attribution.segmentId == known }
         #expect(!matched.isEmpty)

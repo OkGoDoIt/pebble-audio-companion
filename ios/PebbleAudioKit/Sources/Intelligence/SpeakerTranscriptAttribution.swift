@@ -30,6 +30,8 @@ public enum SpeakerTranscriptAttribution {
     ) -> [SpeakerAttributedTurn] {
         func compact(_ text: String) -> String { text.filter { !$0.isWhitespace } }
         let ordered = words.sorted { $0.startMs < $1.startMs }
+        // Looked up per word below: only this recording's rows, however long the conversation.
+        let identity = identity.narrowed(to: segmentId)
         return segments.flatMap { turn -> [SpeakerAttributedTurn] in
             var low = 0, high = ordered.count
             while low < high {

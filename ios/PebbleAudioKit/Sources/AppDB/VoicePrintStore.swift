@@ -36,6 +36,21 @@ public struct VoicePrintSource: Equatable, Sendable {
     public var prints: [VoiceTurnPrint]
 }
 
+/// What naming decided for one recording.
+public struct VoiceNamingUpdate: Sendable {
+    public var source: VoicePrintSource
+    public var names: [VoiceAutomaticAttribution]
+    /// True when `names` were decided from the whole recording (a transcript speaker's turns can
+    /// reach past the audio analysed): they replace all its names, not just those the prints cover.
+    public var wholeRecording: Bool
+    /// The voices left unnamed, kept to be offered for naming. Nil leaves the crops as they are.
+    public var unmatched: [VoiceUnmatchedCrop]?
+    public init(source: VoicePrintSource, names: [VoiceAutomaticAttribution], wholeRecording: Bool = false,
+                unmatched: [VoiceUnmatchedCrop]? = nil) {
+        self.source = source; self.names = names; self.wholeRecording = wholeRecording; self.unmatched = unmatched
+    }
+}
+
 /// Analysis costs model time; naming from a print costs a comparison. So every analysed turn
 /// keeps its print, and when the voices change, names are re-matched from the prints instead of
 /// analysing the audio again. Prints follow the life of the recording's other voice data: a
@@ -100,6 +115,12 @@ public struct VoicePrintStore: Sendable {
     /// names changed.
     public func commitNames(_ updates: [(source: VoicePrintSource, names: [VoiceAutomaticAttribution])],
                             corpusRevision: Int64, configGeneration: Int64) async throws -> [String] {
+        try await commitNames(updates.map { VoiceNamingUpdate(source: $0.source, names: $0.names) },
+                              corpusRevision: corpusRevision, configGeneration: configGeneration)
+    }
+
+    public func commitNames(_ updates: [VoiceNamingUpdate], corpusRevision: Int64,
+                            configGeneration: Int64) async throws -> [String] {
         for update in updates {
             guard update.names.count <= 4_096 else { throw VoiceIdentityError.capacityExceeded }
             for name in update.names { try VoiceIdentityStore.validate(name) }
@@ -109,7 +130,8 @@ public struct VoicePrintStore: Sendable {
             guard config.mode == .local, config.corpusRevision == corpusRevision,
                   config.generation == configGeneration else { return [] }
             var changed: [String] = []
-            for (source, names) in updates {
+            for update in updates {
+                let source = update.source, names = update.names
                 guard let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_print_sources WHERE segmentId = ?",
                                                 arguments: [source.segmentId]),
                       row["recipeID"] == source.recipeID, row["sourceRevision"] == source.sourceRevision,
@@ -130,7 +152,8 @@ public struct VoicePrintStore: Sendable {
                 for name in existing {
                     let key = Key(start: name["startMediaMs"], end: name["endMediaMs"], person: name["personId"])
                     // Only names on audio these prints cover are theirs to replace.
-                    guard source.analyzed.contains(where: { $0.lowerBound <= key.start && key.end <= $0.upperBound }) else { continue }
+                    guard update.wholeRecording
+                        || source.analyzed.contains(where: { $0.lowerBound <= key.start && key.end <= $0.upperBound }) else { continue }
                     if wanted.contains(key), kept.insert(key).inserted { continue }
                     try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE id = ?", arguments: [name["id"] as String])
                     differs = true
@@ -140,6 +163,9 @@ public struct VoicePrintStore: Sendable {
                 }
                 try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = ? WHERE segmentId = ?",
                               arguments: [corpusRevision, source.segmentId])
+                if let unmatched = update.unmatched {
+                    try VoiceUnmatchedStore.replace(d, segmentId: source.segmentId, with: unmatched)
+                }
                 if differs { changed.append(source.segmentId) }
             }
             return changed
@@ -213,6 +239,12 @@ public struct VoicePrintStore: Sendable {
         }
     }
 
+    /// Its names are out of date whatever they are matched against: named again on the next pass.
+    static func markStale(_ d: Database, segmentId: String) throws {
+        try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = \(staleCorpus) WHERE segmentId = ? AND matchedCorpus <> \(frozenCorpus)",
+                      arguments: [segmentId])
+    }
+
     /// Already analysed audio asked for again by another run: that run's names cover it now,
     /// matched afresh from the prints.
     static func adopt(_ d: Database, segmentId: String, range: Range<Int64>, runID: String) throws {
@@ -243,6 +275,21 @@ public struct VoicePrintStore: Sendable {
         VoiceTurnPrint(id: row["id"], startMediaMs: row["startMediaMs"], endMediaMs: row["endMediaMs"],
             speechConfidence: row["speechConfidence"], runID: row["runID"], recipeJSON: row["recipeJSON"],
             sealedEmbedding: row["embedding"])
+    }
+
+    /// Names now come from whole speakers, whose turns come from the transcript: every analysed
+    /// recording is named again, and a new transcript means the same for its recording.
+    static func installSpeakerNaming(_ d: Database) throws {
+        try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = \(staleCorpus) WHERE matchedCorpus <> \(frozenCorpus)")
+        // Partial historical schema fixtures omit the transcription queue.
+        guard try d.tableExists("transcription_tasks") else { return }
+        try d.execute(sql: """
+            CREATE TRIGGER voice_names_follow_transcript AFTER UPDATE OF state ON transcription_tasks
+            WHEN NEW.state = 'Complete' AND OLD.state <> 'Complete' BEGIN
+                UPDATE voice_print_sources SET matchedCorpus = \(staleCorpus)
+                WHERE segmentId = NEW.segmentId AND matchedCorpus <> \(frozenCorpus);
+            END;
+            """)
     }
 
     static func installSchema(_ d: Database) throws {

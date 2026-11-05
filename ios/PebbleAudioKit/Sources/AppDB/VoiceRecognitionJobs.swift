@@ -10,7 +10,6 @@ extension VoiceIdentityStore {
         try Self.range(startMediaMs, endMediaMs)
         guard !recipeID.isEmpty else { throw VoiceIdentityError.invalidRecord }
         return try await db.writer.write { d in
-            try Self.cancelStaleJobs(d)
             let config = try Self.configuration(d)
             guard config.mode == .local else { throw VoiceIdentityError.disabled }
             guard let source = try Self.source(d, segmentId: segmentId) else { throw VoiceIdentityError.missingSource }
@@ -34,8 +33,8 @@ extension VoiceIdentityStore {
                     SELECT id, startMediaMs, endMediaMs FROM voice_auto_attributions
                     WHERE segmentId = ? AND startMediaMs < ? AND endMediaMs > ?
                     """, arguments: [segmentId, endMediaMs, startMediaMs]) {
-                    let start: Int64 = row["startMediaMs"], end: Int64 = row["endMediaMs"]
-                    guard !analysed.contains(where: { $0.lowerBound <= start && end <= $0.upperBound }) else { continue }
+                    // A recording with any prints has its names decided again from them, whole.
+                    guard analysed.isEmpty else { continue }
                     try d.execute(sql: "DELETE FROM voice_auto_attributions WHERE id = ?", arguments: [row["id"] as String])
                 }
             }
@@ -50,23 +49,34 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// The newest recording with audio left to check. New recordings are newest by nature and a
+    /// history run walks back from where it was asked, so everything is in one order: what was
+    /// said today, then yesterday, back to the oldest. Ordering new recordings ahead of a whole
+    /// separate run meant the run got nothing whenever new audio arrived faster than it could
+    /// be checked, which was always (2026-11-05: 15 h a day arriving, 10 h checked, a 530 h run
+    /// that had analysed 21 windows in three days). A recording still being transcribed waits:
+    /// its transcript says where the speech is and who is who.
     public func claimNextJob(nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws -> VoiceRecognitionJob? {
         try await db.writer.write { d in
-            try Self.cancelStaleJobs(d)
-            // New recordings before a history run: the conversations just had are the ones being read.
-            // One recording is finished before the next is started: the newest new recording, then
-            // the history run in the order it was found. Ordering by `updatedAtMs` (which every
-            // window bumps) took turns across the whole queue, so a 700-recording run advanced
-            // every one of them 20 s at a time and finished none (2026-10-29).
-            guard let row = try Row.fetchOne(d, sql: """
-                SELECT * FROM voice_jobs WHERE state = 'pending'
-                ORDER BY (runID LIKE 'recent:%') DESC,
-                    CASE WHEN runID LIKE 'recent:%' THEN -rowid ELSE rowid END LIMIT 1
-                """) else { return nil }
-            var job = Self.job(row)
-            try d.execute(sql: "UPDATE voice_jobs SET state = 'running', updatedAtMs = ? WHERE id = ?", arguments: [nowMs, job.id])
-            job.state = .running; job.updatedAtMs = nowMs
-            return job
+            while true {
+                guard let row = try Row.fetchOne(d, sql: """
+                    SELECT * FROM voice_jobs j WHERE j.state = 'pending'
+                        AND NOT EXISTS (SELECT 1 FROM transcription_tasks t WHERE t.segmentId = j.segmentId
+                                        AND t.state IN ('Pending', 'Running', 'Uploading'))
+                    ORDER BY j.segmentId DESC, j.rowid DESC LIMIT 1
+                    """) else { return nil }
+                var job = Self.job(row)
+                // Only the job about to run is checked. Sweeping the whole queue here was a
+                // correlated scan of every pending row for every window.
+                guard try Self.validWork(d, segmentId: job.segmentId, token: job.token),
+                      try Self.activeRun(d, id: job.runID) else {
+                    try d.execute(sql: "UPDATE voice_jobs SET state = 'cancelled' WHERE id = ?", arguments: [job.id])
+                    continue
+                }
+                try d.execute(sql: "UPDATE voice_jobs SET state = 'running', updatedAtMs = ? WHERE id = ?", arguments: [nowMs, job.id])
+                job.state = .running; job.updatedAtMs = nowMs
+                return job
+            }
         }
     }
 
@@ -79,7 +89,7 @@ extension VoiceIdentityStore {
         id: String, expectedCursorMediaMs: Int64, nextCursorMediaMs: Int64,
         attributions: [VoiceAutomaticAttribution], unmatched: [VoiceUnmatchedCrop] = [],
         window: Range<Int64>? = nil, prints: [VoiceTurnPrint] = [], matchedCorpus: Int64? = nil,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nameWhenDone: Bool = false, nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) async throws -> Bool {
         guard attributions.count <= 256 else { throw VoiceIdentityError.capacityExceeded }
         for attribution in attributions { try Self.validate(attribution) }
@@ -109,6 +119,7 @@ extension VoiceIdentityStore {
             try VoiceUnmatchedStore.insert(d, unmatched)
             try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
                           arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
+            if nameWhenDone, nextCursorMediaMs == job.endMediaMs { try VoicePrintStore.markStale(d, segmentId: job.segmentId) }
             return true
         }
     }
@@ -133,6 +144,45 @@ extension VoiceIdentityStore {
             try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
                           arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
             return true
+        }
+    }
+
+    /// Nothing in this stretch to analyse (no speech in it): the cursor moves, no model runs.
+    @discardableResult public func skipJob(id: String, expectedCursorMediaMs: Int64, nextCursorMediaMs: Int64,
+                                           nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws -> Bool {
+        try await db.writer.write { d in
+            guard let row = try Row.fetchOne(d, sql: "SELECT * FROM voice_jobs WHERE id = ?", arguments: [id]) else { return false }
+            let job = Self.job(row)
+            guard job.state == .running, job.cursorMediaMs == expectedCursorMediaMs,
+                  try Self.validWork(d, segmentId: job.segmentId, token: job.token) else { return false }
+            guard nextCursorMediaMs > expectedCursorMediaMs, nextCursorMediaMs <= job.endMediaMs else {
+                throw VoiceIdentityError.invalidRecord
+            }
+            try d.execute(sql: "UPDATE voice_jobs SET cursorMediaMs = ?, state = ?, updatedAtMs = ?, attempts = 0, lastError = NULL WHERE id = ?",
+                          arguments: [nextCursorMediaMs, nextCursorMediaMs == job.endMediaMs ? "done" : "pending", nowMs, id])
+            if nextCursorMediaMs == job.endMediaMs { try VoicePrintStore.markStale(d, segmentId: job.segmentId) }
+            return true
+        }
+    }
+
+    /// Whether transcription found no speech anywhere in this recording.
+    public func transcribedAsNoSpeech(segmentId: String) async throws -> Bool {
+        try await db.reader.read { d in
+            try Bool.fetchOne(d, sql: "SELECT EXISTS(SELECT 1 FROM transcription_tasks WHERE segmentId = ? AND state = 'NoSpeech')",
+                              arguments: [segmentId]) ?? false
+        }
+    }
+
+    /// Recordings with live or finished work over the whole of their audio, and how long that
+    /// audio was: one read that saves a launch re-reading each recording to learn it's queued.
+    public func coveredRecordings() async throws -> [String: Int64] {
+        try await db.reader.read { d in
+            var out: [String: Int64] = [:]
+            for row in try Row.fetchAll(d, sql: """
+                SELECT segmentId, MAX(endMediaMs) AS endMs FROM voice_jobs
+                WHERE startMediaMs = 0 AND state IN ('pending', 'running', 'done') GROUP BY segmentId
+                """) { out[row["segmentId"]] = row["endMs"] }
+            return out
         }
     }
 
@@ -165,7 +215,6 @@ extension VoiceIdentityStore {
     /// Backgrounding or memory pressure pauses the window without spending a retry attempt.
     public func releaseJob(id: String) async throws {
         try await db.writer.write { d in
-            try Self.cancelStaleJobs(d)
             try d.execute(sql: "UPDATE voice_jobs SET state = 'pending' WHERE id = ? AND state = 'running'", arguments: [id])
         }
     }
@@ -181,6 +230,12 @@ extension VoiceIdentityStore {
     public func cancelRun(_ runID: String) async throws {
         try await db.writer.write { d in
             try d.execute(sql: "INSERT INTO voice_runs(runID,state) VALUES (?, 'cancelled') ON CONFLICT(runID) DO UPDATE SET state = 'cancelled'", arguments: [runID])
+            // A stopped recording's speakers are named from what was heard of them.
+            try d.execute(sql: """
+                UPDATE voice_print_sources SET matchedCorpus = \(VoicePrintStore.staleCorpus)
+                WHERE matchedCorpus <> \(VoicePrintStore.frozenCorpus) AND segmentId IN (
+                    SELECT segmentId FROM voice_jobs WHERE runID = ? AND state IN ('pending','running'))
+                """, arguments: [runID])
             try d.execute(sql: "UPDATE voice_jobs SET state = 'cancelled' WHERE runID = ? AND state IN ('pending','running')", arguments: [runID])
         }
     }

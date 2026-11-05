@@ -49,6 +49,14 @@ public struct SpeakerIdentitySnapshot: Equatable, Sendable {
         self.automaticAttributions = automaticAttributions
     }
 
+    /// Just one recording's decisions, to resolve many turns of it.
+    public func narrowed(to segmentId: String) -> SpeakerIdentitySnapshot {
+        var narrowed = self
+        narrowed.corrections = corrections.filter { $0.segmentId == segmentId }
+        narrowed.automaticAttributions = automaticAttributions.filter { $0.attribution.segmentId == segmentId }
+        return narrowed
+    }
+
     /// Suggestions never become asserted names. Conflicting or incomplete automatic coverage
     /// abstains, and any intersecting manual decision takes precedence over automatic work.
     public func resolveAutomatic(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) -> VoiceAutomaticResolution? {

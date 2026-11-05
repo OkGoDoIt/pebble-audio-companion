@@ -303,10 +303,15 @@ final class AppComposition {
         self.files = files
         let voiceModels = SpeakerModelStore()
         self.voiceModels = voiceModels
-        let voiceRecognition = VoiceRecognitionService(database: database, files: files, models: voiceModels)
-        self.voiceRecognition = voiceRecognition
         let transcripts = FileTranscriptStore(root: containerRoot, nowMs: nowMs)
         self.transcripts = transcripts
+        let voiceRecognition = VoiceRecognitionService(database: database, files: files, models: voiceModels,
+            transcriptTurns: { segmentId in
+                transcripts.loadSpeechTimings(segmentId)?.compactMap {
+                    $0.endMs > $0.startMs ? $0.startMs..<$0.endMs : nil
+                }
+            })
+        self.voiceRecognition = voiceRecognition
 
         let coldStorage = ColdAudioTier(
             store: store,

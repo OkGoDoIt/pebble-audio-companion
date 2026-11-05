@@ -828,10 +828,14 @@ public actor CompanionRuntime {
                     guard voiceMayRun(), voicePace.isDue(nowMs: clock.nowMs) else { return false }
                 }
                 let started = clock.nowMs
-                let outcome = await voice.pass(segmentStore: env.store, mayAnalyze: voiceMayRun)
+                // Backgrounded there's nothing to keep responsive, and each slice is a whole pass
+                // of the pipeline around it, so it does more at a time and rests longer.
+                let outcome = await voice.pass(segmentStore: env.store, maxWindows: background ? 6 : 2,
+                                               mayName: !background, mayAnalyze: voiceMayRun)
                 if background,
                     let line = voicePace.record(windows: outcome.windows, renamed: outcome.renamed,
-                                                busyMs: clock.nowMs - started, nowMs: clock.nowMs)
+                                                busyMs: clock.nowMs - started, nowMs: clock.nowMs,
+                                                thermal: foreground.devicePower.thermalState)
                 {
                     log.write(line)
                 }
@@ -866,6 +870,7 @@ public actor CompanionRuntime {
                 await env.transcription.releaseModelIfIdle(
                     idleTimeoutMs: PipelinePacing.modelIdleTimeoutMs
                 )
+                await env.voiceRecognition?.releaseIfIdle()
             },
             isFollowingOpenSegment: { await env.live.isFollowingOpenSegment() },
             nextRetryAtMs: {

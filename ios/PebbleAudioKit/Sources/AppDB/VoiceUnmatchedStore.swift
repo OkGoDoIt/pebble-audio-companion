@@ -149,6 +149,22 @@ public struct VoiceUnmatchedStore: Sendable {
             """, arguments: [capacity])
     }
 
+    /// One recording's unnamed voices, as of the last time it was named. A crop that stays keeps
+    /// its row, so a voice group offered for naming keeps its identity across a re-naming.
+    static func replace(_ d: Database, segmentId: String, with crops: [VoiceUnmatchedCrop]) throws {
+        let keep = Set(crops.map { "\($0.startMediaMs):\($0.endMediaMs)" })
+        for row in try Row.fetchAll(d, sql: "SELECT id, startMediaMs, endMediaMs FROM voice_unmatched_crops WHERE segmentId = ?",
+                                    arguments: [segmentId]) {
+            let start: Int64 = row["startMediaMs"], end: Int64 = row["endMediaMs"]
+            if !keep.contains("\(start):\(end)") {
+                try d.execute(sql: "DELETE FROM voice_unmatched_crops WHERE id = ?", arguments: [row["id"] as String])
+            }
+        }
+        let existing = Set(try Row.fetchAll(d, sql: "SELECT startMediaMs, endMediaMs FROM voice_unmatched_crops WHERE segmentId = ?",
+                                            arguments: [segmentId]).map { "\($0["startMediaMs"] as Int64):\($0["endMediaMs"] as Int64)" })
+        try insert(d, crops.filter { !existing.contains("\($0.startMediaMs):\($0.endMediaMs)") })
+    }
+
     private static func crop(_ row: Row) -> VoiceUnmatchedCrop {
         VoiceUnmatchedCrop(id: row["id"], segmentId: row["segmentId"], startMediaMs: row["startMediaMs"],
             endMediaMs: row["endMediaMs"], sourceRevision: row["sourceRevision"], recipeID: row["recipeID"],

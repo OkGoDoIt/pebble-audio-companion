@@ -37,7 +37,7 @@ extension Copy {
             count == 1 ? "1 newer recording first" : "\(count) newer recordings first"
         }
         static func matches(_ count: Int) -> String {
-            count == 1 ? "1 voice match" : "\(count) voice matches"
+            count == 1 ? "voices found in 1" : "voices found in \(count)"
         }
         static let lastWeek = "Find voices in the past week"
         static let allRecordings = "Find voices in all recordings"

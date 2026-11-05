@@ -86,6 +86,26 @@ struct VoiceAudioSource: Sendable {
         return nil
     }
 
+    /// The next window holding speech: only stretches of `speech` (sorted, merged, on the media
+    /// clock) are worth the models, and a window starts just before the speech does.
+    func nextRange(afterMediaMs cursor: Int64, throughMediaMs end: Int64, speech: [Range<Int64>],
+                   maximumMs: Int64 = 10_000, leadInMs: Int64 = 500) -> Range<Int64>? {
+        guard cursor >= 0, end > cursor, maximumMs >= 2_000 else { return nil }
+        for samples in continuousSampleRanges {
+            let runLower = Int64(samples.lowerBound / 16)
+            let runUpper = min(end, Int64(samples.upperBound / 16))
+            var lower = max(cursor, runLower)
+            while lower < runUpper {
+                guard let turn = speech.first(where: { $0.upperBound > lower && $0.lowerBound < runUpper }) else { break }
+                let start = max(lower, turn.lowerBound - leadInMs)
+                let upper = min(runUpper, start + maximumMs)
+                if upper - start >= 2_000 { return start..<upper }
+                lower = upper
+            }
+        }
+        return nil
+    }
+
     /// The clip widened by `paddingMs` each side, never past the continuous run it sits in
     /// (a quiet, loss or redaction boundary) and never longer than 30 s.
     func contextRange(startMediaMs: Int64, endMediaMs: Int64, paddingMs: Int64) -> Range<Int64> {

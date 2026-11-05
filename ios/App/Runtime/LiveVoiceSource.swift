@@ -48,9 +48,12 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         }
         if let run {
             let runID = run.runID
-            let matches = try await composition.database.reader.read { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM voice_auto_attributions WHERE runID = ? AND disposition = 'recognized'",
-                                 arguments: [runID]) ?? 0
+            let (ownMatches, namedRecordings) = try await composition.database.reader.read { db in
+                (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM voice_auto_attributions WHERE runID = ? AND disposition = 'recognized'",
+                                  arguments: [runID]) ?? 0,
+                 // Every recording with a name, whichever pass found it: a run re-reading audio
+                 // already named leaves those names under the pass that first found them.
+                 try Int.fetchOne(db, sql: "SELECT COUNT(DISTINCT segmentId) FROM voice_auto_attributions WHERE disposition = 'recognized'") ?? 0)
             }
             let discovering = plan?.state == "active" && plan?.discoveryComplete == false
             // Still finding recordings: the ones queued so far plus the ones it has yet to look at.
@@ -58,7 +61,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
             let queued = run.pending + run.running + run.done + run.failed
             display.run = VoiceRunDisplay(id: run.runID,
                 completed: run.done + run.failed, total: left.map { queued + $0 },
-                matched: matches, isRunning: discovering || run.pending + run.running > 0, canUndo: matches > 0,
+                matched: namedRecordings, isRunning: discovering || run.pending + run.running > 0, canUndo: ownMatches > 0,
                 stopped: plan?.state != "active", failed: run.failed, progress: run.progress,
                 newerFirst: newerFirst)
         }

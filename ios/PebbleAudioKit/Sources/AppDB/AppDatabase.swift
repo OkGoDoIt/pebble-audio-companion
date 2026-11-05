@@ -925,6 +925,13 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("archive-device-status-v1") { db in
             try ArchiveOutbox.installDeviceStatus(db)
         }
+        // Claiming a voice job walks the waiting ones newest recording first, once per window.
+        migrator.registerMigration("voice-jobs-newest-first-v1") { db in
+            try db.execute(sql: "CREATE INDEX voice_jobs_claim ON voice_jobs(state, segmentId)")
+        }
+        migrator.registerMigration("voice-speaker-naming-v1") { db in
+            try VoicePrintStore.installSpeakerNaming(db)
+        }
         try migrator.migrate(writer)
     }
 }

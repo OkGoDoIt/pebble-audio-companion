@@ -119,16 +119,25 @@ public enum BackgroundWorkPolicy {
     }
 }
 
-/// Spaces backgrounded voice slices so recognition never holds the CPU for long: a slice that
-/// took `t` waits `max(3 s, 10 t)` before the next, which keeps it near a tenth of one core.
-/// Charger-time CPU has starved the Bluetooth keepalive before (16–25 CPU-s/min, 2026-09-10).
-/// On G17 a two-window slice measured 0.2–0.5 s (2026-10-27), so a 30 s floor checked 20 s of
-/// audio per 30 s and a week's queue would have taken days. A pass that found nothing waits
-/// `idleGapMs`. Every tenth slice yields a log line.
+/// Spaces backgrounded voice slices: a slice that took `t` waits `max(3 s, k t)` before the next.
+/// `k` follows the phone's temperature so it slows before it gets hot enough to hold (`serious`).
+///
+/// It was a flat 10, set after charger-time CPU coincided with four keepalive failures
+/// (16–25 CPU-s/min, 2026-09-10). Six days of heartbeats on 2026-11-05 (8,232 minutes) don't show
+/// that harm: drops per 100 minutes were 0.3–0.75 on the charger up to 12 CPU-s/min, 0 of 161
+/// minutes above that, and 1.18 unplugged at under 2 CPU-s/min. Meanwhile a flat 10 checked about
+/// 0.9 × realtime, for the 10 or so charger hours a day, against 15 h of new audio.
 public final class VoiceBackgroundPace: @unchecked Sendable {
     public static let minimumGapMs: Int64 = 3_000
     public static let idleGapMs: Int64 = 30_000
-    public static let gapPerBusyMs: Int64 = 10
+    /// Milliseconds to wait per millisecond of work: about a quarter, a seventh, or a tenth of one core.
+    public static func gapPerBusyMs(_ thermal: DevicePowerSnapshot.ThermalState) -> Int64 {
+        switch thermal {
+        case .nominal: return 3
+        case .fair: return 6
+        case .serious, .critical: return 10
+        }
+    }
     private let lock = NSLock()
     private var nextAtMs: Int64 = 0
     private var slices = 0
@@ -145,10 +154,11 @@ public final class VoiceBackgroundPace: @unchecked Sendable {
 
     /// Records a backgrounded voice pass: `windows` analysed, and recordings `renamed` from
     /// their prints. Returns a summary every tenth slice that did work.
-    public func record(windows: Int, renamed: Int = 0, busyMs: Int64, nowMs: Int64) -> String? {
+    public func record(windows: Int, renamed: Int = 0, busyMs: Int64, nowMs: Int64,
+                       thermal: DevicePowerSnapshot.ThermalState = .serious) -> String? {
         lock.withLock {
             guard windows > 0 || renamed > 0 else { nextAtMs = nowMs + Self.idleGapMs; return nil }
-            nextAtMs = nowMs + max(Self.minimumGapMs, busyMs * Self.gapPerBusyMs)
+            nextAtMs = nowMs + max(Self.minimumGapMs, busyMs * Self.gapPerBusyMs(thermal))
             slices += 1
             self.busyMs += busyMs
             self.windows += windows
