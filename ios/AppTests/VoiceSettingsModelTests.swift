@@ -59,6 +59,13 @@ import Testing
         namedUnknown.append((id, personId, recordings))
         return recordings?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
     }
+    func voiceDetail(id: String) async -> UnknownVoiceDisplay? { unknown.first { $0.id == id } }
+    var rejected: [(String, String)] = []
+    func rejectSuggestion(id: String, personId: String) async throws { rejected.append((id, personId)) }
+    var undone: [(String, String)] = []
+    func undoNaming(id: String, personId: String) async throws { undone.append((id, personId)) }
+    func appearances(personId: String) async -> [VoiceAppearanceDisplay] { [] }
+    func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async throws {}
     func dismissUnknownVoice(id: String) async throws {
         if failIgnore { throw Failure.unavailable }
         dismissedUnknown.append(id)
@@ -91,6 +98,67 @@ import Testing
 
 @Suite("voice settings and enrollment") @MainActor
 struct VoiceSettingsModelTests {
+    /// People & voices asks one question at a time: voices that might be someone go to review,
+    /// the rest wait in "Voices to name", and answering brings up the next.
+    @Test func voicesThatMightBeSomeoneComeFirstOneAtATime() async {
+        let source = VoiceTestSource()
+        source.state.enabled = true
+        let dana = Person(id: "dana", name: "Dana")
+        func voice(_ id: String, suggested: Person?) -> UnknownVoiceDisplay {
+            UnknownVoiceDisplay(id: id, recordingCount: 4, detail: "", clips: [], speechMs: 60_000,
+                                suggestion: suggested.map { VoiceSuggestionDisplay(person: $0, colorIndex: 1, score: 0.5) })
+        }
+        source.unknown = [voice("a", suggested: nil), voice("b", suggested: dana), voice("c", suggested: dana)]
+        let model = VoiceSettingsModel(source: source)
+        await model.refresh()
+        #expect(model.toReview.map(\.id) == ["b", "c"])
+        #expect(model.toName.map(\.id) == ["a"])
+        #expect(model.leadReview?.id == "b")
+
+        let lead = try! #require(model.leadReview)
+        await model.confirm(lead, as: try! #require(lead.suggestion))
+        #expect(source.namedUnknown.map(\.0) == ["b"])
+        source.unknown.removeAll { $0.id == "b" }
+        await model.refresh()
+        #expect(model.leadReview?.id == "c")
+    }
+
+    /// "Is this you?" comes up only for someone with no voice of their own, about a voice heard
+    /// far more than any other.
+    @Test func theFirstQuestionIsAboutTheVoiceHeardMost() async {
+        let source = VoiceTestSource()
+        source.state.enabled = true
+        source.state.coverage = VoiceCoverageDisplay(speechMs: 100 * 60_000, namedMs: 0, shares: [])
+        source.unknown = [UnknownVoiceDisplay(id: "most", recordingCount: 12, detail: "", clips: [], speechMs: 60 * 60_000)]
+        let model = VoiceSettingsModel(source: source)
+        await model.refresh()
+        #expect(model.firstAsk?.id == "most")
+        #expect(!model.needsOwnVoice)
+
+        source.state.people = [VoicePersonDisplay(person: Person(id: "me", name: "Alex", isCurrentUser: true), examples: [],
+                                                  speechMs: 10 * 60_000)]
+        await model.refresh()
+        #expect(model.firstAsk == nil, "They have a voice already")
+
+        source.state.people = []
+        source.unknown = [UnknownVoiceDisplay(id: "little", recordingCount: 12, detail: "", clips: [], speechMs: 60_000)]
+        await model.refresh()
+        #expect(model.firstAsk == nil, "Too little of everything said to guess it's them")
+        #expect(model.needsOwnVoice)
+    }
+
+    /// One person keeps one colour, nobody shares while a colour is free, and adding someone
+    /// doesn't repaint the rest.
+    @Test func everyoneKeepsTheirOwnColor() {
+        let you = Person(id: "you", name: "Alex", isCurrentUser: true)
+        let people = (0..<6).map { Person(id: "person-\($0)", name: "P\($0)") }
+        let colors = PersonPalette.indices(of: [you] + people)
+        #expect(colors["you"] == PersonPalette.youIndex)
+        #expect(Set(people.compactMap { colors[$0.id] }).count == 6)
+        #expect(!people.contains { colors[$0.id] == PersonPalette.youIndex })
+        #expect(PersonPalette.indices(of: [you] + people) == colors, "Stable")
+    }
+
     @Test func turningOffNeverDownloadsAndPreservesPeople() async {
         let source = VoiceTestSource()
         source.state.enabled = true

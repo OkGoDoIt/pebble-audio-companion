@@ -8,8 +8,11 @@ import Foundation
 /// nothing but the in-memory list.
 @MainActor
 final class DemoVoiceSource: VoiceRecognitionDataSource {
-    private let people = [Person(id: "person-roger", name: "Roger", isCurrentUser: true),
-                          Person(id: "person-dana", name: "Dana"), Person(id: "person-sam", name: "Sam")]
+    private static let dana = Person(id: "person-dana", name: "Dana")
+    private static let everyone = [Person(id: "person-you", name: "Alex", isCurrentUser: true), dana,
+                                   Person(id: "person-sam", name: "Sam"), Person(id: "person-oliver", name: "Oliver")]
+    private static func color(_ person: Person) -> Int { PersonPalette.indices(of: everyone)[person.id] ?? 1 }
+    private var people: [Person] { Self.everyone }
     private var unknown: [UnknownVoiceDisplay]
 
     init(now: Date = Date()) {
@@ -28,18 +31,24 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
                 clip("d", at(5, 8, 30), "“the car needs gas before Friday”"),
                 clip("e", at(6, 18, 55), "“we’re out of coffee again”"),
                 clip("f", at(8, 7, 50), "“can you take the recycling out?”"),
-            ]),
+            ], speechMs: 80 * 60_000),
+            UnknownVoiceDisplay(id: "demo-voice-3", recordingCount: 4, detail: "Mostly afternoons · last heard today", clips: [
+                clip("k", at(0, 16, 40), "“I said we’d bring the dessert, so that’s on us”"),
+                clip("l", at(2, 11, 15), "“she’s been asking about the garden again”"),
+                clip("m", at(3, 20, 2), "“no, that was the other restaurant, the loud one”"),
+                clip("n", at(5, 9, 30), "“let me call you back after the school run”"),
+            ], speechMs: 18 * 60_000, suggestion: VoiceSuggestionDisplay(person: Self.dana, colorIndex: Self.color(Self.dana), score: 0.52)),
             UnknownVoiceDisplay(id: "demo-voice-2", recordingCount: 4, detail: "Mostly evenings · last heard Saturday", clips: [
                 clip("g", at(2, 19, 10), "“the second half was so much better”"),
                 clip("h", at(3, 20, 2), "“I’ll send you the link tonight”"),
                 clip("i", at(5, 18, 40), "“let’s do Thursday instead”"),
                 clip("j", at(7, 21, 15), "“that’s what I told him too”"),
-            ]),
+            ], speechMs: 34 * 60_000),
         ]
     }
 
     func snapshot() async throws -> VoiceSettingsDisplay {
-        func profile(_ person: Person, _ count: Int) -> VoicePersonDisplay {
+        func profile(_ person: Person, _ count: Int, _ speechMinutes: Int64, _ conversations: Int) -> VoicePersonDisplay {
             VoicePersonDisplay(person: person, examples: (0..<count).map { index in
                 // Half from conversations (playable, with what was said), half from setup.
                 VoiceExampleDisplay(id: "\(person.id)-\(index)", durationSeconds: index.isMultiple(of: 2) ? 4 : 20,
@@ -48,10 +57,14 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
                         startMs: 0, endMs: 4_000, heardAt: Date().addingTimeInterval(-Double(index + 1) * 26_000),
                         quote: ["“Can you send me the slides before the call?”", "“We’ll take the ferry if it’s not windy.”",
                                 "“I think the second option is cheaper.”", "“Let’s meet at the café at ten.”"][index / 2 % 4]) : nil)
-            })
+            }, colorIndex: Self.color(person), speechMs: speechMinutes * 60_000, conversations: conversations, lastHeard: Date())
         }
         var display = VoiceSettingsDisplay(enabled: true, modelsReady: true, currentUser: people[0],
-                                           people: [profile(people[0], 5), profile(people[1], 8), profile(people[2], 3)])
+                                           people: [profile(people[0], 5, 760, 118), profile(people[1], 14, 380, 42),
+                                                    profile(people[2], 3, 70, 9), profile(people[3], 2, 45, 6)])
+        let total: Int64 = 1_450 * 60_000
+        display.coverage = VoiceCoverageDisplay(speechMs: total, namedMs: display.people.reduce(0) { $0 + $1.speechMs },
+            shares: display.people.map { .init(id: $0.id, name: $0.name, fraction: Double($0.speechMs) / Double(total), colorIndex: $0.colorIndex) })
         // On battery with work left, as most of a day is.
         display.pendingRecordings = 4
         display.waiting = .onBattery
@@ -78,6 +91,19 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
         unknown.removeAll { $0.id == id }
         return count
     }
+    func voiceDetail(id: String) async -> UnknownVoiceDisplay? { unknown.first { $0.id == id } }
+    func rejectSuggestion(id: String, personId: String) async throws {
+        for index in unknown.indices where unknown[index].id == id { unknown[index].suggestion = nil }
+    }
+    func undoNaming(id: String, personId: String) async throws {}
+    func appearances(personId: String) async -> [VoiceAppearanceDisplay] {
+        ["Lunch plans for Friday", "Moving the book club", "Getting the car looked at", "Saturday’s dinner"].enumerated().map { index, title in
+            let heardAt = Date().addingTimeInterval(-Double(index) * 86_400)
+            return VoiceAppearanceDisplay(conversationId: "demo-\(index)", title: title, heardAt: heardAt, speechMs: Int64(12 - index * 2) * 60_000,
+                speakerIds: [], clip: UnknownVoiceClip(id: "appearance-\(index)", segmentId: "demo", startMs: 0, endMs: 4_000, heardAt: heardAt))
+        }
+    }
+    func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async throws {}
     func dismissUnknownVoice(id: String) async throws { unknown.removeAll { $0.id == id } }
     func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
         for index in unknown.indices {

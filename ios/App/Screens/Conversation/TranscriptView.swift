@@ -40,6 +40,11 @@ struct TranscriptView: View {
     var onToggleTurn: ((TranscriptTurn) -> Void)?
     /// Asks who an unnamed voice is that was heard in other recordings too.
     var onUnknownVoiceTap: ((String) -> Void)?
+    /// The one paragraph that asks outright, under its words, whose voice this is: most sure and
+    /// right at the edge. The rest ask quietly on the speaker line.
+    var askingTurnId: String? = nil
+    /// That question's answer: yes, or someone else.
+    var onPossibleVoiceAnswer: ((_ voiceId: String, _ possible: PossibleVoice, _ yes: Bool) -> Void)? = nil
 
     /// Measured height of one line of transcript body text. Measured rather than assumed
     /// because Dynamic Type moves it, and a tap on a paragraph is resolved to a word by
@@ -271,22 +276,63 @@ struct TranscriptView: View {
             if let startedAt = lead.startedAt, !lead.isInProgress {
                 TranscriptStamp(date: startedAt, timeZone: timeZone)
             }
-            // Quiet on purpose: a way to name a recurring voice, not a call to action.
-            if let voice = lead.unknownVoiceID, let onUnknownVoiceTap, selection == nil {
+            // Quiet on purpose: a way to name a voice, not a call to action.
+            if let voice = lead.unknownVoiceID, let onUnknownVoiceTap, selection == nil, lead.id != askingTurnId {
                 Button { onUnknownVoiceTap(voice) } label: {
-                    Text("· heard before").font(AppFont.micro).foregroundStyle(Tokens.meta)
-                        .frame(minHeight: 30).contentShape(Rectangle())
+                    Group {
+                        if let possible = lead.possibleVoice {
+                            (Text("· ").foregroundStyle(Tokens.chevron)
+                             + Text("\(possible.person.isCurrentUser ? "You" : possible.name)?")
+                                .foregroundStyle(PersonPalette.text(possible.colorIndex)))
+                                .font(AppFont.speaker.weight(.regular))
+                        } else {
+                            Text("· heard before").font(AppFont.micro).foregroundStyle(Tokens.meta)
+                        }
+                    }
+                    .frame(minHeight: 30).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Heard in other recordings. Who is this?")
+                .accessibilityLabel(lead.possibleVoice.map { "Might be \($0.name). Tap to answer." }
+                                    ?? "Heard in other conversations. Who is this?")
             }
             Spacer(minLength: 0)
         }
     }
 
+    /// "Is this Dana?" under the paragraph it's about.
+    @ViewBuilder private func voiceQuestion(_ turn: TranscriptTurn) -> some View {
+        if turn.id == askingTurnId, selection == nil, let voice = turn.unknownVoiceID, let possible = turn.possibleVoice,
+           let onPossibleVoiceAnswer {
+            HStack(spacing: 8) {
+                Text(Copy.Voices.isThis(possible.name)).font(AppFont.footnote.weight(.semibold)).foregroundStyle(Tokens.label)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(Copy.Voices.thats(possible.name)) { onPossibleVoiceAnswer(voice, possible, true) }
+                    .font(AppFont.footnote.weight(.semibold)).foregroundStyle(Color.white)
+                    .padding(.horizontal, 14).frame(minHeight: 44)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(PersonPalette.fill(possible.colorIndex)))
+                Button("No") { onPossibleVoiceAnswer(voice, possible, false) }
+                    .font(AppFont.footnote.weight(.semibold)).foregroundStyle(PersonPalette.text(possible.colorIndex))
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Tokens.surface))
+                    .accessibilityLabel(Copy.Voices.someoneElse)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 12).padding(.trailing, 6).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 12).fill(PersonPalette.fill(possible.colorIndex).opacity(0.10)))
+            .padding(.top, 4)
+        }
+    }
+
     private func paragraph(_ turn: TranscriptTurn) -> some View {
         let picked = selection?.contains(turn.id) == true
-        return TranscriptTurnText(
+        return VStack(alignment: .leading, spacing: 0) {
+            paragraphText(turn, picked: picked)
+            voiceQuestion(turn)
+        }
+    }
+
+    private func paragraphText(_ turn: TranscriptTurn, picked: Bool) -> some View {
+        TranscriptTurnText(
             turn: turn,
             timeZone: timeZone,
             playhead: playhead,
@@ -718,9 +764,6 @@ struct SpeakerRenameSheet: View {
     @State private var model: SpeakerEditorModel
     @State private var selection: Selection?
     @State private var freeText = ""
-    @State private var renaming: Person?
-    @State private var renameDraft = ""
-    @State private var deleting: Person?
     @State private var showVoiceSettings = false
 
     init(conversationId: String, turn: TranscriptTurn, model: SpeakerEditorModel = .init(),
@@ -743,49 +786,24 @@ struct SpeakerRenameSheet: View {
     var body: some View {
         NavigationStack {
             SettingsScroll {
-                SettingsSectionHeader(title: passageHeader)
-                Card {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(passageText).font(AppFont.callout).foregroundStyle(Tokens.label)
-                            .lineLimit(turns.count > 1 ? 8 : nil)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let onPlay {
-                            Button(action: onPlay) {
-                                Label("Listen", systemImage: "play.fill")
-                            }.buttonStyle(.smallBordered)
-                        }
-                    }
-                }
-                SettingsFooter(text: passageFooter)
+                passage
                 if let error = model.errorMessage { VoiceMessageCard(text: error) }
                 if !model.loaded {
                     Button(Copy.Speaker.retry) { Task { await reload() } }.buttonStyle(.borderedTint)
                 }
-                SettingsSectionHeader(title: Copy.Speaker.peopleHeader)
-                ListCard {
+                if !canIdentify { SettingsFooter(text: Copy.Speaker.timingUnavailable) }
+                SettingsSectionHeader(title: "This is")
+                let colors = PersonPalette.indices(of: model.people)
+                ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
+                    ForEach(orderedPeople, id: \.id) { person in
+                        VoicePersonChoiceRow(person: person, colorIndex: colors[person.id] ?? 1,
+                            detail: person.id == model.assigned?.id && turns.allSatisfy(\.isVoiceMatch) ? "Recognized by voice" : nil,
+                            selected: selection == .person(person.id)) { selection = .person(person.id) }
+                    }
                     if !model.people.contains(where: \.isCurrentUser) {
-                        choiceRow(.me, name: Copy.Speaker.thisIsMe, isMe: true)
+                        VoicePersonChoiceRow(person: nil, title: Copy.Speaker.thisIsMe, selected: selection == .me) { selection = .me }
                     }
-                    ForEach(model.people.sorted { $0.isCurrentUser && !$1.isCurrentUser }, id: \.id) { person in
-                        HStack(spacing: 10) {
-                            choiceRow(.person(person.id), name: person.isCurrentUser ? "\(person.name) · You" : person.name,
-                                      isMe: person.isCurrentUser)
-                            Menu {
-                                if !person.isCurrentUser {
-                                    Button(Copy.Speaker.thisIsMe) {
-                                        Task { if await model.makeMe(person) { onDone(); await reload() } }
-                                    }
-                                }
-                                Button(Copy.Speaker.rename) { renameDraft = person.name; renaming = person }
-                                Button(Copy.Speaker.deletePerson, role: .destructive) { deleting = person }
-                            } label: {
-                                Image(systemName: "ellipsis").font(.system(size: 18))
-                                    .foregroundStyle(Tokens.meta).frame(width: 32, height: 44)
-                            }.accessibilityLabel("Manage \(person.name)")
-                        }
-                    }
-                    choiceRow(.newPerson, name: Copy.Speaker.newPerson, icon: "person.badge.plus")
-                    choiceRow(.unnamed, name: Copy.Speaker.unnamed, icon: "person.crop.circle.dashed")
+                    VoiceNewPersonRow(selected: selection == .newPerson) { selection = .newPerson }
                 }.disabled(model.isSaving || !model.loaded || !canIdentify)
                 if selection == .newPerson || selection == .me {
                     ListCard {
@@ -799,23 +817,29 @@ struct SpeakerRenameSheet: View {
                         SettingsFooter(text: "A person with this name already exists. Select them above, or use a more distinct name for someone new.")
                     }
                 }
-                if selection != nil && selection != .unnamed && !model.voiceAvailable && model.loaded {
+                if selection != nil && !model.voiceAvailable && model.loaded {
                     Button { onStop?(); showVoiceSettings = true } label: {
                         Label("Set up voice recognition", systemImage: "waveform")
                             .font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44)
                     }.foregroundStyle(Tokens.tint)
                 }
             }
-            .navigationTitle(Copy.Speaker.title)
+            .navigationTitle(Copy.Voices.whoIsThis)
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
-                Button(action: submit) {
-                    HStack {
-                        if model.isSaving { ProgressView().tint(Tokens.onTint) }
-                        Text(model.isSaving ? "Saving…" : Copy.Common.save)
-                    }
-                }.buttonStyle(.primaryFilled).disabled(!canSave)
-                    .padding(16).background(Tokens.ground)
+                VStack(spacing: 2) {
+                    Button(action: submit) {
+                        HStack {
+                            if model.isSaving { ProgressView().tint(Tokens.onTint) }
+                            Text(model.isSaving ? "Saving…" : saveTitle)
+                        }
+                    }.buttonStyle(.primaryFilled).disabled(!canSave).padding(.bottom, 4)
+                    Button(Copy.Speaker.unnamed) { selection = .unnamed; submit() }
+                        .font(AppFont.callout).foregroundStyle(Tokens.tint)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(model.isSaving || !model.loaded || !canIdentify)
+                }
+                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8).background(Tokens.ground)
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -833,26 +857,6 @@ struct SpeakerRenameSheet: View {
             if selection == nil, let assigned = model.assigned { selection = .person(assigned.id) }
         }
         .onChange(of: showVoiceSettings) { _, showing in if !showing { Task { await reload() } } }
-        .alert(Copy.Speaker.renamePerson, isPresented: Binding(
-            get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { person in
-                TextField(Copy.Speaker.namePlaceholder, text: $renameDraft)
-                Button(Copy.Common.cancel, role: .cancel) {}
-                Button(Copy.Common.save) {
-                    Task { if await model.rename(person, to: renameDraft) { onDone(); await reload() } }
-                }
-            } message: { _ in Text(Copy.Speaker.renamePersonMessage) }
-        .confirmationDialog(Copy.Speaker.deletePersonTitle(deleting?.name ?? ""),
-            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-            titleVisibility: .visible, presenting: deleting) { person in
-                Button(Copy.Speaker.deletePerson, role: .destructive) {
-                    Task {
-                        if await model.delete(person) {
-                            if selection == .person(person.id) { selection = nil }
-                            onDone(); await reload()
-                        }
-                    }
-                }
-            } message: { _ in Text(Copy.Speaker.deletePersonMessage) }
     }
 
     private var canIdentify: Bool { turns.allSatisfy(\.canIdentifyPassage) }
@@ -862,23 +866,50 @@ struct SpeakerRenameSheet: View {
         }
     }
 
-    private var passageHeader: String {
-        if turn.isAudioOnly { return "This audio clip" }
-        if turns.count > 1 { return "\(turns.count) paragraphs" }
-        return turn.identificationText == nil ? Copy.Speaker.passage : "Full timed passage"
+    /// What's being named: when it was said, and the words.
+    private var passage: some View {
+        ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
+            HStack(spacing: 12) {
+                if let onPlay {
+                    Button(action: onPlay) {
+                        Image(systemName: "play.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.onTint)
+                            .frame(width: 40, height: 40).background(Circle().fill(Tokens.tint))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Listen")
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(turns.count > 1 ? "\(turns.count) paragraphs" : (turn.startedAt.map(WhoIsThisSheet.when) ?? Copy.Speaker.passage))
+                        .font(AppFont.rowTitle).foregroundStyle(Tokens.label)
+                    Text(passageText).font(AppFont.subBody).foregroundStyle(Tokens.secondaryBody).lineLimit(2)
+                }.frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            }
+        }
     }
 
     private var passageText: String {
-        turns.count > 1 ? turns.map(\.text).joined(separator: "\n\n") : (turn.identificationText ?? turn.text)
+        turns.count > 1 ? turns.map(\.text).joined(separator: " ") : (turn.identificationText ?? turn.text)
     }
 
-    private var passageFooter: String {
-        guard canIdentify else { return Copy.Speaker.timingUnavailable }
-        let scope = turn.isAudioOnly ? "The name changes only this clip."
-            : turns.count > 1 ? "The name changes only these paragraphs."
-            : turn.identificationText == nil ? "The name changes only this passage."
-            : "These paragraphs share one timed passage; the name applies to all of it."
-        return learns ? scope + " The app also learns the voice from it." : scope
+    /// Who it's named now first, then you, then everyone else.
+    private var orderedPeople: [Person] {
+        model.people.sorted { a, b in
+            if (a.id == model.assigned?.id) != (b.id == model.assigned?.id) { return a.id == model.assigned?.id }
+            if a.isCurrentUser != b.isCurrentUser { return a.isCurrentUser }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    private var saveTitle: String {
+        switch selection {
+        case .person(let id):
+            guard let person = model.people.first(where: { $0.id == id }) else { return Copy.Common.save }
+            return Copy.Voices.thats(person.isCurrentUser ? "you" : person.name)
+        case .me: return Copy.Voices.thats("you")
+        case .newPerson:
+            let typed = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return typed.isEmpty ? Copy.Common.save : Copy.Voices.thats(typed)
+        case .unnamed, nil: return Copy.Common.save
+        }
     }
 
     private var canSave: Bool {
@@ -889,24 +920,6 @@ struct SpeakerRenameSheet: View {
         return true
     }
 
-    private func choiceRow(_ choice: Selection, name: String, isMe: Bool = false,
-                           icon: String? = nil) -> some View {
-        Button { selection = choice } label: {
-            HStack(spacing: 12) {
-                if let icon {
-                    Image(systemName: icon).font(.system(size: 22)).foregroundStyle(Tokens.meta)
-                        .frame(width: 44, height: 44).accessibilityHidden(true)
-                } else { VoiceAvatar(name: name, isCurrentUser: isMe) }
-                Text(name).font(AppFont.callout).foregroundStyle(Tokens.label)
-                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                // One speaker per passage: the iOS single-choice checkmark, not multi-select circles.
-                Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Tokens.tint).opacity(selection == choice ? 1 : 0)
-                    .accessibilityHidden(true)
-            }.contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityAddTraits(selection == choice ? .isSelected : [])
-    }
     private func reload() async { await model.load(conversationId: conversationId, turns: turns) }
     private func submit() {
         guard canSave, let selection else { return }

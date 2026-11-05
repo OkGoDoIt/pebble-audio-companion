@@ -381,6 +381,72 @@ private actor ScriptedAnalyzer: SpeakerSpeechAnalyzing {
         #expect(try await archive.service.unknownVoiceGroups().first?.recordingCount == 3, "The voice is back to being asked about")
     }
 
+    /// The question is gone the moment it's answered, before the sort that follows from it, and
+    /// the answer comes back out cleanly while the offer to undo is up.
+    @Test func anAnswerShowsAtOnceAndCanBeTakenBack() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.a)) }
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first)
+        try await archive.service.confirmUnknownVoice(group, personId: dana.id)
+        #expect(try await archive.service.unknownVoiceGroups().isEmpty, "No sort has run yet")
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).map(\.person.name) == ["Dana"])
+
+        try await archive.service.undoUnknownVoice(group, personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).isEmpty)
+        #expect(try await archive.service.unknownVoiceGroups().first?.recordingCount == 3, "Asked about again")
+    }
+
+    /// An answer goes to the speakers the person was looking at, however they've been sorted since.
+    @Test func anAnswerFollowsItsSpeakersWhenASortRenumbersTheVoice() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.a)) }
+        let other = try await archive.record(Self.b)
+        _ = try await archive.record(Self.b)
+        try await archive.settle()
+        let onScreen = try #require(try await archive.service.unknownVoiceGroups().first { $0.recordingCount == 3 })
+        let oldest = try #require(onScreen.crops.min { $0.segmentId < $1.segmentId })
+        try await archive.service.ignoreUnknownClip(segmentId: oldest.segmentId, startMediaMs: oldest.startMediaMs, endMediaMs: oldest.endMediaMs)
+        try await archive.settle()
+        #expect(try await archive.service.unknownVoiceGroups().first { $0.recordingCount == 2 && $0.clusterId != onScreen.clusterId } != nil)
+
+        let kept = Set(recordings).subtracting([oldest.segmentId])
+        try await archive.service.confirmUnknownVoice(onScreen.limited(to: kept), personId: dana.id)
+        try await archive.settle()
+        for recording in kept { #expect(try await archive.names(recording).map(\.person.name) == ["Dana"]) }
+        #expect(try await archive.names(other).isEmpty, "The other voice keeps its own question")
+    }
+
+    /// "That wasn't them": the name comes off that conversation's speakers and stays off.
+    @Test func sayingAConversationWasNotThemTakesTheNameOffAndKeepsItOff() async throws {
+        var archive = try await Archive()
+        let dana = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        var recordings: [String] = []
+        for _ in 0..<3 { recordings.append(try await archive.record(Self.a)) }
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups().first)
+        try await archive.service.confirmUnknownVoice(group, personId: dana.id)
+        try await archive.settle()
+        let wrong = try #require(group.crops.first { $0.segmentId == recordings[0] })
+        try await archive.service.notThisPerson(speakerIds: [try #require(Int64(wrong.id))], personId: dana.id)
+        try await archive.settle()
+        #expect(try await archive.names(recordings[0]).filter { $0.attribution.disposition == .recognized }.isEmpty)
+        #expect(try await archive.names(recordings[1]).map(\.person.name) == ["Dana"], "The rest stand")
+    }
+
+    /// A run needs nobody named: sorting voices is how the first question comes about.
+    @Test func aRunCanStartBeforeAnyoneHasBeenNamed() async throws {
+        let archive = try await Archive()
+        _ = try await archive.service.recognizeHistory(fromMs: 0, toMs: 1_000)
+        #expect(try await archive.service.historyPlans().count == 1)
+    }
+
     /// The person screen's counts: more audio found than was ever saved.
     @Test func coverageCountsWhatEachPersonWasNamedOn() async throws {
         var archive = try await Archive()

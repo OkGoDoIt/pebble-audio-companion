@@ -7,6 +7,10 @@ final class VoiceSettingsModel {
     private(set) var display = VoiceSettingsDisplay()
     /// Recurring voices with no name yet, most-heard first.
     private(set) var unknownVoices: [UnknownVoiceDisplay] = []
+    /// The voice to ask about next, with what was said in it.
+    private(set) var leadReview: UnknownVoiceDisplay?
+    /// "Is this you?": asked of the voice heard far more than any other, until there's an answer.
+    private(set) var firstAsk: UnknownVoiceDisplay?
     private(set) var loaded = false
     private(set) var working = false
     private(set) var downloadProgress: Double?
@@ -23,6 +27,8 @@ final class VoiceSettingsModel {
         for await _ in source.updates() {
             if Task.isCancelled { return }
             await refresh()
+            // Work in progress reports often; a second's rest keeps this screen from chasing it.
+            try? await Task.sleep(for: .seconds(1))
         }
     }
 
@@ -37,12 +43,70 @@ final class VoiceSettingsModel {
             let voices = updated.enabled ? await source.unknownVoices() : []
             guard generation == refreshGeneration else { return }
             if unknownVoices != voices { unknownVoices = voices }
+            let lead = updated.enabled ? await fetchedDetail(of: toReview.first, had: leadReview, source: source) : nil
+            let first = updated.enabled ? await fetchedDetail(of: firstAskCandidate(updated), had: firstAsk, source: source) : nil
+            guard generation == refreshGeneration else { return }
+            if leadReview != lead { leadReview = lead }
+            if firstAsk != first { firstAsk = first }
             if errorMessage == Copy.Voices.loadFailed || errorMessage == Copy.Voices.unavailable { errorMessage = nil }
             loaded = true
         } catch {
             guard generation == refreshGeneration else { return }
             errorMessage = Copy.Voices.loadFailed
         }
+    }
+
+    /// Voices that might be someone, most heard first.
+    var toReview: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion != nil } }
+    /// Voices like nobody yet.
+    var toName: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion == nil } }
+    /// No voice to go by for the person wearing the watch, and no voice to ask them about either.
+    var needsOwnVoice: Bool { !hasOwnVoice(display) && firstAsk == nil }
+
+    private func hasOwnVoice(_ display: VoiceSettingsDisplay) -> Bool {
+        display.people.contains { $0.person.isCurrentUser && (!$0.examples.isEmpty || $0.speechMs > 0) }
+    }
+
+    private func firstAskCandidate(_ display: VoiceSettingsDisplay) -> UnknownVoiceDisplay? {
+        guard !hasOwnVoice(display), let top = toName.first, top.recordingCount >= 3,
+              let speech = display.coverage?.speechMs, speech > 0, Double(top.speechMs) >= 0.25 * Double(speech) else { return nil }
+        return top
+    }
+
+    /// The same voice keeps the words already read for it, as long as it hasn't changed.
+    private func fetchedDetail(of voice: UnknownVoiceDisplay?, had: UnknownVoiceDisplay?,
+                               source: any VoiceRecognitionDataSource) async -> UnknownVoiceDisplay? {
+        guard let voice else { return nil }
+        if let had, had.id == voice.id, had.recordingCount == voice.recordingCount, had.suggestion == voice.suggestion { return had }
+        return await source.voiceDetail(id: voice.id) ?? voice
+    }
+
+    func detail(_ voice: UnknownVoiceDisplay) async -> UnknownVoiceDisplay? {
+        await source?.voiceDetail(id: voice.id) ?? voice
+    }
+
+    func appearances(personId: String) async -> [VoiceAppearanceDisplay] {
+        await source?.appearances(personId: personId) ?? []
+    }
+
+    /// "That's Dana", for the whole voice.
+    func confirm(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay) async {
+        var count = 0
+        let done = await perform { count = try await $0.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, recordings: nil) }
+        guard done else { return }
+        UndoCenter.shared.snackbar = WhoIsThisModel.namedNotice(suggestion.name, count: count, voiceId: voice.id,
+                                                                personId: suggestion.person.id) { [weak self] in
+            await self?.refresh()
+        }
+    }
+
+    /// "Someone else": they aren't asked about as this person again.
+    func someoneElse(_ voice: UnknownVoiceDisplay, instead suggestion: VoiceSuggestionDisplay) async -> Bool {
+        await perform { try await $0.rejectSuggestion(id: voice.id, personId: suggestion.person.id) }
+    }
+
+    func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async {
+        _ = await perform { try await $0.notThisPerson(appearance, personId: personId) }
     }
 
     func enable(_ value: Bool) async -> Bool {

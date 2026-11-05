@@ -4,6 +4,116 @@ Research checked **2026-10-25** against 34 primary sources. The native iOS imple
 
 Build an **optional voice identity layer owned by Pebble Audio**, independent of transcription and AI. People can enroll their own voice, remember other people, correct an audio passage, and find voices in retained recordings without changing transcription providers. Manual naming remains useful with recognition off. A wrong confident name is worse than an unnamed speaker.
 
+## Voices work like faces in a photo library — November 5, 2026 (the current model)
+
+A person doesn't teach this system. It sorts everyone it hears into voices first, asks about the
+ones worth asking about, and one answer names a voice everywhere it was heard and everywhere it's
+heard from then on. Most names arrive without a question.
+
+**The engine** (`VoiceClustering`, `VoiceSpeakerStore`, `VoiceRecognitionService`):
+
+1. Each recording's own diarization gives speakers. A speaker with ≥ 3 crops pools into one voice.
+2. Voices cluster across the archive: a micro pass at 0.75, then exact average linkage at
+   `sameVoice` 0.55. A room can make two people score 0.67, so online clustering merged a friend
+   into the wearer; exact average linkage doesn't.
+3. Cannot-link: two named people, a person someone said this isn't, and an ignored voice against a
+   named one never merge.
+4. A group takes the name of whoever labels it, whether that's a decision or a name on some of its
+   audio. A label is doubted when it sounds clearly (+0.10) more like someone else's established
+   voice (≥ 3 seeds).
+5. A group with no name, ≥ 0.40 to one person and 0.05 clear of the next, is a **suggestion**.
+
+Speakers and groups are rebuilt freely from saved prints. `voice_speaker_decisions` is the only part
+that can't be derived again: `confirmed`, `rejected`, `ignored` (the whole voice), `excluded` (one
+recording's speaker). An answer goes to the speakers the person was looking at, by id, since a later
+sort can renumber the group.
+
+**An answer shows at once.** `decide` applies itself to the row and marks the recording to be named
+again; the sort that follows has the final word. Otherwise the question stayed up, answerable twice,
+until the next pass. Samples are learned 6 s later, once the offer to undo has gone.
+
+**Reversal of the October 28 note below:** "Don't ask about this voice" is now evidence about a
+voice, not a decision about particular audio ranges. In a world of voices, ranges are the wrong unit.
+"Ignore Clip" still covers just the one recording's speaker.
+
+Measured offline on 223 real recordings: the wearer's group is 62.9% of crop speech, one friend
+10.3%, another 2.5%; about 76% for the top three voices, and 55.3% of all speech named with the
+labels that exist today. Leave-one-out: wearer 98 s right and 1 s unnamed, others 33 s correctly
+unnamed, one 3 s slip. All 10 same-recording pairs in one group shared a Soniox label.
+
+**The screens** (approved 2026-11-05, canvas mockups round 2):
+
+- *People & voices*: coverage ("55% of what's been said has a name", a bar in each person's colour),
+  one "Is this Dana?" at a time, People with their time, one "Voices to name" row. Recognition's own
+  controls come last, except while it's off.
+- *The review card*: the buttons answer for the whole voice. Tapping the card opens every
+  conversation it was heard in, full screen, to listen through and uncheck any that aren't them.
+- *A person*: conversations, speech, last heard; possible matches with ✓ and ✕; found automatically
+  (long press: "Not Dana"); confirmed voice samples behind one row. Rename and delete moved here from
+  the sheet for fixing a name.
+- *A conversation*: a quiet "· Dana?" in their colour on the speaker line. At most one bar per view,
+  on the likeliest voice, from 0.50 (just under the 0.55 that would name it unasked).
+- *One colour per person* (`PersonPalette`): small circles a photo can later replace. You are the
+  app's colour; everyone else keeps the colour their id picks, moving on only if taken.
+
+The happy path, the one a new person takes: recognition on → the whole archive starts sorting while
+charging → "Is this you?" about the voice heard most (≥ 25% of speech, ≥ 3 conversations) → a few
+"Is this Dana?" → the rest follows.
+
+Edge cases, as built: one person split across groups (each asked "Is this Dana?" until they're
+joined); two similar voices (cannot-link once told apart, +0.10 doubt on a stray label); TV and
+background voices ("Don't ask about this voice", or left alone: a voice heard once like nobody never
+asks); a group mixing people ("More than one person", or unchecking); a wrong name (fix it in the
+conversation, or "Not Dana" on the person's screen; "Undo" for 5 s after any answer); a deleted
+recording (its speakers go with it; decisions cascade); expired audio (a row still names it, playback
+says it can't); recognition off (names stay, nothing new is asked).
+
+## Speaker naming — November 5, 2026 (per-recording speakers; the matching half is superseded above)
+
+Names are decided per **speaker per recording**, from the app's own diarization, never per crop and
+never from a transcriber's labels.
+
+1. **Scope.** Only windows overlapping transcript speech reach the models, once transcription has
+   finished. A recording transcribed as no speech costs nothing. With no transcript, every window
+   runs, as before.
+2. **Diarization** (`SpeakerDiarization`). Neighbouring crops (gaps ≤ 2 s, at most 4) pool into
+   blocks; blocks group by average linkage at 0.30.
+3. **Naming** (`VoiceRecognitionService.speakerNames`). A speaker with ≥ 3 crops pools into one
+   voice, matched at `speakerPolicy` (0.50, margin 0.10, ≥ 2 examples). It runs when a recording is
+   finished, and again when the voices or the transcript change, from saved prints.
+4. **Turns.** Each transcript turn takes the speaker whose crops fill it (≥ 60%), else the speaker on
+   both sides within 5 s. Adjacent same-person turns merge into one attribution.
+5. **Unknown voices.** A speaker left unnamed keeps its three clearest clips with its *pooled* voice,
+   which is what "Who is this?" groups across recordings.
+
+Why: on watch audio a 2–3 s crop is too noisy to judge alone. Same-person crop pairs in one recording
+score a median of 0.34 (different people 0.01, tails overlapping), and a wearer's crops score 0.43
+against their own samples. Per-crop matching at 0.55 named 2.9% of words even in the recordings it
+named most, and nobody but the wearer, ever.
+
+Transcriber labels were tried first and rejected. On a hand-labelled recording Soniox filed the
+wearer and a friend under one label and split the wearer across two; naming whole labels put the
+wearer's name on the friend's lines. Runs of one label within 15 s fixed that case but named less.
+
+Measured offline on 85 real recordings with the production models (leave-one-recording-out for the
+voices, which leaves the two other people with no samples to match):
+
+| Unit | Speech named | Wearer's labelled speech | Others' labelled speech |
+|---|---|---|---|
+| Single crop at 0.55 (old, on the phone) | 2.9% of words | scattered | never named |
+| Whole transcript label, 0.50 | 55% | 63 s right | **15 s wrongly named the wearer** |
+| Label runs, 15 s gap, 0.50 | 40–44% | 44–51 s right, 20–27 s unnamed | 35 s unnamed (right) |
+| **Own diarization, 0.50** | **44%** | **63 s right, 16 s unnamed** | **35 s unnamed (right)** |
+
+Own diarization kept 42 of 46 same-person pairs together and all 8 different-person pairs apart.
+Adding Soniox labels as block breaks made it worse (8 s wrongly named). Thresholds at 0.45 start
+naming others' turns wrongly; at 0.55 recall falls by about a quarter. **The ground truth is thin:**
+20 labelled ranges, 35 s of other people. Treat 0.50 as a starting point, and recalibrate as labels
+accumulate. Never reuse a threshold from single crops for pooled voices, or the other way round.
+
+Tuning harness: production analyzer over a backup's recordings, in the iOS Simulator; the session's
+copy was `VoiceCorpus.swift` beside `run-native.sh`'s build flags, plus numpy scripts over its JSONL.
+
 ## Noise suggestions — October 28, 2026
 
 The existing “Who is this?” sheet offers **Ignore All Clips** directly below “More than one

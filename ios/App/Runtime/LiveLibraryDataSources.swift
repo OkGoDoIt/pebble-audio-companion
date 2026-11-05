@@ -88,23 +88,32 @@ final class LiveWorld {
         }.value
     }
 
-    /// Where recurring unnamed voices were heard in these recordings. Empty with recognition off.
+    /// Where unnamed voices worth a mention were heard in these recordings, and who they might
+    /// be. Empty with recognition off.
     static func unknownVoiceSpans(in segmentIds: Set<String>, composition: AppComposition) async -> [UnknownVoiceSpan] {
         let service = composition.voiceRecognition
         guard (try? await service.status().configuration.mode) == .local,
-              let groups = try? await service.unknownVoiceGroups(limit: 12) else { return [] }
-        return groups.flatMap { group in
-            group.crops.filter { segmentIds.contains($0.segmentId) }.map {
-                UnknownVoiceSpan(segmentId: $0.segmentId, startMs: $0.startMediaMs, endMs: $0.endMediaMs, voiceID: group.id)
-            }
+              let spans = try? await service.unnamedSpans(segmentIds: Array(segmentIds)) else { return [] }
+        let people = (try? await composition.people.listPeople().map(\.person)) ?? []
+        let colors = PersonPalette.indices(of: people)
+        return spans.map { span in
+            let person = span.suggestedPersonId.flatMap { id in people.first { $0.id == id } }
+            return UnknownVoiceSpan(segmentId: span.segmentId, crops: span.crops.map { $0.startMs..<$0.endMs },
+                voiceID: "voice-\(span.clusterId)",
+                possible: person.map { PossibleVoice(person: $0, colorIndex: colors[$0.id] ?? 1, score: span.suggestedScore ?? 0) })
         }
     }
 
     struct UnknownVoiceSpan: Sendable {
         var segmentId: String
-        var startMs: Int64
-        var endMs: Int64
+        var crops: [Range<Int64>]
         var voiceID: String
+        var possible: PossibleVoice?
+
+        /// How much of a stretch of audio this voice's clips cover.
+        func overlap(_ start: Int64, _ end: Int64) -> Int64 {
+            crops.reduce(0) { $0 + max(0, min($1.upperBound, end) - max($1.lowerBound, start)) }
+        }
     }
 
     /// What one walk over a conversation's pieces produced.
@@ -222,8 +231,11 @@ final class LiveWorld {
                 result.transcript.append(contentsOf: spans.isEmpty ? built.items : built.items.map { item in
                     guard case .turn(var turn) = item, turn.personId == nil, turn.canIdentifyPassage,
                           let start = turn.sourceStartMs, let end = turn.sourceEndMs,
-                          let span = spans.first(where: { $0.startMs < end && $0.endMs > start }) else { return item }
+                          let span = spans.max(by: { $0.overlap(start, end) < $1.overlap(start, end) }),
+                          // A clip's worth of the voice, or most of a short paragraph.
+                          span.overlap(start, end) >= min(1_000, (end - start) / 2) else { return item }
                     turn.unknownVoiceID = span.voiceID
+                    turn.possibleVoice = span.possible
                     return .turn(turn)
                 })
                 result.missingTicks.append(

@@ -35,7 +35,16 @@ enum VoiceSampleKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A voice heard in several recordings that recognition couldn't name.
+/// Who a voice with no name might be.
+struct VoiceSuggestionDisplay: Equatable {
+    var person: Person
+    var colorIndex: Int
+    var score: Double
+    /// "you" or "Dana", in a sentence.
+    var name: String { person.isCurrentUser ? "you" : person.name }
+}
+
+/// A voice heard across recordings that nobody has named.
 struct UnknownVoiceDisplay: Equatable, Identifiable {
     var id: String
     var recordingCount: Int
@@ -44,6 +53,17 @@ struct UnknownVoiceDisplay: Equatable, Identifiable {
     /// One moment per recording, newest first. The question shows the first few; "More than one
     /// person" shows them all to pick from.
     var clips: [UnknownVoiceClip]
+    var speechMs: Int64 = 0
+    var suggestion: VoiceSuggestionDisplay? = nil
+    /// The clip that speaks clearest: the one to lead with.
+    var leadClipID: String? = nil
+
+    var lead: UnknownVoiceClip? { clips.first { $0.id == leadClipID } ?? clips.first }
+    /// "18 min in 4 conversations"
+    var heardFor: String {
+        let duration = VoiceDuration.text(speechMs)
+        return recordingCount == 1 ? "\(duration) in 1 conversation" : "\(duration) in \(recordingCount) conversations"
+    }
 }
 
 struct UnknownVoiceClip: Equatable, Identifiable {
@@ -108,6 +128,38 @@ struct VoicePersonDisplay: Equatable, Identifiable {
     var id: String { person.id }
     var compatibleExampleCount: Int? = nil
     var ready: Bool { (compatibleExampleCount ?? examples.count) >= 2 }
+    var colorIndex = 1
+    /// All the speech found to be theirs, not only what's been confirmed.
+    var speechMs: Int64 = 0
+    var conversations = 0
+    var lastHeard: Date? = nil
+    var name: String { person.isCurrentUser ? Copy.Speaker.you : person.name }
+}
+
+/// How much of what's been said has a name, for the bar at the top of People & voices.
+struct VoiceCoverageDisplay: Equatable {
+    struct Share: Equatable, Identifiable {
+        var id: String
+        var name: String
+        var fraction: Double
+        var colorIndex: Int
+    }
+    var speechMs: Int64
+    var namedMs: Int64
+    /// Largest first; the bar's remainder has no name.
+    var shares: [Share]
+    var percent: Int { speechMs > 0 ? min(100, Int((Double(namedMs) / Double(speechMs) * 100).rounded())) : 0 }
+}
+
+/// A conversation someone was recognized in.
+struct VoiceAppearanceDisplay: Equatable, Identifiable {
+    var id: String { conversationId }
+    var conversationId: String
+    var title: String
+    var heardAt: Date
+    var speechMs: Int64
+    var speakerIds: [Int64]
+    var clip: UnknownVoiceClip
 }
 
 struct VoiceRunDisplay: Equatable, Identifiable {
@@ -143,6 +195,7 @@ struct VoiceSettingsDisplay: Equatable {
     var modelsReady = false
     var currentUser: Person?
     var people: [VoicePersonDisplay] = []
+    var coverage: VoiceCoverageDisplay?
     var run: VoiceRunDisplay?
     var notice: String?
     /// Recordings with audio still to check for voices.
@@ -197,7 +250,17 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     /// Names the voice in every recording it was heard in, or only in `recordings` when the
     /// group turned out to mix people; the rest stay unnamed. Returns how many recordings.
     func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int
-    /// Stop asking about these particular clips, without learning from their voices.
+    /// One voice with what was said in each of its clips, for listening through it.
+    func voiceDetail(id: String) async -> UnknownVoiceDisplay?
+    /// "It's someone else": the voice stays unnamed and isn't suggested as them again.
+    func rejectSuggestion(id: String, personId: String) async throws
+    /// Takes back naming a voice, while the offer to undo it is up.
+    func undoNaming(id: String, personId: String) async throws
+    /// The conversations someone was recognized in, newest first.
+    func appearances(personId: String) async -> [VoiceAppearanceDisplay]
+    /// "That wasn't them", about one conversation they were recognized in.
+    func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async throws
+    /// Stop asking about this voice, wherever it's heard.
     func dismissUnknownVoice(id: String) async throws
     func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws
     /// A clip's audio (16 kHz mono PCM) for listening before naming.

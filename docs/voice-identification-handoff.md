@@ -20,7 +20,26 @@ Living notes for whichever agent continues this. Newest state first. The design 
    manually labelling many clips as the same person and learning from all of them, robust to
    low, inconsistent quality. Think through every edge case and the labelling UX. — PLANNED below.
 
+## Read this first (2026-11-05)
+
+Voices now work like faces in a photo library: `voice-identification-plan.md`, top section. The
+"speakerPolicy" matching, "voice_unmatched_crops", and the per-crop grouping below this line are
+history. Thresholds in the sections below no longer apply to anything that names.
+
 ## State of the phone
+
+- **2026-11-05, "no voices are ever matched":** three compounding faults, all fixed. See the
+  speaker naming section of `voice-identification-plan.md` and the workspace progress log.
+  - **Naming:** per-crop matching named 301 clips (13.7 min) in a month, wearer only. Now whole
+    speakers, from the app's own diarization.
+  - **Queue:** new recordings always went first, 15 h of audio a day arrived against about 10 h
+    checked, so the 530 h run analysed 21 windows in three days. Now one newest-first order, only
+    speech reaches the models, known recordings finish at once, and the pace follows temperature.
+  - **Display:** the card counted only the run, so restarting read "0 of 3831" with the bar empty.
+    Now it counts the whole queue.
+  - **To watch next:** whether names on other people appear once they have more samples (their
+    2 and 3 crops come from one conversation each), false positives reported as corrections, charger
+    CPU against link drops at the new pace, and how fast `voice_jobs` drain.
 
 - **2026-10-29 13:20, after 3b62e47c went on G17 (12:17):**
   - **Status:** cost PASS. No voice work, because the phone was hot on the charger

@@ -117,6 +117,14 @@ struct TranscriptWordSpan: Equatable {
     var mediaEndMs: Int64
 }
 
+/// Who an unnamed voice in a transcript might be.
+struct PossibleVoice: Equatable, Sendable {
+    var person: Person
+    var colorIndex: Int
+    var score: Double
+    var name: String { person.isCurrentUser ? "you" : person.name }
+}
+
 struct TranscriptTurn: Equatable, Identifiable {
     var id: String
     /// What the speaker's name is filed under (stable across renames): the diarization label
@@ -153,6 +161,8 @@ struct TranscriptTurn: Equatable, Identifiable {
     var isVoiceMatch: Bool = false
     /// An unnamed speaker whose voice was heard in other recordings too: the "Who is this?" group.
     var unknownVoiceID: String? = nil
+    /// Who that voice might be: asked about on the speaker line, never asserted.
+    var possibleVoice: PossibleVoice? = nil
     /// Original segment media coordinates, independent of conversation cuts and playback offset.
     var sourceStartMs: Int64? = nil
     var sourceEndMs: Int64? = nil

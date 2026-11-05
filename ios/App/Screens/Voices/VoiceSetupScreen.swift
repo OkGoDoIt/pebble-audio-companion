@@ -92,7 +92,7 @@ struct VoiceSetupScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VoiceAvatar(name: person?.name ?? "", isCurrentUser: person?.isCurrentUser ?? true)
+            VoiceAvatar(name: person?.name ?? "", isCurrentUser: person?.isCurrentUser ?? true, size: 44)
             Text(active?.title ?? (person.map { "Remember \($0.name)’s voice" } ?? Copy.Voices.setupTitle))
                 .font(AppFont.screenTitle).foregroundStyle(Tokens.label)
                 .fixedSize(horizontal: false, vertical: true)

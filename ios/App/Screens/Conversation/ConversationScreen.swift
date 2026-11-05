@@ -32,6 +32,7 @@ struct ConversationScreen: View {
     @State private var picked: Set<String>?
     @State private var clearingNames = false
     @State private var askingVoice: UnknownVoiceDisplay?
+    @State private var reviewingVoice: UnknownVoiceDisplay?
     /// True once the in-content title has scrolled under the navigation bar, which is when
     /// the bar takes the title over (Mail/Podcasts behavior — never both at once).
     @State private var titleInBar = false
@@ -92,7 +93,10 @@ struct ConversationScreen: View {
         // iOS 27 on-screen awareness: the open conversation, as the scene's activity (no-op below 27).
         .conversationEntityAwareness(id: conversationId)
         .sheet(item: $askingVoice, onDismiss: { Task { await load() } }) { voice in
-            WhoIsThisSheet(voice: voice) { line in UndoCenter.shared.snackbar = SnackbarItem(message: line) }
+            WhoIsThisSheet(voice: voice) { UndoCenter.shared.snackbar = $0 }
+        }
+        .fullScreenCover(item: $reviewingVoice, onDismiss: { Task { await load() } }) { voice in
+            VoiceReviewScreen(voice: voice) { UndoCenter.shared.snackbar = $0 }
         }
         .sheet(item: $model.renameTurns, onDismiss: { player.pause() }) { passages in
             SpeakerRenameSheet(conversationId: conversationId, turns: passages.turns,
@@ -278,9 +282,12 @@ struct ConversationScreen: View {
                 onUnknownVoiceTap: { id in
                     Task {
                         player.pause()
-                        askingVoice = await VoiceSources.current?.unknownVoices().first { $0.id == id }
+                        guard let voice = await VoiceSources.current?.voiceDetail(id: id) else { return }
+                        if voice.suggestion != nil { reviewingVoice = voice } else { askingVoice = voice }
                     }
-                }
+                },
+                askingTurnId: Self.askingTurn(in: display.transcript),
+                onPossibleVoiceAnswer: { id, possible, yes in answerVoice(id, possible, yes: yes) }
             )
             .padding(.horizontal, Tokens.screenMargin)
         }
@@ -874,6 +881,35 @@ struct ConversationScreen: View {
         guard let first = turns.first, let id = first.personId,
               turns.allSatisfy({ $0.isVoiceMatch && $0.personId == id }) else { return nil }
         return Person(id: id, name: first.name, isCurrentUser: first.role == .you)
+    }
+
+    /// Which paragraph may ask outright: the likeliest, once it's nearly sure enough to name by
+    /// itself. Every other maybe stays a quiet mark on its speaker line, so a view never has more
+    /// than one.
+    static func askingTurn(in transcript: [TranscriptItem]) -> String? {
+        var best: (id: String, score: Double)?
+        for item in transcript {
+            guard case .turn(let turn) = item, let score = turn.possibleVoice?.score, score >= 0.50 else { continue }
+            if score > (best?.score ?? 0) { best = (turn.id, score) }
+        }
+        return best?.id
+    }
+
+    private func answerVoice(_ id: String, _ possible: PossibleVoice, yes: Bool) {
+        Task {
+            do {
+                if yes {
+                    let count = try await VoiceSources.current?.nameUnknownVoice(id: id, personId: possible.person.id, recordings: nil) ?? 0
+                    UndoCenter.shared.snackbar = WhoIsThisModel.namedNotice(possible.name, count: count, voiceId: id,
+                                                                            personId: possible.person.id) { await load() }
+                } else {
+                    try await VoiceSources.current?.rejectSuggestion(id: id, personId: possible.person.id)
+                }
+            } catch {
+                UndoCenter.shared.snackbar = SnackbarItem(message: Copy.Speaker.saveFailed)
+            }
+            await load()
+        }
     }
 
     /// "That's Dana": the recognized name becomes the person's own decision, and the paragraphs

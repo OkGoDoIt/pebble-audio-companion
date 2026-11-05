@@ -80,8 +80,8 @@ struct WhoIsThisTests {
         ])]
         let result = await LiveWorld.walkMembers(members, metas: ["s": Library.meta("s", index: 0)],
             transcripts: transcripts, assignments: [],
-            unknownVoices: [.init(segmentId: "s", startMs: 7_000, endMs: 10_000, voiceID: "voice-1"),
-                            .init(segmentId: "other", startMs: 0, endMs: 30_000, voiceID: "voice-2")])
+            unknownVoices: [.init(segmentId: "s", crops: [7_000..<10_000], voiceID: "voice-1"),
+                            .init(segmentId: "other", crops: [0..<30_000], voiceID: "voice-2")])
         let marks = result.transcript.compactMap { item -> String? in
             if case .turn(let turn) = item { return turn.unknownVoiceID ?? "-" }; return nil
         }

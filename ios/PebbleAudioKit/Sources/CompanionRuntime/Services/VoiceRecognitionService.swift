@@ -759,9 +759,6 @@ public actor VoiceRecognitionService {
     public func recognizeHistory(fromMs: Int64, toMs: Int64) async throws -> String {
         try await requireReady()
         guard fromMs < toMs else { throw VoiceEnrollmentError.invalidRange }
-        let examples = try await store.examples()
-        guard Dictionary(grouping: examples.filter { $0.recipeID == recipeID }, by: \.personId).values.contains(where: { $0.count >= policy.minimumExamples })
-        else { throw VoiceEnrollmentError.notEnoughExamples }
         for plan in try await history.plans() where plan.state == "active" {
             let jobs = try await store.jobs(runID: plan.runID)
             if !plan.discoveryComplete || jobs.contains(where: { $0.state == .pending || $0.state == .running }) {
@@ -999,29 +996,51 @@ public actor VoiceRecognitionService {
         public var speechMs: Int64 = 0
         public var suggestedPersonId: String?
         public var suggestedScore: Double?
+        /// Every speaker in the voice, however few `crops` a person kept. An answer goes to these
+        /// and no others: a later sort may number the voice differently, never its speakers.
+        public let speakerIds: [Int64]
         public var recordingCount: Int { Set(crops.map(\.segmentId)).count }
         public init(clusterId: Int64, crops: [VoiceUnmatchedCrop], speechMs: Int64 = 0,
-                    suggestedPersonId: String? = nil, suggestedScore: Double? = nil) {
+                    suggestedPersonId: String? = nil, suggestedScore: Double? = nil, speakerIds: [Int64]? = nil) {
             self.clusterId = clusterId; self.crops = crops; self.speechMs = speechMs
             self.suggestedPersonId = suggestedPersonId; self.suggestedScore = suggestedScore
+            self.speakerIds = speakerIds ?? crops.compactMap { Int64($0.id) }
         }
         /// Only the clips from these recordings: the person said the rest are someone else.
         public func limited(to recordings: Set<String>) -> UnknownVoiceGroup {
             UnknownVoiceGroup(clusterId: clusterId, crops: crops.filter { recordings.contains($0.segmentId) },
-                              speechMs: speechMs, suggestedPersonId: suggestedPersonId, suggestedScore: suggestedScore)
+                              speechMs: speechMs, suggestedPersonId: suggestedPersonId, suggestedScore: suggestedScore,
+                              speakerIds: speakerIds)
         }
         public var id: String { "voice-\(clusterId)" }
     }
 
     /// Voices nobody has named, most heard first. Those that might be someone are among them.
     public func unknownVoiceGroups(limit: Int = 6) async throws -> [UnknownVoiceGroup] {
-        try await speakers.unnamedClusters(limit: limit).map { cluster in
-            UnknownVoiceGroup(clusterId: cluster.id, crops: cluster.clips.map { clip in
-                VoiceUnmatchedCrop(id: String(clip.speakerId), segmentId: clip.segmentId, startMediaMs: clip.startMediaMs,
-                    endMediaMs: clip.endMediaMs, sourceRevision: "", recipeID: recipeID, embeddingJSON: Data(),
-                    speechConfidence: Double(clip.confidencePercent) / 100, createdAtMs: clip.heardAtMs)
-            }, speechMs: cluster.speechMs, suggestedPersonId: cluster.suggestedPersonId, suggestedScore: cluster.suggestedScore)
-        }
+        try await speakers.unnamedClusters(limit: limit).map(group)
+    }
+
+    /// One unnamed voice, wherever it falls in the list.
+    public func unknownVoiceGroup(clusterId: Int64) async throws -> UnknownVoiceGroup? {
+        try await speakers.unnamedCluster(id: clusterId).map(group)
+    }
+
+    private func group(_ cluster: VoiceCluster) -> UnknownVoiceGroup {
+        UnknownVoiceGroup(clusterId: cluster.id, crops: cluster.clips.map { clip in
+            VoiceUnmatchedCrop(id: String(clip.speakerId), segmentId: clip.segmentId, startMediaMs: clip.startMediaMs,
+                endMediaMs: clip.endMediaMs, sourceRevision: "", recipeID: recipeID, embeddingJSON: Data(),
+                speechConfidence: Double(clip.confidencePercent) / 100, createdAtMs: clip.heardAtMs)
+        }, speechMs: cluster.speechMs, suggestedPersonId: cluster.suggestedPersonId, suggestedScore: cluster.suggestedScore)
+    }
+
+    /// Where these recordings hold a voice with no name that's worth a mention.
+    public func unnamedSpans(segmentIds: [String]) async throws -> [VoiceSpeakerSpan] {
+        try await speakers.unnamedSpans(segmentIds: segmentIds)
+    }
+
+    /// The conversations someone was recognized in, newest first.
+    public func appearances(personId: String) async throws -> [VoicePersonAppearance] {
+        try await speakers.appearances(personId: personId)
     }
 
     /// How much of what's been said has a name, and whose.
@@ -1056,12 +1075,28 @@ public actor VoiceRecognitionService {
     /// The person said who a voice is: it carries their name wherever it's heard, now and from
     /// here on. Clips the person left out aren't them. The clearest few are kept as samples.
     public func nameUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws -> Int {
+        try await confirmUnknownVoice(group, personId: personId)
+        return await learnFrom(group, personId: personId)
+    }
+
+    /// "This is them": what's checked is theirs, and the rest of the voice isn't.
+    public func confirmUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws {
         let chosen = group.crops.compactMap { Int64($0.id) }
-        let everyone = try await speakers.speakers(inCluster: group.clusterId)
         try await speakers.decide(speakers: chosen, kind: .confirmed, personId: personId)
-        try await speakers.decide(speakers: everyone.filter { !chosen.contains($0) }, kind: .rejected, personId: personId)
+        try await speakers.decide(speakers: group.speakerIds.filter { !chosen.contains($0) }, kind: .rejected, personId: personId)
+        changed()
+    }
+
+    /// Takes an answer back, before anything has been learned from it.
+    public func undoUnknownVoice(_ group: UnknownVoiceGroup, personId: String) async throws {
+        try await speakers.undecide(speakers: group.speakerIds, personId: personId)
+        changed()
+    }
+
+    /// Clips of a named voice become confirmed samples of it. One per recording: different
+    /// recordings are the independent evidence.
+    @discardableResult public func learnFrom(_ group: UnknownVoiceGroup, personId: String) async -> Int {
         var learned = 0
-        // One clip per recording: different recordings are the independent evidence.
         var seen = Set<String>()
         for crop in group.crops.filter({ seen.insert($0.segmentId).inserted }).prefix(5) {
             if let outcome = try? await enroll(personId: personId, segmentId: crop.segmentId, startMediaMs: crop.startMediaMs,
@@ -1075,14 +1110,19 @@ public actor VoiceRecognitionService {
 
     /// "It's someone else": this voice stays unnamed, and isn't suggested as them again.
     public func rejectSuggestion(_ group: UnknownVoiceGroup, personId: String) async throws {
-        try await speakers.decide(speakers: try await speakers.speakers(inCluster: group.clusterId),
-                                  kind: .rejected, personId: personId)
+        try await speakers.decide(speakers: group.speakerIds, kind: .rejected, personId: personId)
+        changed()
+    }
+
+    /// "That wasn't them": these speakers lose the name, and aren't sorted back into it.
+    public func notThisPerson(speakerIds: [Int64], personId: String) async throws {
+        try await speakers.decide(speakers: speakerIds, kind: .rejected, personId: personId)
         changed()
     }
 
     /// Stop asking about this voice, here and wherever else it's heard.
     public func dismissUnknownVoice(_ group: UnknownVoiceGroup) async throws {
-        try await speakers.decide(speakers: try await speakers.speakers(inCluster: group.clusterId), kind: .ignored, personId: nil)
+        try await speakers.decide(speakers: group.speakerIds, kind: .ignored, personId: nil)
         changed()
     }
 

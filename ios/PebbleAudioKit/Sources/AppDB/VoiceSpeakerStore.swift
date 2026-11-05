@@ -97,6 +97,28 @@ public struct VoiceCluster: Equatable, Sendable {
     public var recordingCount: Int { Set(clips.map(\.segmentId)).count }
 }
 
+/// A stretch of a recording where a voice with no name yet was heard: one speaker's crops, the
+/// voice they sorted into, and who it might be.
+public struct VoiceSpeakerSpan: Equatable, Sendable {
+    public var speakerId: Int64
+    public var segmentId: String
+    public var clusterId: Int64
+    public var crops: [VoiceSpeakerCrop]
+    public var suggestedPersonId: String?
+    public var suggestedScore: Double?
+}
+
+/// A conversation someone was heard in: how long, and the clip that speaks clearest.
+public struct VoicePersonAppearance: Equatable, Sendable {
+    public var conversationId: String
+    public var title: String?
+    public var startMs: Int64
+    public var speechMs: Int64
+    /// The speakers that make this their appearance, to say it wasn't them.
+    public var speakerIds: [Int64]
+    public var clip: VoiceClusterClip
+}
+
 /// How much of everything said one person has been named on.
 public struct VoicePersonStats: Equatable, Sendable {
     public var personId: String
@@ -236,7 +258,7 @@ public struct VoiceSpeakerStore: Sendable {
         try await db.reader.read { d in
             let row = try Row.fetchOne(d, sql: """
                 SELECT (SELECT COUNT(*) FROM voice_speakers) AS a, (SELECT COALESCE(MAX(id), 0) FROM voice_speakers) AS b,
-                    (SELECT COUNT(*) FROM voice_speaker_decisions) AS c, (SELECT COALESCE(MAX(id), 0) FROM voice_speaker_decisions) AS d,
+                    (SELECT COUNT(*) FROM voice_speaker_decisions) AS c, (SELECT COALESCE(SUM(id), 0) FROM voice_speaker_decisions) AS d,
                     (SELECT COUNT(*) FROM speaker_corrections) AS e, (SELECT COALESCE(MAX(createdAtMs), 0) FROM speaker_corrections) AS f,
                     (SELECT corpusRevision FROM voice_recognition_config WHERE id = 1) AS g
                 """)!
@@ -377,6 +399,48 @@ public struct VoiceSpeakerStore: Sendable {
                 }
                 try d.execute(sql: "INSERT OR IGNORE INTO voice_speaker_decisions(speakerId,kind,personId,createdAtMs) VALUES (?,?,?,?)",
                               arguments: [speaker, kind.rawValue, personId, nowMs])
+                try Self.applyAtOnce(d, speaker: speaker, kind: kind, personId: personId)
+            }
+        }
+    }
+
+    /// An answer shows straight away, ahead of the sort that follows from it: the question is
+    /// gone and the recording is due its new names. The next sort has the final word.
+    private static func applyAtOnce(_ d: Database, speaker: Int64, kind: DecisionKind, personId: String?) throws {
+        switch kind {
+        case .confirmed:
+            try d.execute(sql: "UPDATE voice_speakers SET personId = ?, suggestedPersonId = NULL, suggestedScore = NULL, hidden = 0 WHERE id = ?",
+                          arguments: [personId, speaker])
+        case .rejected:
+            try d.execute(sql: """
+                UPDATE voice_speakers SET personId = CASE WHEN personId IS ?1 THEN NULL ELSE personId END,
+                    suggestedScore = CASE WHEN suggestedPersonId IS ?1 THEN NULL ELSE suggestedScore END,
+                    suggestedPersonId = CASE WHEN suggestedPersonId IS ?1 THEN NULL ELSE suggestedPersonId END
+                WHERE id = ?2
+                """, arguments: [personId, speaker])
+        case .ignored:
+            try d.execute(sql: "UPDATE voice_speakers SET personId = NULL, suggestedPersonId = NULL, suggestedScore = NULL, hidden = 1 WHERE id = ?",
+                          arguments: [speaker])
+        case .excluded:
+            try d.execute(sql: "UPDATE voice_speakers SET clusterId = NULL, personId = NULL, suggestedPersonId = NULL, suggestedScore = NULL WHERE id = ?",
+                          arguments: [speaker])
+        }
+        if let segmentId = try String.fetchOne(d, sql: "SELECT segmentId FROM voice_speakers WHERE id = ?", arguments: [speaker]) {
+            try VoicePrintStore.markStale(d, segmentId: segmentId)
+        }
+    }
+
+    /// Takes back "this is them" (and "this isn't them") for these speakers: the undo of an answer.
+    public func undecide(speakers: [Int64], personId: String) async throws {
+        try await db.writer.write { d in
+            for speaker in speakers {
+                try d.execute(sql: "DELETE FROM voice_speaker_decisions WHERE speakerId = ? AND personId IS ? AND kind IN ('confirmed','rejected')",
+                              arguments: [speaker, personId])
+                try d.execute(sql: "UPDATE voice_speakers SET personId = CASE WHEN personId IS ? THEN NULL ELSE personId END WHERE id = ?",
+                              arguments: [personId, speaker])
+                if let segmentId = try String.fetchOne(d, sql: "SELECT segmentId FROM voice_speakers WHERE id = ?", arguments: [speaker]) {
+                    try VoicePrintStore.markStale(d, segmentId: segmentId)
+                }
             }
         }
     }
@@ -410,33 +474,112 @@ public struct VoiceSpeakerStore: Sendable {
     /// might be someone: on its own it isn't worth asking about yet.
     public func unnamedClusters(limit: Int) async throws -> [VoiceCluster] {
         try await db.reader.read { d in
-            var clusters: [Int64: VoiceCluster] = [:]
-            for row in try Row.fetchAll(d, sql: """
-                SELECT id, segmentId, clusterId, cropsJSON, speechMs, suggestedPersonId, suggestedScore FROM voice_speakers
-                WHERE clusterId IS NOT NULL AND personId IS NULL AND hidden = 0
-                """) {
-                let clusterId: Int64 = row["clusterId"], segmentId: String = row["segmentId"]
-                let crops = Self.decode(row["cropsJSON"])
-                guard let best = crops.max(by: { ($0.confidencePercent, $0.endMs - $0.startMs) < ($1.confidencePercent, $1.endMs - $1.startMs) }) else { continue }
-                let speech: Int64 = row["speechMs"]
-                let heardAt = Self.heardAt(segmentId)
-                var cluster = clusters[clusterId] ?? VoiceCluster(id: clusterId, speechMs: 0, lastHeardMs: 0,
-                    suggestedPersonId: row["suggestedPersonId"], suggestedScore: row["suggestedScore"], clips: [])
-                cluster.speechMs += speech
-                cluster.lastHeardMs = max(cluster.lastHeardMs, heardAt)
-                cluster.clips.append(VoiceClusterClip(speakerId: row["id"], segmentId: segmentId, startMediaMs: best.startMs,
-                    endMediaMs: best.endMs, confidencePercent: best.confidencePercent, speechMs: speech, heardAtMs: heardAt))
-                clusters[clusterId] = cluster
-            }
-            return clusters.values
+            try Self.clusters(d, only: nil)
                 .filter { $0.recordingCount >= 2 || $0.suggestedPersonId != nil }
                 .sorted { $0.speechMs == $1.speechMs ? $0.id < $1.id : $0.speechMs > $1.speechMs }
                 .prefix(limit)
-                .map { cluster in
-                    var cluster = cluster
-                    cluster.clips.sort { ($0.confidencePercent, $0.speechMs) > ($1.confidencePercent, $1.speechMs) }
-                    return cluster
+                .map(Self.clearestFirst)
+        }
+    }
+
+    /// One unnamed voice, whatever its place in the list.
+    public func unnamedCluster(id: Int64) async throws -> VoiceCluster? {
+        try await db.reader.read { d in try Self.clusters(d, only: id).first.map(Self.clearestFirst) }
+    }
+
+    private static func clearestFirst(_ cluster: VoiceCluster) -> VoiceCluster {
+        var cluster = cluster
+        cluster.clips.sort { ($0.confidencePercent, $0.speechMs) > ($1.confidencePercent, $1.speechMs) }
+        return cluster
+    }
+
+    private static func clusters(_ d: Database, only: Int64?) throws -> [VoiceCluster] {
+        var clusters: [Int64: VoiceCluster] = [:]
+        let scope = only == nil ? "" : "AND clusterId = ?"
+        for row in try Row.fetchAll(d, sql: """
+            SELECT id, segmentId, clusterId, cropsJSON, speechMs, suggestedPersonId, suggestedScore FROM voice_speakers
+            WHERE clusterId IS NOT NULL AND personId IS NULL AND hidden = 0 \(scope)
+            """, arguments: only.map { [$0] } ?? []) {
+            let clusterId: Int64 = row["clusterId"], segmentId: String = row["segmentId"]
+            let crops = decode(row["cropsJSON"])
+            guard let best = crops.max(by: { ($0.confidencePercent, $0.endMs - $0.startMs) < ($1.confidencePercent, $1.endMs - $1.startMs) }) else { continue }
+            let speech: Int64 = row["speechMs"]
+            let heardAt = heardAt(segmentId)
+            var cluster = clusters[clusterId] ?? VoiceCluster(id: clusterId, speechMs: 0, lastHeardMs: 0,
+                suggestedPersonId: row["suggestedPersonId"], suggestedScore: row["suggestedScore"], clips: [])
+            cluster.speechMs += speech
+            cluster.lastHeardMs = max(cluster.lastHeardMs, heardAt)
+            cluster.clips.append(VoiceClusterClip(speakerId: row["id"], segmentId: segmentId, startMediaMs: best.startMs,
+                endMediaMs: best.endMs, confidencePercent: best.confidencePercent, speechMs: speech, heardAtMs: heardAt))
+            clusters[clusterId] = cluster
+        }
+        return Array(clusters.values)
+    }
+
+    /// Where these recordings hold a voice that might be someone or keeps coming back, for the
+    /// conversation screen. A voice heard nowhere else and like no one isn't worth a mention.
+    public func unnamedSpans(segmentIds: [String]) async throws -> [VoiceSpeakerSpan] {
+        guard !segmentIds.isEmpty else { return [] }
+        return try await db.reader.read { d in
+            let marks = Array(repeating: "?", count: segmentIds.count).joined(separator: ",")
+            let spans = try Row.fetchAll(d, sql: """
+                SELECT id, segmentId, clusterId, cropsJSON, suggestedPersonId, suggestedScore FROM voice_speakers
+                WHERE segmentId IN (\(marks)) AND clusterId IS NOT NULL AND personId IS NULL AND hidden = 0
+                """, arguments: StatementArguments(segmentIds)).map {
+                VoiceSpeakerSpan(speakerId: $0["id"], segmentId: $0["segmentId"], clusterId: $0["clusterId"],
+                                 crops: Self.decode($0["cropsJSON"]), suggestedPersonId: $0["suggestedPersonId"],
+                                 suggestedScore: $0["suggestedScore"])
+            }
+            var heardElsewhere = Set<Int64>()
+            for clusterId in Set(spans.filter { $0.suggestedPersonId == nil }.map(\.clusterId)) {
+                let recordings = try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT segmentId) FROM voice_speakers WHERE clusterId = ?",
+                                                  arguments: [clusterId]) ?? 0
+                if recordings >= 2 { heardElsewhere.insert(clusterId) }
+            }
+            return spans.filter { $0.suggestedPersonId != nil || heardElsewhere.contains($0.clusterId) }
+        }
+    }
+
+    /// The conversations someone was recognized in, newest first.
+    public func appearances(personId: String) async throws -> [VoicePersonAppearance] {
+        try await db.reader.read { d in
+            let speakers = try Row.fetchAll(d, sql: "SELECT id, segmentId, cropsJSON FROM voice_speakers WHERE personId = ?",
+                                            arguments: [personId])
+            guard !speakers.isEmpty else { return [] }
+            struct Piece { var conversationId: String; var title: String?; var startMs: Int64; var range: Range<Int64> }
+            var pieces: [String: [Piece]] = [:]
+            for row in try Row.fetchAll(d, sql: """
+                SELECT cs.segmentId, cs.conversationId, cs.startMediaMs, cs.endMediaMs, c.startMs, a.title
+                FROM conversation_segments cs JOIN conversations c ON c.id = cs.conversationId
+                LEFT JOIN annotations a ON a.conversationId = c.id
+                WHERE cs.segmentId IN (SELECT segmentId FROM voice_speakers WHERE personId = ?)
+                """, arguments: [personId]) {
+                let start: Int64? = row["startMediaMs"], end: Int64? = row["endMediaMs"]
+                pieces[row["segmentId"], default: []].append(Piece(conversationId: row["conversationId"], title: row["title"],
+                    startMs: row["startMs"], range: (start ?? 0)..<max((start ?? 0) + 1, end ?? .max)))
+            }
+            var found: [String: VoicePersonAppearance] = [:]
+            for speaker in speakers {
+                let id: Int64 = speaker["id"], segmentId: String = speaker["segmentId"]
+                let crops = Self.decode(speaker["cropsJSON"])
+                for piece in pieces[segmentId] ?? [] {
+                    let inside = crops.filter { $0.startMs < piece.range.upperBound && $0.endMs > piece.range.lowerBound }
+                    guard let best = inside.max(by: { ($0.confidencePercent, $0.endMs - $0.startMs) < ($1.confidencePercent, $1.endMs - $1.startMs) }) else { continue }
+                    let speech = inside.reduce(Int64(0)) { $0 + min($1.endMs, piece.range.upperBound) - max($1.startMs, piece.range.lowerBound) }
+                    var appearance = found[piece.conversationId] ?? VoicePersonAppearance(conversationId: piece.conversationId, title: piece.title,
+                        startMs: piece.startMs, speechMs: 0, speakerIds: [],
+                        clip: VoiceClusterClip(speakerId: id, segmentId: segmentId, startMediaMs: best.startMs, endMediaMs: best.endMs,
+                                               confidencePercent: best.confidencePercent, speechMs: speech, heardAtMs: Self.heardAt(segmentId)))
+                    appearance.speechMs += speech
+                    if !appearance.speakerIds.contains(id) { appearance.speakerIds.append(id) }
+                    if best.confidencePercent > appearance.clip.confidencePercent {
+                        appearance.clip = VoiceClusterClip(speakerId: id, segmentId: segmentId, startMediaMs: best.startMs, endMediaMs: best.endMs,
+                                                           confidencePercent: best.confidencePercent, speechMs: speech, heardAtMs: Self.heardAt(segmentId))
+                    }
+                    found[piece.conversationId] = appearance
                 }
+            }
+            return found.values.sorted { $0.startMs == $1.startMs ? $0.conversationId < $1.conversationId : $0.startMs > $1.startMs }
         }
     }
 

@@ -20,18 +20,38 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let plans = try await service.historyPlans()
         let plan = plans.first
         let run = runs.first { $0.runID == plan?.runID }
-        var display = VoiceSettingsDisplay(
-            enabled: status.configuration.mode == .local,
-            modelsReady: status.models == .installed,
-            currentUser: try await composition.people.listPeople().first(where: { $0.person.isCurrentUser })?.person,
-            people: profiles.map { profile in
-                VoicePersonDisplay(person: profile.person,
-                    examples: VoiceExampleDisplay.grouped(examples.filter { $0.personId == profile.person.id },
-                                                          kinds: kinds),
-                    compatibleExampleCount: examples.filter {
-                        $0.personId == profile.person.id && $0.recipeID == LocalSpeakerDiarizer.recipeID
-                    }.count)
-            }, notice: status.lastMessage)
+        let everyone = try await composition.people.listPeople().map(\.person)
+        let colors = PersonPalette.indices(of: everyone)
+        let coverage = try await service.coverage()
+        let stats = Dictionary(coverage.byPerson.map { ($0.personId, $0) }, uniquingKeysWith: { a, _ in a })
+        var people: [VoicePersonDisplay] = []
+        for person in everyone {
+            let own = examples.filter { $0.personId == person.id }
+            let compatible = own.filter { $0.recipeID == LocalSpeakerDiarizer.recipeID }.count
+            var row = VoicePersonDisplay(person: person, examples: VoiceExampleDisplay.grouped(own, kinds: kinds),
+                                         compatibleExampleCount: compatible, colorIndex: colors[person.id] ?? 1)
+            if let found = stats[person.id] {
+                row.speechMs = found.speechMs
+                row.conversations = found.conversations
+                row.lastHeard = found.lastHeardMs.map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+            }
+            people.append(row)
+        }
+        people.sort { (a: VoicePersonDisplay, b: VoicePersonDisplay) -> Bool in
+            a.speechMs == b.speechMs ? a.person.name < b.person.name : a.speechMs > b.speechMs
+        }
+        var display = VoiceSettingsDisplay(enabled: status.configuration.mode == .local,
+                                           modelsReady: status.models == .installed,
+                                           currentUser: everyone.first(where: \.isCurrentUser),
+                                           people: people, notice: status.lastMessage)
+        if coverage.speechMs > 0 {
+            var shares: [VoiceCoverageDisplay.Share] = []
+            for person in people where person.speechMs > 0 {
+                shares.append(.init(id: person.id, name: person.name,
+                                    fraction: Double(person.speechMs) / Double(coverage.speechMs), colorIndex: person.colorIndex))
+            }
+            display.coverage = VoiceCoverageDisplay(speechMs: coverage.speechMs, namedMs: coverage.namedMs, shares: shares)
+        }
         display.people = await Self.placeClips(display.people, service: service, transcripts: composition.transcripts)
         display.pendingRecordings = status.pendingRecordings
         // This screen is on screen: the foreground rule (a charger, not too hot, no Low Power).
@@ -118,6 +138,10 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     }
     func setEnabled(_ enabled: Bool) async throws {
         try await service.setEnabled(enabled)
+        // The first time on, the whole archive is worth sorting: that's what there is to ask about.
+        if enabled, try await service.historyPlans().isEmpty {
+            _ = try await service.recognizeHistory(fromMs: 0, toMs: Int64(Date().timeIntervalSince1970 * 1_000))
+        }
         composition.runtime.notifyVoiceConfigurationChanged()
     }
     func currentUser(name: String) async throws -> Person {
@@ -159,29 +183,95 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         composition.runtime.notifyVoiceConfigurationChanged()
         return result
     }
+    /// Every voice the screens have been shown. Kept past the next read: an answer goes to the
+    /// speakers the person was looking at, however they've been sorted since.
     private var unknownGroups: [String: VoiceRecognitionService.UnknownVoiceGroup] = [:]
+    /// Waiting out the offer to undo before learning from an answer.
+    private var learning: [String: Task<Void, Never>] = [:]
 
     func unknownVoices() async -> [UnknownVoiceDisplay] {
         guard (try? await service.status().configuration.mode) == .local,
-              let groups = try? await service.unknownVoiceGroups(limit: 12) else { return [] }
-        unknownGroups = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let service = service, transcripts = composition.transcripts
+              let groups = try? await service.unknownVoiceGroups(limit: 60) else { return [] }
+        for group in groups { unknownGroups[group.id] = group }
+        let people = (try? await composition.people.listPeople().map(\.person)) ?? []
         return await Task.detached(priority: .userInitiated) {
-            groups.map { UnknownVoiceDisplay.build($0, wallMs: service.wallMs(segmentId:mediaMs:),
-                                                   transcript: { transcripts.load($0) }) }
+            // When each recording began is close enough for a list, and needs no file read; what
+            // was said and the exact moment wait for `voiceDetail`.
+            groups.map { group in
+                let began = Dictionary(group.crops.map { ($0.segmentId, $0.createdAtMs) }, uniquingKeysWith: { a, _ in a })
+                return UnknownVoiceDisplay.build(group, people: people, wallMs: { segment, _ in began[segment] },
+                                                 transcript: { _ in nil })
+            }
         }.value
     }
+
+    func voiceDetail(id: String) async -> UnknownVoiceDisplay? {
+        guard let group = await group(id) else { return nil }
+        let people = (try? await composition.people.listPeople().map(\.person)) ?? []
+        let service = service, transcripts = composition.transcripts
+        return await Task.detached(priority: .userInitiated) {
+            UnknownVoiceDisplay.build(group, people: people, wallMs: service.wallMs(segmentId:mediaMs:),
+                                      transcript: { transcripts.load($0) })
+        }.value
+    }
+
+    private func group(_ id: String) async -> VoiceRecognitionService.UnknownVoiceGroup? {
+        if let known = unknownGroups[id] { return known }
+        guard id.hasPrefix("voice-"), let clusterId = Int64(id.dropFirst(6)),
+              let group = try? await service.unknownVoiceGroup(clusterId: clusterId) else { return nil }
+        unknownGroups[id] = group
+        return group
+    }
+
     func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
-        guard let whole = unknownGroups[id] else { throw SpeakerEditorError.voiceUnavailable }
+        guard let whole = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
         let group = recordings.map { whole.limited(to: $0) } ?? whole
         guard !group.crops.isEmpty else { return 0 }
-        _ = try await service.nameUnknownVoice(group, personId: personId)
-        unknownGroups[id] = nil
-        let earliest = group.crops.compactMap { service.wallMs(segmentId: $0.segmentId, mediaMs: $0.startMediaMs) }.min()
-        await recognizeAfterLearning(personId: personId, since: earliest)
+        try await service.confirmUnknownVoice(group, personId: personId)
         composition.runtime.notifyVoiceConfigurationChanged()
+        // Samples come from the models, and the offer to undo is still up: this waits.
+        let service = service
+        learning[id] = Task { [weak self] in
+            try? await Task.sleep(for: SnackbarItem.lifetime + .seconds(1))
+            guard !Task.isCancelled else { return }
+            await service.learnFrom(group, personId: personId)
+            self?.composition.runtime.notifyVoiceConfigurationChanged()
+        }
         return group.recordingCount
     }
+
+    func undoNaming(id: String, personId: String) async throws {
+        learning[id]?.cancel()
+        learning[id] = nil
+        guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
+        try await service.undoUnknownVoice(group, personId: personId)
+        composition.runtime.notifyVoiceConfigurationChanged()
+    }
+
+    func rejectSuggestion(id: String, personId: String) async throws {
+        guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
+        try await service.rejectSuggestion(group, personId: personId)
+        composition.runtime.notifyVoiceConfigurationChanged()
+    }
+
+    func appearances(personId: String) async -> [VoiceAppearanceDisplay] {
+        guard let found = try? await service.appearances(personId: personId) else { return [] }
+        return found.map { appearance in
+            let heardAt = Date(timeIntervalSince1970: Double(appearance.startMs) / 1_000)
+            return VoiceAppearanceDisplay(conversationId: appearance.conversationId,
+                title: appearance.title ?? "Conversation", heardAt: heardAt, speechMs: appearance.speechMs,
+                speakerIds: appearance.speakerIds,
+                clip: UnknownVoiceClip(id: "\(appearance.conversationId):\(appearance.clip.speakerId)",
+                    segmentId: appearance.clip.segmentId, startMs: appearance.clip.startMediaMs,
+                    endMs: appearance.clip.endMediaMs, heardAt: heardAt))
+        }
+    }
+
+    func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async throws {
+        try await service.notThisPerson(speakerIds: appearance.speakerIds, personId: personId)
+        composition.runtime.notifyVoiceConfigurationChanged()
+    }
+
     /// The transcript paragraph a clip sits in, when most of the clip is inside it: naming the
     /// clip should name what the person reads, and a name over part of a paragraph names nothing.
     nonisolated static func paragraph(around clip: Range<Int64>, in segments: [TranscriptSegment]) -> Range<Int64>? {
@@ -194,12 +284,14 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     }
 
     func dismissUnknownVoice(id: String) async throws {
-        guard let group = unknownGroups[id] else { throw SpeakerEditorError.voiceUnavailable }
+        guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
         try await service.dismissUnknownVoice(group)
         unknownGroups[id] = nil
+        composition.runtime.notifyVoiceConfigurationChanged()
     }
     func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
         try await service.ignoreUnknownClip(segmentId: clip.segmentId, startMediaMs: clip.startMs, endMediaMs: clip.endMs)
+        composition.runtime.notifyVoiceConfigurationChanged()
     }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
         try? await service.clipPCM(segmentId: segmentId, startMediaMs: startMs, endMediaMs: endMs)
@@ -209,21 +301,8 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     }
 
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async {
-        // Every name teaches now, so a whole-archive pass per save would be O(library) work
-        // for each label. The past week, reaching back to the labelled conversation, is where
-        // the new evidence matters most; "Find voices in all recordings" still covers the rest.
-        let now = Int64(Date().timeIntervalSince1970 * 1_000)
-        let from = min(now - 7 * 86_400_000, earliestMs.map { $0 - 3_600_000 } ?? now)
-        guard (try? await service.status().configuration.mode) == .local,
-              let examples = try? await service.examples(),
-              examples.filter({ $0.personId == personId && $0.recipeID == LocalSpeakerDiarizer.recipeID }).count >= 2
-        else { return }
-        // Starting a run cancels the active one. A run already covering this stretch (say, "Find
-        // voices in all recordings") keeps going, and what it has analysed is named afresh from
-        // its prints when the voices change, so leave it be.
-        if let plans = try? await service.historyPlans(),
-           plans.contains(where: { $0.state == "active" && $0.fromMs <= from }) { return }
-        _ = try? await service.recognizeHistory(fromMs: from, toMs: now)
+        // A name changes what voices sort into, and the names follow from saved prints. Nothing
+        // has to be listened to again.
         composition.runtime.notifyVoiceConfigurationChanged()
     }
     func cancelEnrollment() async {
@@ -260,7 +339,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
 
 extension UnknownVoiceDisplay {
     /// One clip per recording, newest first, with what was said; and when the voice tends to be heard.
-    nonisolated static func build(_ group: VoiceRecognitionService.UnknownVoiceGroup,
+    nonisolated static func build(_ group: VoiceRecognitionService.UnknownVoiceGroup, people: [Person] = [],
                                   wallMs: (String, Int64) -> Int64?,
                                   transcript: (String) -> SegmentTranscript?,
                                   now: Date = Date(), calendar: Calendar = .current) -> UnknownVoiceDisplay {
@@ -279,8 +358,14 @@ extension UnknownVoiceDisplay {
         let parts = [timeOfDay(dates, calendar: calendar), dates.max().map { lastHeard($0, now: now, calendar: calendar) }]
             .compactMap { $0 }
         let detail = parts.joined(separator: " · ")
-        return UnknownVoiceDisplay(id: group.id, recordingCount: group.recordingCount,
-                                   detail: detail.prefix(1).uppercased() + detail.dropFirst(), clips: clips)
+        var display = UnknownVoiceDisplay(id: group.id, recordingCount: group.recordingCount,
+                                          detail: detail.prefix(1).uppercased() + detail.dropFirst(), clips: clips,
+                                          speechMs: group.speechMs, leadClipID: group.crops.first?.id)
+        if let id = group.suggestedPersonId, let person = people.first(where: { $0.id == id }) {
+            display.suggestion = VoiceSuggestionDisplay(person: person, colorIndex: PersonPalette.indices(of: people)[id] ?? 1,
+                                                        score: group.suggestedScore ?? 0)
+        }
+        return display
     }
 
     /// What was said during a clip, in the paragraph's own words. Word timings are subword

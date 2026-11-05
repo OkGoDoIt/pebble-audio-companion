@@ -91,7 +91,8 @@ final class MockWorld {
         /// An unnamed speaker whose voice the demo's "Who is this?" list also holds.
         func recurring(_ item: TranscriptItem) -> TranscriptItem {
             guard case .turn(var turn) = item else { return item }
-            turn.unknownVoiceID = "demo-voice-1"
+            turn.unknownVoiceID = "demo-voice-3"
+            turn.possibleVoice = PossibleVoice(person: Person(id: "person-dana", name: "Dana"), colorIndex: 1, score: 0.52)
             return .turn(turn)
         }
 

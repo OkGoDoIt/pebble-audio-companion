@@ -58,6 +58,49 @@ import Testing
         #expect(input.person == nil && input.rejected == [sam.id])
     }
 
+    /// A recording shared by two conversations counts in each for only the speech inside it.
+    @Test func appearancesCountTheSpeechInsideEachConversation() async throws {
+        let (db, store) = try await ready()
+        let dana = try await PeopleStore(db: db).createPerson(name: "Dana")
+        try await store.replaceSpeakers([("seg-1-a-1", [draft([crop(0, 3_000), crop(3_000, 6_000), crop(10_000, 13_000)])])])
+        let id = try #require(try await store.clusterInputs(minimumCrops: 1).first?.id)
+        try await store.decide(speakers: [id], kind: .confirmed, personId: dana.id)
+        try await db.writer.write { d in
+            try d.execute(sql: "INSERT INTO conversations(id,startMs,endMs,timezone,state) VALUES ('early',1000,2000,'UTC','closed'),('late',5000,6000,'UTC','closed')")
+            try d.execute(sql: "INSERT INTO annotations(conversationId,title) VALUES ('late','Lunch plans')")
+            try d.execute(sql: """
+                INSERT INTO conversation_segments(conversationId,segmentId,ordinal,startMediaMs,endMediaMs)
+                VALUES ('early','seg-1-a-1',0,0,8000),('late','seg-1-a-1',0,8000,NULL)
+                """)
+        }
+        let found = try await store.appearances(personId: dana.id)
+        #expect(found.map(\.conversationId) == ["late", "early"], "Newest first")
+        #expect(found.map(\.speechMs) == [3_000, 6_000])
+        #expect(found.first?.title == "Lunch plans")
+        #expect(found.allSatisfy { $0.speakerIds == [id] })
+    }
+
+    /// A conversation mentions a voice that might be someone or keeps coming back; one heard
+    /// nowhere else and like nobody isn't worth a mark.
+    @Test func aConversationOnlyMentionsVoicesWorthAsking() async throws {
+        let (db, store) = try await ready()
+        let dana = try await PeopleStore(db: db).createPerson(name: "Dana")
+        try await store.replaceSpeakers([
+            ("seg-1-a-1", [draft([crop(0, 3_000)]), draft([crop(3_000, 6_000)]), draft([crop(6_000, 9_000)])]),
+            ("seg-2-a-1", [draft([crop(0, 3_000)])]),
+        ])
+        let ids = try await store.clusterInputs(minimumCrops: 1).map(\.id).sorted()
+        try await store.applyClusters([
+            VoiceSpeakerAssignment(speakerId: ids[0], clusterId: 100, personId: nil, score: 0.5, suggestedPersonId: dana.id, suggestedScore: 0.5, ignored: false),
+            VoiceSpeakerAssignment(speakerId: ids[1], clusterId: 200, personId: nil, score: 0.5, suggestedPersonId: nil, suggestedScore: nil, ignored: false),
+            VoiceSpeakerAssignment(speakerId: ids[2], clusterId: 300, personId: nil, score: 0.5, suggestedPersonId: nil, suggestedScore: nil, ignored: false),
+            VoiceSpeakerAssignment(speakerId: ids[3], clusterId: 200, personId: nil, score: 0.5, suggestedPersonId: nil, suggestedScore: nil, ignored: false),
+        ])
+        let spans = try await store.unnamedSpans(segmentIds: ["seg-1-a-1"])
+        #expect(spans.map(\.clusterId).sorted() == [100, 200], "The one heard only here and like nobody is left out")
+        #expect(spans.first { $0.clusterId == 100 }?.suggestedPersonId == dana.id)
+    }
+
     @Test func deletingAPersonTakesWhatWasSaidAboutThem() async throws {
         let (db, store) = try await ready()
         let dana = try await PeopleStore(db: db).createPerson(name: "Dana")

@@ -10,7 +10,7 @@ import SwiftUI
 struct WhoIsThisSheet: View {
     let voice: UnknownVoiceDisplay
     /// Called after an answer, with the line to show once.
-    let onAnswered: (String) -> Void
+    let onAnswered: (SnackbarItem) -> Void
 
     private enum Choice: Equatable { case person(String), me, newPerson }
     @Environment(\.dismiss) private var dismiss
@@ -18,47 +18,50 @@ struct WhoIsThisSheet: View {
     @State private var model: WhoIsThisModel
     @State private var choice: Choice?
     @State private var newName = ""
+    /// What was said, read once the sheet is up.
+    @State private var full: UnknownVoiceDisplay?
     /// "More than one person": pick which recordings are the one person being named.
     @State private var splitting = false
     @State private var kept: Set<String> = []
 
-    init(voice: UnknownVoiceDisplay, model: WhoIsThisModel = .init(), onAnswered: @escaping (String) -> Void) {
+    init(voice: UnknownVoiceDisplay, model: WhoIsThisModel = .init(), onAnswered: @escaping (SnackbarItem) -> Void) {
         self.voice = voice
         self.onAnswered = onAnswered
         _model = State(initialValue: model)
+        _choice = State(initialValue: voice.suggestion.map { .person($0.person.id) })
     }
+
+    private var shown: UnknownVoiceDisplay { full ?? voice }
 
     var body: some View {
         NavigationStack {
             SettingsScroll {
-                ListCard {
-                    ForEach(voice.clips.prefix(3)) { clip in clipRow(clip) }
+                ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
+                    ForEach(shown.clips.prefix(3)) { clip in clipRow(clip) }
                 }
-                if voice.clips.count > 3 {
-                    SettingsFooter(text: "Also heard in \(voice.clips.count - 3) more recordings.")
-                }
+                SettingsFooter(text: "Heard for \(shown.heardFor).")
                 peoplePicker
             }
-            .navigationTitle("Who is this?")
+            .navigationTitle(Copy.Voices.whoIsThis)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Not Now") { model.stop(); dismiss() }.disabled(model.working)
+                    Button(Copy.Voices.notNow) { model.stop(); dismiss() }.disabled(model.working)
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                actions(count: voice.recordingCount, recordings: nil) {
-                    Button("More than one person") {
+                actions(count: shown.recordingCount, recordings: nil) {
+                    Button(Copy.Voices.moreThanOne) {
                         model.stop()
-                        kept = Set(voice.clips.map(\.segmentId))
+                        kept = Set(shown.clips.map(\.segmentId))
                         splitting = true
                     }
                     .font(AppFont.callout.weight(.semibold)).foregroundStyle(Tokens.tint)
                     .frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
-                    Button("Ignore All Clips") {
+                    Button(Copy.Voices.dontAsk) {
                         Task {
                             guard await model.ignoreAll(voice) else { return }
-                            onAnswered("Clips ignored")
+                            onAnswered(SnackbarItem(message: Copy.Voices.wontAsk))
                             dismiss()
                         }
                     }
@@ -70,20 +73,23 @@ struct WhoIsThisSheet: View {
         }
         .tint(Tokens.tint)
         .interactiveDismissDisabled(model.working)
-        .task { await model.load() }
+        .task {
+            await model.load()
+            full = await model.detail(of: voice.id)
+        }
         .onDisappear { model.stop() }
     }
 
     /// Every recording the voice was grouped from, to tick the ones that are this person.
     private var splitPage: some View {
         SettingsScroll {
-            Text("Check the recordings where it’s the same person.")
+            Text("Check the conversations where it’s the same person.")
                 .font(AppFont.subBody).foregroundStyle(Tokens.secondaryBody)
                 .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8)
-            ListCard {
-                ForEach(voice.clips) { clip in clipRow(clip, checkable: true) }
+            ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
+                ForEach(shown.clips) { clip in clipRow(clip, checkable: true) }
             }
-            SettingsFooter(text: "Unchecked recordings stay unnamed.")
+            SettingsFooter(text: "The rest stay unnamed.")
             peoplePicker
         }
         .navigationTitle("Same person?")
@@ -94,21 +100,31 @@ struct WhoIsThisSheet: View {
         .onDisappear { model.stop() }
     }
 
+    /// The closest match first, then you, then everyone else.
+    private var orderedPeople: [Person] {
+        let suggested = shown.suggestion?.person.id
+        return model.people.sorted { a, b in
+            if (a.id == suggested) != (b.id == suggested) { return a.id == suggested }
+            if a.isCurrentUser != b.isCurrentUser { return a.isCurrentUser }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
     @ViewBuilder private var peoplePicker: some View {
         SettingsSectionHeader(title: "This is")
-        ListCard {
-            ForEach(model.people.sorted { $0.isCurrentUser && !$1.isCurrentUser }, id: \.id) { person in
-                choiceRow(.person(person.id), title: person.isCurrentUser ? "\(person.name) · You" : person.name) {
-                    VoiceAvatar(name: person.name, isCurrentUser: person.isCurrentUser)
-                }
+        let colors = PersonPalette.indices(of: model.people)
+        ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
+            ForEach(orderedPeople, id: \.id) { person in
+                VoicePersonChoiceRow(person: person, colorIndex: colors[person.id] ?? 1,
+                                     detail: person.id == shown.suggestion?.person.id ? Copy.Voices.closestMatch : nil,
+                                     selected: choice == .person(person.id)) { choice = .person(person.id) }
             }
             if !model.people.contains(where: \.isCurrentUser) {
-                choiceRow(.me, title: Copy.Speaker.thisIsMe) { VoiceAvatar(name: "", isCurrentUser: true) }
+                VoicePersonChoiceRow(person: nil, title: Copy.Speaker.thisIsMe, selected: choice == .me) {
+                    choice = .me; newName = ""
+                }
             }
-            choiceRow(.newPerson, title: Copy.Speaker.newPerson) {
-                Image(systemName: "person.badge.plus").font(.system(size: 20)).foregroundStyle(Tokens.meta)
-                    .frame(width: 44, height: 44).accessibilityHidden(true)
-            }
+            VoiceNewPersonRow(selected: choice == .newPerson) { choice = .newPerson; newName = "" }
         }.disabled(model.working)
         if choice == .newPerson || choice == .me {
             ListCard {
@@ -119,14 +135,28 @@ struct WhoIsThisSheet: View {
         if let error = model.errorMessage { VoiceMessageCard(text: error) }
     }
 
+    private var actionTitle: String {
+        switch choice {
+        case .person(let id):
+            guard let person = model.people.first(where: { $0.id == id }) else { return Copy.Voices.nameVoice }
+            return person.isCurrentUser ? Copy.Voices.thats("you") : "Name \(person.name)"
+        case .me: return Copy.Voices.thats("you")
+        case .newPerson:
+            let typed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return typed.isEmpty ? Copy.Voices.nameVoice : "Name \(typed)"
+        case nil: return Copy.Voices.nameVoice
+        }
+    }
+
     private func actions(count: Int, recordings: Set<String>?, @ViewBuilder secondary: () -> some View) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             Button { name(count: count, recordings: recordings) } label: {
                 HStack {
                     if model.working { ProgressView().tint(Tokens.onTint) }
-                    Text(count == 1 ? "Name in 1 recording" : "Name in \(count) recordings")
+                    Text(actionTitle)
                 }
-            }.buttonStyle(.primaryFilled).disabled(!canName || count == 0)
+            }
+            .buttonStyle(.primaryFilled).disabled(!canName || count == 0).padding(.bottom, 4)
             secondary()
         }
         .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8).background(Tokens.ground)
@@ -142,70 +172,41 @@ struct WhoIsThisSheet: View {
         guard canName, let choice else { return }
         Task {
             let named: String?
+            let personId: String?
             switch choice {
-            case .person(let id): named = await model.name(voice, personId: id, recordings: recordings)
-            case .me: named = await model.nameAsMe(voice, displayName: newName, recordings: recordings)
-            case .newPerson: named = await model.nameAsNewPerson(voice, name: newName, recordings: recordings)
+            case .person(let id):
+                named = await model.name(voice, personId: id, recordings: recordings)
+                personId = id
+            case .me:
+                named = await model.nameAsMe(voice, displayName: newName, recordings: recordings)
+                personId = nil
+            case .newPerson:
+                named = await model.nameAsNewPerson(voice, name: newName, recordings: recordings)
+                personId = nil
             }
             guard let named else { return }
-            onAnswered(count == 1 ? "Named \(named) in 1 recording" : "Named \(named) in \(count) recordings")
+            if let personId {
+                onAnswered(WhoIsThisModel.namedNotice(named, count: count, voiceId: voice.id, personId: personId) {})
+            } else {
+                onAnswered(SnackbarItem(message: Copy.Voices.named(named, in: count)))
+            }
             dismiss()
         }
     }
 
     private func clipRow(_ clip: UnknownVoiceClip, checkable: Bool = false) -> some View {
-        HStack(spacing: 12) {
-            Button { if model.playing == clip.id { model.stop() } else { model.toggle(clip) } } label: {
-                Image(systemName: model.playing == clip.id ? "stop.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.onTint)
-                    .frame(width: 36, height: 36).background(Circle().fill(Tokens.tint))
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(model.playing == clip.id ? "Stop" : "Play clip from \(clip.heardAt.map(Self.when) ?? "earlier")")
-            Button {
-                if checkable {
-                    if kept.contains(clip.segmentId) { kept.remove(clip.segmentId) } else { kept.insert(clip.segmentId) }
-                } else { model.toggle(clip) }
-            } label: {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(clip.heardAt.map(Self.when) ?? "Earlier").font(AppFont.rowTitle).foregroundStyle(Tokens.label)
-                        if let quote = clip.quote {
-                            Text(quote).font(AppFont.footnote).foregroundStyle(Tokens.meta).lineLimit(2)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if checkable {
-                        // Several can be the same person, so this one is a multi-select checkbox.
-                        Image(systemName: kept.contains(clip.segmentId) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 22)).foregroundStyle(kept.contains(clip.segmentId) ? Tokens.tint : Tokens.chevron)
-                            .accessibilityHidden(true)
-                    }
-                }.frame(minHeight: 52).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(checkable && kept.contains(clip.segmentId) ? .isSelected : [])
-            // A clip is a few seconds; these are for when that isn't enough to tell.
-            Menu {
-                Button(model.playing == clip.id && model.playingLonger ? "Stop" : "Play Longer",
-                       systemImage: "waveform") { model.toggle(clip, longer: true) }
-                if clip.heardAt != nil {
-                    Button("Open Conversation", systemImage: "text.bubble") { show(clip) }
+        VoiceClipRow(clip: clip, player: model, checked: checkable ? kept.contains(clip.segmentId) : nil,
+            onToggle: {
+                if kept.contains(clip.segmentId) { kept.remove(clip.segmentId) } else { kept.insert(clip.segmentId) }
+            },
+            onIgnore: {
+                Task {
+                    guard await model.ignore(clip) else { return }
+                    onAnswered(SnackbarItem(message: "Clip ignored"))
+                    dismiss()
                 }
-                Button("Ignore Clip", systemImage: "nosign") {
-                    Task {
-                        guard await model.ignore(clip) else { return }
-                        onAnswered("Clip ignored")
-                        dismiss()
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 20)).foregroundStyle(Tokens.tint)
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-            }
-            .accessibilityLabel("More for this clip")
-            .disabled(model.working)
-        }
+            },
+            onOpen: clip.heardAt == nil ? nil : { show(clip) })
     }
 
     /// Leaves the question for the conversation, at the moment the clip was heard.
@@ -218,21 +219,6 @@ struct WhoIsThisSheet: View {
         }
     }
 
-    private func choiceRow(_ value: Choice, title: String, @ViewBuilder avatar: () -> some View) -> some View {
-        Button { choice = value; if value == .newPerson || value == .me { newName = "" } } label: {
-            HStack(spacing: 12) {
-                avatar()
-                Text(title).font(AppFont.callout).foregroundStyle(Tokens.label)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                // iOS single choice: a checkmark on the chosen row only.
-                Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(Tokens.tint)
-                    .opacity(choice == value ? 1 : 0).accessibilityHidden(true)
-            }.frame(minHeight: 52).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(choice == value ? .isSelected : [])
-    }
-
     /// "Today, 8:12 AM", "Saturday, 7:40 AM", "Oct 12, 7:40 AM".
     static func when(_ date: Date) -> String {
         let calendar = Calendar.current
@@ -242,6 +228,55 @@ struct WhoIsThisSheet: View {
         let days = calendar.dateComponents([.day], from: date, to: Date()).day ?? 99
         let day = days < 7 ? date.formatted(.dateTime.weekday(.wide)) : date.formatted(.dateTime.month(.abbreviated).day())
         return "\(day), \(time)"
+    }
+}
+
+/// One person in "This is": the same row wherever a voice is being named.
+struct VoicePersonChoiceRow: View {
+    var person: Person?
+    var colorIndex: Int? = nil
+    var title: String? = nil
+    var detail: String? = nil
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                VoiceAvatar(name: person?.name ?? "", isCurrentUser: person?.isCurrentUser ?? true, colorIndex: colorIndex)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title ?? (person?.isCurrentUser == true ? Copy.Speaker.you : person?.name ?? ""))
+                        .font(AppFont.bodyPlain).foregroundStyle(Tokens.label).lineLimit(1)
+                    if let detail { Text(detail).font(AppFont.footnote).foregroundStyle(Tokens.meta) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                // iOS single choice: a checkmark on the chosen row only.
+                Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(Tokens.tint)
+                    .opacity(selected ? 1 : 0).accessibilityHidden(true)
+            }.frame(minHeight: 38).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// "Someone new", under the people.
+struct VoiceNewPersonRow: View {
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.tint)
+                    .frame(width: 28, height: 28).background(Circle().fill(Tokens.grayChipFill)).accessibilityHidden(true)
+                Text(Copy.Voices.someoneNew).font(AppFont.bodyPlain).foregroundStyle(Tokens.tint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold)).foregroundStyle(Tokens.tint)
+                    .opacity(selected ? 1 : 0).accessibilityHidden(true)
+            }.frame(minHeight: 38).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -310,6 +345,42 @@ final class WhoIsThisModel {
     }
 
     func couldNotOpen() { errorMessage = "Couldn’t find this moment in a conversation." }
+
+    /// The voice with what was said in each clip.
+    func detail(of id: String) async -> UnknownVoiceDisplay? { await voices?.voiceDetail(id: id) }
+
+    /// "Confirm 3 for Dana". Returns the line to show, with its offer to undo.
+    func confirm(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay, recordings: Set<String>?) async -> SnackbarItem? {
+        var count = 0
+        let voices = self.voices
+        guard await answer({
+            guard let voices else { throw SpeakerEditorError.voiceUnavailable }
+            count = try await voices.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, recordings: recordings)
+            return "named"
+        }) != nil else { return nil }
+        return Self.namedNotice(suggestion.name, count: count, voiceId: voice.id, personId: suggestion.person.id) {}
+    }
+
+    /// "None of these are Dana".
+    func reject(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay) async -> Bool {
+        let voices = self.voices
+        return await answer {
+            guard let voices else { throw SpeakerEditorError.voiceUnavailable }
+            try await voices.rejectSuggestion(id: voice.id, personId: suggestion.person.id)
+            return "rejected"
+        } != nil
+    }
+
+    /// "Named Dana in 4 conversations", and the way back.
+    static func namedNotice(_ name: String, count: Int, voiceId: String, personId: String,
+                            afterUndo: @escaping @MainActor () async -> Void) -> SnackbarItem {
+        SnackbarItem(message: Copy.Voices.named(name, in: count), actionTitle: Copy.Common.undo, action: {
+            Task { @MainActor in
+                try? await VoiceSources.current?.undoNaming(id: voiceId, personId: personId)
+                await afterUndo()
+            }
+        })
+    }
 
     func ignore(_ clip: UnknownVoiceClip) async -> Bool {
         await answer {
