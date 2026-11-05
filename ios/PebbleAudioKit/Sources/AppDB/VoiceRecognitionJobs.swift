@@ -165,6 +165,13 @@ extension VoiceIdentityStore {
         }
     }
 
+    /// Recordings whose audio has been read before and is still wanted.
+    public func readySources() async throws -> Set<String> {
+        try await db.reader.read { d in
+            Set(try String.fetchAll(d, sql: "SELECT segmentId FROM voice_sources WHERE state = 'ready'"))
+        }
+    }
+
     /// Whether transcription found no speech anywhere in this recording.
     public func transcribedAsNoSpeech(segmentId: String) async throws -> Bool {
         try await db.reader.read { d in

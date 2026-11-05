@@ -667,7 +667,11 @@ public actor VoiceRecognitionService {
 
     private func fillHistory(plans: [VoiceHistoryPlan], metas: [SegmentMeta]) async throws -> Bool {
         var advanced = false
-        var inspected = 0
+        // A recording seen before needs no look at its audio: its sidecar says how long it is, and
+        // a changed one is caught before analysis. Reading and hashing each of 3,400 recordings
+        // kept "Counting recordings…" up for hours, working on whatever had been counted so far.
+        var inspected = 0, read = 0
+        let known = try await store.readySources()
         let ordered = metas.sorted { ($0.startWallMs, $0.segmentId) < ($1.startWallMs, $1.segmentId) }
         for plan in plans.reversed() where plan.state == "active" && !plan.discoveryComplete {
             let candidates = ordered.filter {
@@ -680,18 +684,25 @@ public actor VoiceRecognitionService {
             if candidates.isEmpty { try await history.finishDiscovery(runID: plan.runID); advanced = true; continue }
             for meta in candidates {
                 try Task.checkCancellation()
-                guard inspected < 2 else { if advanced { changed() }; return advanced }
+                guard inspected < 256, read < 2 else { if advanced { changed() }; return advanced }
                 historyLeft[plan.runID] = max(0, (historyLeft[plan.runID] ?? 1) - 1)
                 var queued = false
                 do {
-                    let source = try await load(meta.segmentId)
-                    let clock = SegmentMediaClock(source.meta)
+                    let endMediaMs: Int64
+                    if known.contains(meta.segmentId), meta.frameCount > 0 {
+                        endMediaMs = meta.frameCount * Int64(meta.frameSamples) / 16
+                    } else {
+                        read += 1
+                        let source = try await load(meta.segmentId)
+                        _ = try await store.prepareSource(segmentId: meta.segmentId, revision: source.revision)
+                        endMediaMs = source.endMediaMs
+                    }
+                    let clock = SegmentMediaClock(meta)
                     let start = plan.fromMs <= meta.startWallMs ? 0
                         : clock.media(fromWall: plan.fromMs - meta.startWallMs)
-                    let end = plan.toMs >= meta.startWallMs + clock.wallSpanMs ? source.endMediaMs
-                        : min(source.endMediaMs, clock.media(fromWall: plan.toMs - meta.startWallMs))
+                    let end = plan.toMs >= meta.startWallMs + clock.wallSpanMs ? endMediaMs
+                        : min(endMediaMs, clock.media(fromWall: plan.toMs - meta.startWallMs))
                     if end - start >= 2_000 {
-                        _ = try await store.prepareSource(segmentId: meta.segmentId, revision: source.revision)
                         try await store.enqueueJob(runID: plan.runID, segmentId: meta.segmentId,
                             startMediaMs: start, endMediaMs: end, recipeID: recipeID, explicitRerun: true)
                         try await store.foldRecentJobs(segmentId: meta.segmentId, startMediaMs: start, endMediaMs: end)

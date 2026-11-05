@@ -160,6 +160,21 @@ private actor ScriptedAnalyzer: SpeakerSpeechAnalyzing {
         #expect(await run.analyzer.releases > before, "Nothing left: released")
     }
 
+    /// A recording seen before queues from its sidecar, its audio left unread: counting 3,400
+    /// recordings a read at a time took hours.
+    @Test func aRunOverRecordingsSeenBeforeQueuesThemWithoutReadingTheirAudio() async throws {
+        let run = try await checked(turns: [1_000..<5_000, 9_000..<13_000])
+        defer { try? FileManager.default.removeItem(at: run.root) }
+        try await drain(run.service, run.store)
+        for file in try FileManager.default.subpathsOfDirectory(atPath: run.root.path) where file.hasSuffix(".spxlog") {
+            try FileManager.default.removeItem(at: run.root.appendingPathComponent(file))
+        }
+        let history = try await run.service.recognizeHistory(fromMs: 0, toMs: Int64(Date().timeIntervalSince1970 * 1_000) + 86_400_000)
+        _ = await run.service.pass(segmentStore: run.store, mayAnalyze: { true })
+        let plan = try #require(try await run.service.historyPlans().first { $0.runID == history })
+        #expect(plan.queuedCount == 1)
+    }
+
     /// Everything is named again on the new rules, and a newer transcript means the same.
     @Test func aNewTranscriptMarksARecordingToBeNamedAgain() async throws {
         let run = try await checked(turns: [1_000..<5_000, 9_000..<13_000], transcription: "Complete")
