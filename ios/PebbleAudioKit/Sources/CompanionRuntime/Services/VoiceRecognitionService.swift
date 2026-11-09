@@ -321,28 +321,45 @@ public actor VoiceRecognitionService {
 
     /// The speakers of one recording from its saved prints.
     static func speakerDrafts(_ source: VoicePrintSource, protector: any VoiceProfileProtecting,
-                              constraints: [VoiceSplitConstraint] = [], repaired: Bool = false) throws -> [VoiceSpeakerDraft] {
+                              constraints: [VoiceSplitConstraint] = []) throws -> [VoiceSpeakerDraft] {
         if !constraints.isEmpty {
-            let pieces = Dictionary(grouping: source.prints) { print in
-                let crop = VoiceSpeakerCrop(startMs: print.startMediaMs, endMs: print.endMediaMs, confidencePercent: 100)
+            func key(_ crop: VoiceSpeakerCrop) -> String {
                 let signature = VoiceSplitConstraint.signature(for: [crop], constraints: constraints)
                 return signature.keys.sorted().map { "\($0)=\(signature[$0]!)" }.joined(separator: "|")
             }
-            var drafts = try pieces.sorted(by: { $0.key < $1.key }).flatMap { key, prints in
-                var piece = source; piece.prints = prints
-                return try speakerDrafts(piece, protector: protector, repaired: !key.isEmpty)
+            var spans: [String: [VoiceSpeakerCrop]] = [:]
+            var prints: [String: [VoiceTurnPrint]] = [:]
+            for print in source.prints {
+                let crop = VoiceSpeakerCrop(startMs: print.startMediaMs, endMs: print.endMediaMs,
+                    confidencePercent: Int((print.speechConfidence * 100).rounded()))
+                spans[key(crop), default: []].append(crop)
+                prints[key(crop), default: []].append(print)
             }
-            // Missing or unreadable prints must not make a saved repair's audio disappear.
-            // New analysis can cover an old range differently; only restore wholly uncovered
-            // ranges so overlapping windows are not counted twice.
-            var covered = drafts.flatMap(\.crops)
+            // Preserve uncovered saved ranges without double-counting new overlapping windows.
+            var covered = spans.values.flatMap { $0 }
             for range in constraints {
                 guard !covered.contains(where: { $0.startMs < range.endMs && $0.endMs > range.startMs }) else { continue }
                 let crop = VoiceSpeakerCrop(startMs: range.startMs, endMs: range.endMs, confidencePercent: 0)
-                drafts.append(VoiceSpeakerDraft(crops: [crop], sealedVoice: nil, recipeJSON: nil))
+                spans[key(crop), default: []].append(crop)
                 covered.append(crop)
             }
-            return drafts
+            return try spans.keys.sorted().flatMap { key -> [VoiceSpeakerDraft] in
+                let records = prints[key] ?? []
+                if key.isEmpty {
+                    var piece = source; piece.prints = records
+                    return try speakerDrafts(piece, protector: protector)
+                }
+                // A saved child is a human-reviewed unit. Regeneration may update its voice,
+                // but does not silently split it again or discard its unreadable samples.
+                let crops = spans[key]!.sorted { $0.startMs < $1.startMs }
+                let opened = records.compactMap { try? open($0, protector: protector) }
+                guard opened.count == crops.count, let pooled = try? SpeakerEmbedding.pooled(opened) else {
+                    return [VoiceSpeakerDraft(crops: crops, sealedVoice: nil, recipeJSON: nil)]
+                }
+                let saved = try VoicePrintCodec.save(pooled)
+                return [VoiceSpeakerDraft(crops: crops, sealedVoice: try protector.seal(saved.bytes),
+                    recipeJSON: try JSONEncoder().encode(saved.embedding.recipe))]
+            }
         }
         // A print that no longer opens is left out rather than holding up the rest.
         let opened = source.prints.sorted { $0.startMediaMs < $1.startMediaMs }.compactMap { print in
@@ -359,7 +376,7 @@ public actor VoiceRecognitionService {
                 VoiceSpeakerCrop(startMs: $0.record.startMediaMs, endMs: $0.record.endMediaMs,
                                  confidencePercent: Int(($0.record.speechConfidence * 100).rounded()))
             }
-            guard repaired || members.count >= SpeakerDiarization.minimumCrops else {
+            guard members.count >= SpeakerDiarization.minimumCrops else {
                 return VoiceSpeakerDraft(crops: spans, sealedVoice: nil, recipeJSON: nil)
             }
             let saved = try VoicePrintCodec.save(try SpeakerEmbedding.pooled(members.map(\.embedding)))
