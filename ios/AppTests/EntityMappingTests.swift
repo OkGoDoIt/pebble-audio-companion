@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import os
 import SearchKit
 import Testing
 
@@ -129,6 +130,17 @@ struct EntityMappingTests {
     /// The synchronous provider the entities read; installed by the composition, replaceable
     /// here, and defaulting to the fresh-install value.
     @Test func theVisibilityProviderIsReplaceable() {
+        let depths = OSAllocatedUnfairLock(initialState: [Int]())
+        EntityVisibility.install {
+            let depth = Thread.callStackReturnAddresses.count
+            depths.withLock { $0.append(depth) }
+            return .summaries
+        }
+        defer { EntityVisibility.install { .default } }
+        for _ in 0..<256 { #expect(EntityVisibility.current() == .summaries) }
+        let measured = depths.withLock { $0 }
+        #expect(measured.last! <= measured.first! + 4,
+                "Repeated Spotlight reads must not grow the call stack")
         EntityVisibility.install { .summaries }
         #expect(EntityVisibility.current() == .summaries)
         EntityVisibility.install { .default }

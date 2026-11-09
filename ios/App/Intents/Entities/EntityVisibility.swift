@@ -10,15 +10,19 @@ import SearchKit
 /// Until something is installed — previews, a test that never asked — the answer is the
 /// default, which is what a fresh install has.
 enum EntityVisibility {
-    private static let provider = OSAllocatedUnfairLock<@Sendable () -> SystemSearchVisibility>(
-        initialState: { .default }
-    )
+    // A bare closure in a generic inout lock accumulates reabstraction wrappers on reads
+    // (swiftlang/swift#91348). On a long-running phone that exhausted the thread's stack.
+    // Store an aggregate so reading the provider never writes back a wrapped function.
+    private struct Provider: Sendable {
+        var read: @Sendable () -> SystemSearchVisibility = { .default }
+    }
+    private static let provider = OSAllocatedUnfairLock(initialState: Provider())
 
     static func install(_ read: @escaping @Sendable () -> SystemSearchVisibility) {
-        provider.withLock { $0 = read }
+        provider.withLock { $0.read = read }
     }
 
     static func current() -> SystemSearchVisibility {
-        provider.withLock { $0 }()
+        provider.withLock { $0.read }()
     }
 }
