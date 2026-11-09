@@ -27,6 +27,7 @@ import Testing
                 .enqueueClosedSegments,
                 .followUpWallTimes,
                 .refreshDiagnostics,
+                .unrecordedHoles,
             ]
         )
     }
@@ -75,7 +76,8 @@ import Testing
             steps: StartupSteps(
                 runLegacyImportIfNeeded: { throw TestFailure() },
                 recoverStore: { throw TestFailure() },
-                enforceRetention: { throw TestFailure() }
+                enforceRetention: { throw TestFailure() },
+                accountForUnrecordedHoles: { throw TestFailure() }
             ),
             onStep: { recorder.record($0) }
         )
@@ -85,7 +87,8 @@ import Testing
         // Every later step still ran: a broken import or an unreadable directory must not leave
         // the app with no queue and no diagnostics.
         #expect(recorder.steps.contains(.enqueueClosedSegments))
-        #expect(recorder.steps.last == .refreshDiagnostics)
+        #expect(recorder.steps.contains(.refreshDiagnostics))
+        #expect(recorder.steps.last == .unrecordedHoles)
     }
 
     @Test func retentionDaysIsWiredIntoTheRealRetentionConfig() throws {
@@ -201,6 +204,7 @@ import Testing
                 .enqueueClosedSegments,
                 .followUpWallTimes,
                 .refreshDiagnostics,
+                .unrecordedHoles,
             ]
         )
     }
@@ -234,7 +238,7 @@ import Testing
         await sequencer.recoverIfNeeded()
 
         #expect(recorder.steps.first == .legacyImport)
-        #expect(recorder.steps.last == .refreshDiagnostics)
-        #expect(recorder.steps.count == 7)
+        #expect(recorder.steps.last == .unrecordedHoles)
+        #expect(recorder.steps.count == 8)
     }
 }

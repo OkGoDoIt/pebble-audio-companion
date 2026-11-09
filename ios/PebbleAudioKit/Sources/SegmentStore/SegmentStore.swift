@@ -1483,6 +1483,71 @@ public actor SegmentStore: SegmentSink {
         return result
     }
 
+    /// Records the quiet an older build discarded, in the recordings it made (see
+    /// `UnrecordedHoles.swift` for what the holes are and how each is classified).
+    ///
+    /// Which recordings: closed ones opened before the library's FIRST watch-reported quiet
+    /// record. That record is the store's own evidence of when its build began keeping them — a
+    /// commit date would be wrong by however long the phone ran the old build afterwards. With no such
+    /// record anywhere there is no evidence yet, and nothing is inferred: an unexplained hole in a
+    /// recording made by a build that keeps quiet could only be a receiver fault, and calling it
+    /// quiet would hide it.
+    ///
+    /// Cost: the candidates are found from the in-memory index (`unaccountedFrameCount`, sidecar
+    /// arithmetic), so once every recording is accounted for a call reads no frame log at all —
+    /// never O(library) in I/O. Until then each call reads at most `maxLogBytes` of logs (always
+    /// at least one), newest recordings first, since those are the days most likely to be open;
+    /// the backup's 330 recordings are 190 MB. The reading happens OFF the actor, so the receiver
+    /// is never held behind it, and a recording that changed meanwhile is left for the next call.
+    @discardableResult
+    public func accountForUnrecordedHoles(
+        maxLogBytes: Int64 = 48 << 20
+    ) async throws -> UnrecordedHoleRepair {
+        var result = UnrecordedHoleRepair()
+        let metas = ensureIndex().values
+        let firstKept = metas.filter { meta in
+            meta.gaps.contains { $0.origin == GapMeta.originWatch && gapReason(of: $0)?.isSilence == true }
+        }.map(\.receivedAtMs).min()
+        guard let firstKept else { return result }
+        let candidates = metas.filter {
+            $0.closeReason != nil && $0.receivedAtMs < firstKept && $0.unaccountedFrameCount > 0
+        }.sorted { $0.receivedAtMs > $1.receivedAtMs }
+
+        var budget = maxLogBytes
+        for (index, snapshot) in candidates.enumerated() {
+            if index > 0 && snapshot.logBytes > budget {
+                result.remaining = candidates.count - index
+                break
+            }
+            budget -= snapshot.logBytes
+            let holes = await Self.unrecordedHoles(in: snapshot, log: logURL(snapshot.segmentId))
+            guard !holes.isEmpty, current?.meta.segmentId != snapshot.segmentId,
+                readMeta(snapshot.segmentId) == snapshot
+            else { continue }
+            var repaired = snapshot
+            repaired.gaps = normalizedSegmentGaps(
+                snapshot.gaps + holes, frameSamples: snapshot.frameSamples)
+            try writeMetaAtomically(repaired)
+            result.repaired += 1
+            for hole in holes {
+                if hole.countsAsLoss {
+                    result.lossFrames += Int64(hole.missingFrameCount)
+                } else {
+                    result.quietFrames += Int64(hole.missingFrameCount)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Reads one frame log's positions and finds its holes, off the store's actor.
+    private nonisolated static func unrecordedHoles(
+        in meta: SegmentMeta, log url: URL
+    ) async -> [GapMeta] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return unrecordedHoleRecords(in: meta, frames: SegmentFrameLog.positions([UInt8](data)))
+    }
+
     private func quarantine(_ url: URL) throws {
         try fm.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
         try atomicMove(from: url, to: quarantineDir.appendingPathComponent(url.lastPathComponent))

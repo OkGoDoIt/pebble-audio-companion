@@ -21,6 +21,10 @@ public enum StartupStep: String, Sendable, Equatable, CaseIterable {
     /// retention, so it never computes a time for a row the sweep is about to cascade away.
     case followUpWallTimes
     case refreshDiagnostics
+    /// Records the quiet an older build discarded (`SegmentStore.accountForUnrecordedHoles`).
+    /// Last, after diagnostics: `StartupActivity` treats diagnostics as "recovery is done", and
+    /// nothing on screen should wait for a repair of old days.
+    case unrecordedHoles
 }
 
 /// The startup steps, as closures (same seam discipline as `PipelineSteps`).
@@ -41,6 +45,9 @@ public struct StartupSteps: Sendable {
     /// before the upgrade, an item restored after a delete) on the next launch.
     public var fillFollowUpWallTimes: @Sendable () async throws -> Void = {}
     public var refreshDiagnostics: @Sendable () async -> Void
+    /// Bounded per call and a no-op once every recording is accounted for, so it runs every
+    /// launch: a launch that ran out of budget (or of background time) leaves the rest to the next.
+    public var accountForUnrecordedHoles: @Sendable () async throws -> Void = {}
 
     public init(
         runLegacyImportIfNeeded: @escaping @Sendable () async throws -> Bool = { false },
@@ -51,7 +58,8 @@ public struct StartupSteps: Sendable {
         cascadeDeleted: @escaping @Sendable (String) async -> Void = { _ in },
         enqueueClosedSegments: @escaping @Sendable () async throws -> Void = {},
         fillFollowUpWallTimes: @escaping @Sendable () async throws -> Void = {},
-        refreshDiagnostics: @escaping @Sendable () async -> Void = {}
+        refreshDiagnostics: @escaping @Sendable () async -> Void = {},
+        accountForUnrecordedHoles: @escaping @Sendable () async throws -> Void = {}
     ) {
         self.runLegacyImportIfNeeded = runLegacyImportIfNeeded
         self.recoverStore = recoverStore
@@ -62,6 +70,7 @@ public struct StartupSteps: Sendable {
         self.enqueueClosedSegments = enqueueClosedSegments
         self.fillFollowUpWallTimes = fillFollowUpWallTimes
         self.refreshDiagnostics = refreshDiagnostics
+        self.accountForUnrecordedHoles = accountForUnrecordedHoles
     }
 }
 
@@ -163,6 +172,11 @@ public actor StartupSequencer {
 
         onStep(.refreshDiagnostics)
         await steps.refreshDiagnostics()
+
+        onStep(.unrecordedHoles)
+        do { try await steps.accountForUnrecordedHoles() } catch {
+            log.failure("unrecorded holes", error)
+        }
     }
 }
 

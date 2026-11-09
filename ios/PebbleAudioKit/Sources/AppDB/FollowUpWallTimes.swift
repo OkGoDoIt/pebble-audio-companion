@@ -64,6 +64,8 @@ public struct FollowUpWallTimeFill: Sendable {
         let endMs: Int64?
         /// On the `follow_up_wall_replace` list: it has a wall time, from the old placement.
         var replacing = false
+        /// Upgrade only an approximate time, and only when the repaired clock is exact.
+        var refining = false
     }
 
     public let db: AppDatabase
@@ -72,9 +74,13 @@ public struct FollowUpWallTimeFill: Sendable {
     /// - Parameter metaOf: the segment's sidecar, or nil when the segment is gone. Called once per
     ///   distinct segment, outside any database transaction.
     @discardableResult
-    public func run(metaOf: (String) async -> SegmentMeta?) async throws -> Outcome {
+    public func run(
+        refineApproximate: Bool = false,
+        metaOf: (String) async -> SegmentMeta?
+    ) async throws -> Outcome {
         let pending = try await db.reader.read { db in
             try Self.followUpsNeedingIt(db) + Self.candidatesNeedingIt(db) + Self.replacing(db)
+                + (refineApproximate ? Self.approximateTimes(db) : [])
         }
         guard !pending.isEmpty else { return Outcome() }
 
@@ -100,6 +106,7 @@ public struct FollowUpWallTimeFill: Sendable {
                 continue
             }
             let wall = clock.wallRange(ofMediaStartMs: row.startMs, endMs: row.endMs ?? row.startMs)
+            if row.refining && wall.isApproximate { continue }
             updates.append((row, wall))
         }
         guard !updates.isEmpty || !replaceDone.isEmpty else { return outcome }
@@ -130,7 +137,8 @@ public struct FollowUpWallTimeFill: Sendable {
                     sql: """
                         UPDATE \(table.name)
                         SET sourceWallStartMs = ?, sourceWallEndMs = ?, sourceWallApproximate = ?
-                        WHERE id = ? \(row.replacing ? "" : "AND sourceWallStartMs IS NULL")
+                        WHERE id = ? \(row.replacing || row.refining ? "" : "AND sourceWallStartMs IS NULL")
+                            \(row.refining ? "AND sourceWallApproximate = 1" : "")
                             AND \(table.segmentColumn) = ?
                             AND \(table.startColumn) = ? AND \(table.endColumn) IS ?
                         """,
@@ -162,6 +170,25 @@ public struct FollowUpWallTimeFill: Sendable {
         WHERE sourceWallStartMs IS NULL AND sourceStartMs IS NOT NULL
             AND sourceSegmentId IS NOT NULL
         """
+
+    /// Revisited after historical gap repair. Exact values leave this set; unchanged rough
+    /// values cause no writes. Running on every launch also survives interruption after the
+    /// sidecar repair but before its derived follow-up times were updated.
+    private static func approximateTimes(_ db: Database) throws -> [Pending] {
+        try [Table.followUps, .candidates].flatMap { table in
+            try Row.fetchAll(db, sql: """
+                SELECT id, \(table.segmentColumn) AS segmentId,
+                    \(table.startColumn) AS startMs, \(table.endColumn) AS endMs
+                FROM \(table.name)
+                WHERE sourceWallApproximate = 1 AND sourceWallStartMs IS NOT NULL
+                    AND \(table.segmentColumn) IS NOT NULL AND \(table.startColumn) IS NOT NULL
+                    \(table == .candidates ? "AND state = 'pending'" : "")
+                """).map {
+                    Pending(table: table, id: $0["id"], segmentId: $0["segmentId"],
+                            startMs: $0["startMs"], endMs: $0["endMs"], refining: true)
+                }
+        }
+    }
 
     private static func followUpsNeedingIt(_ db: Database) throws -> [Pending] {
         try Row.fetchAll(db, sql: followUpsNeedingItSQL).map {

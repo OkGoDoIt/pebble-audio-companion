@@ -237,6 +237,29 @@ import Testing
         #expect(try await fill.run(metaOf: { metas[$0] }) == FollowUpWallTimeFill.Outcome())
     }
 
+    @Test func repairedGapsRefineApproximateTimesWithoutRepeatedWrites() async throws {
+        try await legacyFollowUp("old", segment: "seg-a", start: 120_000, end: 123_500)
+        try await candidate("pending", segment: "seg-a", start: 120_000, end: 123_500)
+        let fill = FollowUpWallTimeFill(db: db)
+        _ = try await fill.run(metaOf: { Self.meta($0, recordsTheGap: false) })
+        #expect(try await wall("old")?.isApproximate == true)
+        #expect(try await candidateWall("pending")?.isApproximate == true)
+
+        #expect(try await fill.run(refineApproximate: true,
+            metaOf: { Self.meta($0, recordsTheGap: false) }).filled == 0)
+        let refined = try await fill.run(refineApproximate: true, metaOf: { Self.meta($0) })
+        #expect(refined == .init(followUps: 1, candidates: 1, segmentGone: 0))
+        let expected = SegmentMediaClock(Self.meta("seg-a")).wallRange(
+            ofMediaStartMs: 120_000, endMs: 123_500)
+        #expect(try await wall("old") == expected)
+        #expect(try await candidateWall("pending") == expected)
+
+        let before = try await db.writer.write { $0.totalChangesCount }
+        #expect(try await fill.run(refineApproximate: true, metaOf: { Self.meta($0) }).filled == 0)
+        let after = try await db.writer.write { $0.totalChangesCount }
+        #expect(after == before)
+    }
+
     @Test func leavesRowsWithNothingToComputeFromAlone() async throws {
         try await followUps.add(text: "Mine")  // hand-written: no segment, no offset
         try await legacyFollowUp("untimed", segment: "seg-a", start: nil)  // no diarized turn

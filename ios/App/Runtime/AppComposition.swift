@@ -1193,7 +1193,21 @@ final class AppComposition {
                     try await runFollowUpWallTimeFill(
                         database: database, store: store, log: AppRuntimeLog.runtimeLog)
                 },
-                refreshDiagnostics: { await diagnostics.refresh() }
+                refreshDiagnostics: { await diagnostics.refresh() },
+                // Recordings made before the store kept the watch's quiet records drew that quiet
+                // as recorded audio; this gives them the records, a bounded slice per launch.
+                accountForUnrecordedHoles: {
+                    let repair = try await store.accountForUnrecordedHoles()
+                    _ = try await FollowUpWallTimeFill(db: database).run(
+                        refineApproximate: true, metaOf: { await store.readMeta($0) })
+                    guard repair.repaired > 0 else { return }
+                    AppRuntimeLog.shared.record(
+                        "unrecorded holes: \(repair.repaired) recording(s) accounted for, "
+                            + "\(repair.quietFrames / 3000) min quiet, "
+                            + "\(repair.lossFrames / 3000) min missing; "
+                            + "\(repair.remaining) left"
+                    )
+                }
             ),
             onStep: { startupActivity.record($0) },
             log: AppRuntimeLog.runtimeLog
@@ -2008,7 +2022,7 @@ final class StartupActivity: @unchecked Sendable {
 
     var isRecovering: Bool { lock.withLock { !finished } }
 
-    /// `.refreshDiagnostics` is the sequencer's last step, and the only one it emits on the
+    /// `.refreshDiagnostics` ends foreground recovery, and is the only step it emits on the
     /// already-recovered path — so it is the one that means "the durable work is done".
     func record(_ step: StartupStep) {
         guard step == .refreshDiagnostics else { return }
