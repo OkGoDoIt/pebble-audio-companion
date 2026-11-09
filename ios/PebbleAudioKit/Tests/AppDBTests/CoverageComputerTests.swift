@@ -50,6 +50,37 @@ import Testing
         #expect(day.totalMissingMs == minutesMs(1))
     }
 
+    @Test func neighboringGapRecordsOverrideOnlyInferredAudioFromTheirStream() {
+        let start = dayStart + minutesMs(60)
+        let refill = makeSegment(
+            id: "refill", stream: 1, startTimeMs: start, durationSamples: minutesSamples(4))
+        let notice = makeSegment(
+            id: "notice", stream: 1, startTimeMs: start,
+            firstSample: minutesSamples(4), durationSamples: minutesSamples(1),
+            gaps: [lossGap(atSample: minutesSamples(1), minutes: 2)])
+        let inferred = [SegmentCoverageInput(meta: refill), SegmentCoverageInput(meta: notice)]
+        #expect(spans(inferred).totalRecordedMs == minutesMs(3))
+        #expect(spans(inferred).totalMissingMs == minutesMs(2))
+        #expect(spans(inferred.reversed()).spans == spans(inferred).spans)
+
+        // Stored frames are evidence that audio exists even if a late notice overlaps them.
+        let actual = SegmentCoverageInput(meta: refill, frameSampleRanges: [0..<minutesSamples(4)])
+        #expect(spans([actual, inferred[1]]).totalRecordedMs == minutesMs(5))
+        #expect(spans([actual, inferred[1]]).totalMissingMs == 0)
+
+        // The same wall-clock interval in another stream cannot erase this one's audio.
+        var otherStream = notice
+        otherStream.streamId = 2
+        #expect(spans([inferred[0], SegmentCoverageInput(meta: otherStream)]).totalRecordedMs == minutesMs(5))
+
+        var pauseNotice = notice
+        pauseNotice.gaps = [lossGap(atSample: minutesSamples(1), minutes: 2, reasonRaw: 7)]
+        let paused = spans([inferred[0], SegmentCoverageInput(meta: pauseNotice)])
+        #expect(paused.totalRecordedMs == minutesMs(3))
+        #expect(paused.totalMissingMs == 0)
+        #expect(paused.spans.filter { $0.kind == .paused }.map(\.durationMs).reduce(0, +) == minutesMs(2))
+    }
+
     @Test func silenceIsNeverMissingAndSequenceSkipIsLoss() {
         // Minute 1 frames; minute 2 a watch-reported SilenceSuppressed gap (quiet, NEVER
         // missing); minute 3 a receiver-synthesized sequence_skip gap (loss).

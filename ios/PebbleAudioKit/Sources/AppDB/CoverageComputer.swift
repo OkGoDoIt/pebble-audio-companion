@@ -253,6 +253,8 @@ public enum CoverageComputer {
         let domain = domainStart..<domainEnd
 
         var recorded: [Range<Int64>] = []
+        var inferredRecorded: [UInt32: [Range<Int64>]] = [:]
+        var streamInterruptions: [UInt32: [Range<Int64>]] = [:]
         var missing: [Range<Int64>] = []
         var quiet: [Range<Int64>] = []
         var watchPaused: [Range<Int64>] = []
@@ -315,6 +317,8 @@ public enum CoverageComputer {
             let pausedSamples = mergeRanges(pauseGaps.map(samples(of:)))
             watchPaused += toWall(pausedSamples).compactMap(bounded)
             watchPauseRecords += attributed(pauseGaps)
+            streamInterruptions[meta.streamId, default: []] +=
+                toWall(lossSamples + pausedSamples).compactMap(bounded)
 
             // Recorded and quiet are claims about THIS segment's own span, and stay inside it.
             guard let first = meta.firstSampleIndex, let last = meta.lastSampleIndexExclusive,
@@ -335,8 +339,21 @@ public enum CoverageComputer {
                 recordedSamples = subtractRanges([extent], subtracting: lossInExtent)
                 quietSamples = []
             }
-            recorded += toWall(recordedSamples)
+            if input.frameSampleRanges == nil {
+                inferredRecorded[meta.streamId, default: []] += toWall(recordedSamples)
+            } else {
+                recorded += toWall(recordedSamples)
+            }
             quiet += toWall(quietSamples)
+        }
+
+        // A refill can span an outage whose gap notice was saved in a neighboring segment.
+        // An extent alone must not overrule that stream's explicit interruption records.
+        // Actual frames still win, as does audio from a different stream during the outage.
+        for (stream, ranges) in inferredRecorded {
+            recorded += subtractRanges(
+                mergeRanges(ranges),
+                subtracting: mergeRanges(streamInterruptions[stream] ?? []))
         }
 
         let pauseRecords = pauses.compactMap { pause -> CoveragePauseRecord? in
