@@ -309,6 +309,7 @@ struct VoicesToNameScreen: View {
                             }.frame(minHeight: 44).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("voice.\(voice.id)")
                         .contextMenu {
                             Button(Copy.Voices.dontAsk, systemImage: "nosign") {
                                 Task { await model.stopAsking(about: voice) }
@@ -319,6 +320,7 @@ struct VoicesToNameScreen: View {
             }
         }
         .navigationTitle(Copy.Voices.toName)
+        .task { await model.observe() }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $asking, onDismiss: { Task { await model.refresh() } }) { voice in
             WhoIsThisSheet(voice: voice) { UndoCenter.shared.snackbar = $0 }

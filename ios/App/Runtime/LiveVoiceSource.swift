@@ -81,7 +81,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
                     """, arguments: [startedAtMs, runID]) ?? 0)
             }
             let discovering = plan?.state == "active" && plan?.discoveryComplete == false
-            // Still finding recordings: the ones queued so far plus the ones it has yet to look at.
+            // Still finding clips: the ones queued so far plus the ones it has yet to look at.
             let left = discovering ? await service.historyRecordingsLeft(runID: runID) : 0
             let queued = run.pending + run.running + run.done + run.failed + newerWaiting + newerDone
             display.run = VoiceRunDisplay(id: run.runID,
@@ -223,9 +223,66 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         return group
     }
 
-    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
+    private var splitUndos: [String: VoiceSplitUndo] = [:]
+
+    func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft {
+        guard let group = await group(id) else { throw VoiceSplitError.unavailable }
+        let preview = try await service.splitPreview(speakerIDs: group.crops.compactMap { Int64($0.id) })
+        let service = service, transcripts = composition.transcripts
+        return await Task.detached(priority: .userInitiated) {
+            var clips: [String: UnknownVoiceClip] = [:]
+            for (segment, atoms) in Dictionary(grouping: preview.atoms, by: \.segmentId) {
+                let transcript = transcripts.load(segment)
+                for atom in atoms {
+                    let wall = service.wallMs(segmentId: segment, mediaMs: atom.startMs)
+                    clips[atom.id] = UnknownVoiceClip(id: atom.id,segmentId: segment,startMs: atom.startMs,endMs: atom.endMs,
+                        heardAt: wall.map { Date(timeIntervalSince1970: Double($0)/1000) },
+                        quote: UnknownVoiceDisplay.quote(transcript,from: atom.startMs,to: atom.endMs))
+                }
+            }
+            return VoiceSplitDraft(id: UUID().uuidString.lowercased(), groups: preview.groups.map { $0.compactMap { clips[$0] } }, payload: preview)
+        }.value
+    }
+
+    private func splitPreview(_ draft: VoiceSplitDraft) throws -> VoiceSplitPreview {
+        guard var preview = draft.payload else { throw VoiceSplitError.unavailable }
+        let ids = draft.groups.flatMap { $0.map(\.id) }
+        guard Set(ids).count == ids.count, Set(ids) == Set(preview.atoms.map(\.id)), draft.groups.allSatisfy({ !$0.isEmpty }) else {
+            throw VoiceSplitError.invalidPartition
+        }
+        preview.groups = draft.groups.map { $0.map(\.id) }
+        return preview
+    }
+
+    func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft {
+        let preview = try await splitPreview(draft).refined(group: group, individual: individual)
+        let clips = Dictionary(uniqueKeysWithValues: draft.groups.flatMap { $0 }.map { ($0.id,$0) })
+        return VoiceSplitDraft(id: draft.id,groups: preview.groups.map { $0.compactMap { clips[$0] } },payload: preview)
+    }
+
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
+        let undo = try await service.saveSplit(splitPreview(draft))
+        splitUndos[undo.operation] = undo
+        unknownGroups.removeAll()
+        composition.runtime.notifyVoiceConfigurationChanged()
+        Task { [weak self] in
+            try? await Task.sleep(for: SnackbarItem.lifetime + .seconds(2))
+            self?.splitUndos[undo.operation] = nil
+        }
+        return undo.operation
+    }
+
+    func undoVoiceSplit(id: String) async throws {
+        guard let undo = splitUndos[id] else { throw VoiceSplitError.changed }
+        try await service.undoSplit(undo)
+        splitUndos[id] = nil
+        unknownGroups.removeAll()
+        composition.runtime.notifyVoiceConfigurationChanged()
+    }
+
+    func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
         guard let whole = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
-        let group = recordings.map { whole.limited(to: $0) } ?? whole
+        let group = clips.map { whole.selecting(clips: $0) } ?? whole
         guard !group.crops.isEmpty else { return 0 }
         try await service.confirmUnknownVoice(group, personId: personId)
         composition.runtime.notifyVoiceConfigurationChanged()
@@ -346,10 +403,9 @@ extension UnknownVoiceDisplay {
         let timed = group.crops.map { crop in
             (crop, wallMs(crop.segmentId, crop.startMediaMs).map { Date(timeIntervalSince1970: Double($0) / 1_000) })
         }
-        var seen = Set<String>()
         var clips: [UnknownVoiceClip] = []
         for (crop, heardAt) in timed.sorted(by: { ($0.1 ?? .distantPast) > ($1.1 ?? .distantPast) })
-        where seen.insert(crop.segmentId).inserted {
+        {
             clips.append(UnknownVoiceClip(id: crop.id, segmentId: crop.segmentId, startMs: crop.startMediaMs,
                 endMs: crop.endMediaMs, heardAt: heardAt,
                 quote: quote(transcript(crop.segmentId), from: crop.startMediaMs, to: crop.endMediaMs)))
@@ -361,6 +417,7 @@ extension UnknownVoiceDisplay {
         var display = UnknownVoiceDisplay(id: group.id, recordingCount: group.recordingCount,
                                           detail: detail.prefix(1).uppercased() + detail.dropFirst(), clips: clips,
                                           speechMs: group.speechMs, leadClipID: group.crops.first?.id)
+        display.repaired = group.repaired
         if let id = group.suggestedPersonId, let person = people.first(where: { $0.id == id }) {
             display.suggestion = VoiceSuggestionDisplay(person: person, colorIndex: PersonPalette.indices(of: people)[id] ?? 1,
                                                         score: group.suggestedScore ?? 0)

@@ -11,11 +11,12 @@ struct VoiceReviewScreen: View {
     @State private var model = WhoIsThisModel()
     @State private var full: UnknownVoiceDisplay?
     @State private var kept: Set<String>
+    @State private var splitting = false
 
     init(voice: UnknownVoiceDisplay, onAnswered: @escaping (SnackbarItem) -> Void) {
         self.voice = voice
         self.onAnswered = onAnswered
-        _kept = State(initialValue: Set(voice.clips.map(\.segmentId)))
+        _kept = State(initialValue: Set(voice.clips.map(\.id)))
     }
 
     private var shown: UnknownVoiceDisplay { full ?? voice }
@@ -35,8 +36,8 @@ struct VoiceReviewScreen: View {
                 }
                 ListCard(rowVerticalPadding: 10, rowHorizontalPadding: 14) {
                     ForEach(shown.clips) { clip in
-                        VoiceClipRow(clip: clip, player: model, checked: kept.contains(clip.segmentId)) {
-                            if kept.contains(clip.segmentId) { kept.remove(clip.segmentId) } else { kept.insert(clip.segmentId) }
+                        VoiceClipRow(clip: clip, player: model, checked: kept.contains(clip.id)) {
+                            if kept.contains(clip.id) { kept.remove(clip.id) } else { kept.insert(clip.id) }
                         }
                     }
                 }
@@ -49,6 +50,9 @@ struct VoiceReviewScreen: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { actions }
+            .navigationDestination(isPresented: $splitting) {
+                VoiceSplitScreen(voice: shown) { notice in onAnswered(notice); dismiss() }
+            }
         }
         .tint(Tokens.tint)
         .task {
@@ -56,7 +60,7 @@ struct VoiceReviewScreen: View {
             if let detail = await model.detail(of: voice.id) {
                 full = detail
                 // Any recording the first look didn't have starts checked too.
-                kept.formUnion(Set(detail.clips.map(\.segmentId)).subtracting(voice.clips.map(\.segmentId)))
+                kept.formUnion(Set(detail.clips.map(\.id)).subtracting(voice.clips.map(\.id)))
             }
         }
         .onDisappear { model.stop() }
@@ -67,8 +71,8 @@ struct VoiceReviewScreen: View {
             VStack(spacing: 6) {
                 Button {
                     Task {
-                        let all = kept.count == Set(shown.clips.map(\.segmentId)).count
-                        guard let notice = await model.confirm(shown, as: suggestion, recordings: all ? nil : kept) else { return }
+                        let all = kept.count == Set(shown.clips.map(\.id)).count
+                        guard let notice = await model.confirm(shown, as: suggestion, clips: all ? nil : kept) else { return }
                         onAnswered(notice)
                         dismiss()
                     }
@@ -79,6 +83,8 @@ struct VoiceReviewScreen: View {
                     }
                 }
                 .buttonStyle(.primaryFilled).disabled(kept.isEmpty || model.working)
+                Button(Copy.Voices.moreThanOne) { model.stop(); splitting = true }
+                    .font(AppFont.callout.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
                 Button(Copy.Voices.noneOfThese(suggestion.name)) {
                     Task {
                         guard await model.reject(shown, as: suggestion) else { return }

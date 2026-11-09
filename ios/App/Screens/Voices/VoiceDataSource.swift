@@ -46,12 +46,12 @@ struct VoiceSuggestionDisplay: Equatable {
 
 /// A voice heard across recordings that nobody has named.
 struct UnknownVoiceDisplay: Equatable, Identifiable {
+    var repaired = false
     var id: String
     var recordingCount: Int
     /// "Mostly mornings · last heard today"
     var detail: String
-    /// One moment per recording, newest first. The question shows the first few; "More than one
-    /// person" shows them all to pick from.
+    /// One moment per saved speaker, newest first. Distinct speakers in a recording stay selectable.
     var clips: [UnknownVoiceClip]
     var speechMs: Int64 = 0
     var suggestion: VoiceSuggestionDisplay? = nil
@@ -249,8 +249,13 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func unknownVoices() async -> [UnknownVoiceDisplay]
     /// Names the voice in every recording it was heard in, or only in `recordings` when the
     /// group turned out to mix people; the rest stay unnamed. Returns how many recordings.
-    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int
+    func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int
     /// One voice with what was said in each of its clips, for listening through it.
+    func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft
+    func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String
+    func undoVoiceSplit(id: String) async throws
+    func discardVoiceSplit(id: String)
     func voiceDetail(id: String) async -> UnknownVoiceDisplay?
     /// "It's someone else": the voice stays unnamed and isn't suggested as them again.
     func rejectSuggestion(id: String, personId: String) async throws
@@ -279,4 +284,13 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
 @MainActor
 enum VoiceSources {
     static var current: (any VoiceRecognitionDataSource)?
+}
+
+// Sources without saved voice prints cannot offer splitting (e.g. optional test adapters).
+extension VoiceRecognitionDataSource {
+    func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft { throw VoiceSplitError.unavailable }
+    func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft { throw VoiceSplitError.unavailable }
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String { throw VoiceSplitError.unavailable }
+    func undoVoiceSplit(id: String) async throws { throw VoiceSplitError.unavailable }
+    func discardVoiceSplit(id: String) {}
 }

@@ -55,9 +55,19 @@ import Testing
     var ignoredClips: [UnknownVoiceClip] = []
     var failIgnore = false
     func unknownVoices() async -> [UnknownVoiceDisplay] { unknown }
-    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
-        namedUnknown.append((id, personId, recordings))
-        return recordings?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
+    var splitDraft: VoiceSplitDraft?
+    var savedSplit: VoiceSplitDraft?
+    var failSplit = false
+    func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft {
+        guard let splitDraft else { throw Failure.unavailable }; return splitDraft
+    }
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
+        if failSplit { throw Failure.unavailable }
+        savedSplit = draft; return "undo"
+    }
+    func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
+        namedUnknown.append((id, personId, clips))
+        return clips?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
     }
     func voiceDetail(id: String) async -> UnknownVoiceDisplay? { unknown.first { $0.id == id } }
     var rejected: [(String, String)] = []

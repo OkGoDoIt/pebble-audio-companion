@@ -62,9 +62,9 @@ final class VoiceSettingsModel {
     /// Everything that might be someone, most heard first: their own screen lists these.
     var possibleMatches: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion != nil } }
     /// The ones worth asking about unprompted.
-    var toReview: [UnknownVoiceDisplay] { possibleMatches.filter { $0.speechMs >= Self.worthAskingMs } }
+    var toReview: [UnknownVoiceDisplay] { possibleMatches.filter { $0.repaired || $0.speechMs >= Self.worthAskingMs } }
     /// Voices like nobody yet, heard enough to be worth a name.
-    var toName: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion == nil && $0.speechMs >= Self.worthAskingMs } }
+    var toName: [UnknownVoiceDisplay] { unknownVoices.filter { $0.suggestion == nil && ($0.repaired || $0.speechMs >= Self.worthAskingMs) } }
     /// No voice to go by for the person wearing the watch, and no voice to ask them about either.
     var needsOwnVoice: Bool { !hasOwnVoice(display) && firstAsk == nil }
 
@@ -97,7 +97,7 @@ final class VoiceSettingsModel {
     /// "That's Dana", for the whole voice.
     func confirm(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay) async {
         var count = 0
-        let done = await perform { count = try await $0.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, recordings: nil) }
+        let done = await perform { count = try await $0.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, clips: nil) }
         guard done else { return }
         UndoCenter.shared.snackbar = WhoIsThisModel.namedNotice(suggestion.name, count: count, voiceId: voice.id,
                                                                 personId: suggestion.person.id) { [weak self] in

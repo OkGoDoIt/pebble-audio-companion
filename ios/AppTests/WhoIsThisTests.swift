@@ -33,14 +33,14 @@ struct WhoIsThisTests {
         })
     }
 
-    @Test func namingTheWholeVoiceOrOnlyTheRecordingsThatAreThatPerson() async {
+    @Test func namingTheWholeVoiceOrOnlyTheClipsThatAreThatPerson() async {
         let voices = VoiceTestSource(), people = People()
         let model = WhoIsThisModel(voices: voices, people: people)
         await model.load()
         #expect(await model.name(voice(), personId: "dana") == "Dana")
-        #expect(await model.name(voice(), personId: "dana", recordings: ["seg-a", "seg-c"]) == "Dana")
-        #expect(voices.namedUnknown.map(\.2) == [nil, ["seg-a", "seg-c"]],
-                "The unticked recording stays unnamed")
+        #expect(await model.name(voice(), personId: "dana", clips: ["a", "c"]) == "Dana")
+        #expect(voices.namedUnknown.map(\.2) == [nil, ["a", "c"]],
+                "The unticked speaker stays unnamed")
         #expect(await model.nameAsNewPerson(voice(), name: "  Sam ") == "Sam")
         #expect(people.registry.last?.name == "Sam" && voices.namedUnknown.last?.1 == people.registry.last?.id)
     }

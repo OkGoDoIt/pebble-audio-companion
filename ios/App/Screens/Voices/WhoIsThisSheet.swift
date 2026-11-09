@@ -22,6 +22,7 @@ struct WhoIsThisSheet: View {
     @State private var full: UnknownVoiceDisplay?
     /// "More than one person": pick which recordings are the one person being named.
     @State private var splitting = false
+    @State private var selecting = false
     @State private var kept: Set<String> = []
 
     init(voice: UnknownVoiceDisplay, model: WhoIsThisModel = .init(), onAnswered: @escaping (SnackbarItem) -> Void) {
@@ -50,14 +51,17 @@ struct WhoIsThisSheet: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                actions(count: shown.recordingCount, recordings: nil) {
+                actions(count: shown.recordingCount, clips: nil) {
                     Button(Copy.Voices.moreThanOne) {
                         model.stop()
-                        kept = Set(shown.clips.map(\.segmentId))
+                        kept = Set(shown.clips.map(\.id))
                         splitting = true
                     }
                     .font(AppFont.callout.weight(.semibold)).foregroundStyle(Tokens.tint)
                     .frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
+                    Button("Select clips to name") {
+                        model.stop(); kept = []; selecting = true
+                    }.font(AppFont.callout).frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
                     Button(Copy.Voices.dontAsk) {
                         Task {
                             guard await model.ignoreAll(voice) else { return }
@@ -69,7 +73,10 @@ struct WhoIsThisSheet: View {
                     .frame(maxWidth: .infinity, minHeight: 44).disabled(model.working)
                 }
             }
-            .navigationDestination(isPresented: $splitting) { splitPage }
+            .navigationDestination(isPresented: $splitting) {
+                VoiceSplitScreen(voice: shown) { notice in onAnswered(notice); dismiss() }
+            }
+            .navigationDestination(isPresented: $selecting) { splitPage }
         }
         .tint(Tokens.tint)
         .interactiveDismissDisabled(model.working)
@@ -83,9 +90,11 @@ struct WhoIsThisSheet: View {
     /// Every recording the voice was grouped from, to tick the ones that are this person.
     private var splitPage: some View {
         SettingsScroll {
-            Text("Check the conversations where it’s the same person.")
+            Text("Select clips of the same person.")
                 .font(AppFont.subBody).foregroundStyle(Tokens.secondaryBody)
                 .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8)
+            Button(kept.isEmpty ? "Select all" : "Clear selection") { kept = kept.isEmpty ? Set(shown.clips.map(\.id)) : [] }
+                .frame(minHeight: 44)
             ListCard(rowVerticalPadding: 8, rowHorizontalPadding: 14) {
                 ForEach(shown.clips) { clip in clipRow(clip, checkable: true) }
             }
@@ -95,7 +104,7 @@ struct WhoIsThisSheet: View {
         .navigationTitle("Same person?")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            actions(count: kept.count, recordings: kept) { EmptyView() }
+            actions(count: kept.count, clips: kept) { EmptyView() }
         }
         .onDisappear { model.stop() }
     }
@@ -148,9 +157,9 @@ struct WhoIsThisSheet: View {
         }
     }
 
-    private func actions(count: Int, recordings: Set<String>?, @ViewBuilder secondary: () -> some View) -> some View {
+    private func actions(count: Int, clips: Set<String>?, @ViewBuilder secondary: () -> some View) -> some View {
         VStack(spacing: 2) {
-            Button { name(count: count, recordings: recordings) } label: {
+            Button { name(count: count, clips: clips) } label: {
                 HStack {
                     if model.working { ProgressView().tint(Tokens.onTint) }
                     Text(actionTitle)
@@ -168,36 +177,36 @@ struct WhoIsThisSheet: View {
         return true
     }
 
-    private func name(count: Int, recordings: Set<String>?) {
+    private func name(count: Int, clips: Set<String>?) {
         guard canName, let choice else { return }
         Task {
             let named: String?
             let personId: String?
             switch choice {
             case .person(let id):
-                named = await model.name(voice, personId: id, recordings: recordings)
+                named = await model.name(voice, personId: id, clips: clips)
                 personId = id
             case .me:
-                named = await model.nameAsMe(voice, displayName: newName, recordings: recordings)
+                named = await model.nameAsMe(voice, displayName: newName, clips: clips)
                 personId = nil
             case .newPerson:
-                named = await model.nameAsNewPerson(voice, name: newName, recordings: recordings)
+                named = await model.nameAsNewPerson(voice, name: newName, clips: clips)
                 personId = nil
             }
             guard let named else { return }
             if let personId {
-                onAnswered(WhoIsThisModel.namedNotice(named, count: count, voiceId: voice.id, personId: personId) {})
+                onAnswered(WhoIsThisModel.namedNotice(named, count: model.namedRecordingCount, voiceId: voice.id, personId: personId) {})
             } else {
-                onAnswered(SnackbarItem(message: Copy.Voices.named(named, in: count)))
+                onAnswered(SnackbarItem(message: Copy.Voices.named(named, in: model.namedRecordingCount)))
             }
             dismiss()
         }
     }
 
     private func clipRow(_ clip: UnknownVoiceClip, checkable: Bool = false) -> some View {
-        VoiceClipRow(clip: clip, player: model, checked: checkable ? kept.contains(clip.segmentId) : nil,
+        VoiceClipRow(clip: clip, player: model, checked: checkable ? kept.contains(clip.id) : nil,
             onToggle: {
-                if kept.contains(clip.segmentId) { kept.remove(clip.segmentId) } else { kept.insert(clip.segmentId) }
+                if kept.contains(clip.id) { kept.remove(clip.id) } else { kept.insert(clip.id) }
             },
             onIgnore: {
                 Task {
@@ -350,12 +359,12 @@ final class WhoIsThisModel {
     func detail(of id: String) async -> UnknownVoiceDisplay? { await voices?.voiceDetail(id: id) }
 
     /// "Confirm 3 for Dana". Returns the line to show, with its offer to undo.
-    func confirm(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay, recordings: Set<String>?) async -> SnackbarItem? {
+    func confirm(_ voice: UnknownVoiceDisplay, as suggestion: VoiceSuggestionDisplay, clips: Set<String>?) async -> SnackbarItem? {
         var count = 0
         let voices = self.voices
         guard await answer({
             guard let voices else { throw SpeakerEditorError.voiceUnavailable }
-            count = try await voices.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, recordings: recordings)
+            count = try await voices.nameUnknownVoice(id: voice.id, personId: suggestion.person.id, clips: clips)
             return "named"
         }) != nil else { return nil }
         return Self.namedNotice(suggestion.name, count: count, voiceId: voice.id, personId: suggestion.person.id) {}
@@ -398,29 +407,33 @@ final class WhoIsThisModel {
         } != nil
     }
 
+    private(set) var namedRecordingCount = 0
+
     /// The person's display name on success.
-    func name(_ voice: UnknownVoiceDisplay, personId: String, recordings: Set<String>? = nil) async -> String? {
+    func name(_ voice: UnknownVoiceDisplay, personId: String, clips: Set<String>? = nil) async -> String? {
         await answer {
             guard let person = self.people.first(where: { $0.id == personId }) else { throw SpeakerEditorError.voiceUnavailable }
-            _ = try await self.voices?.nameUnknownVoice(id: voice.id, personId: personId, recordings: recordings)
+            guard let voices = self.voices else { throw SpeakerEditorError.voiceUnavailable }
+            self.namedRecordingCount = try await voices.nameUnknownVoice(id: voice.id, personId: personId, clips: clips)
             return person.isCurrentUser ? "you" : person.name
         }
     }
 
-    func nameAsMe(_ voice: UnknownVoiceDisplay, displayName: String, recordings: Set<String>? = nil) async -> String? {
+    func nameAsMe(_ voice: UnknownVoiceDisplay, displayName: String, clips: Set<String>? = nil) async -> String? {
         await answer {
             guard let voices = self.voices else { throw SpeakerEditorError.voiceUnavailable }
             let me = try await voices.currentUser(name: displayName.trimmingCharacters(in: .whitespacesAndNewlines))
-            _ = try await voices.nameUnknownVoice(id: voice.id, personId: me.id, recordings: recordings)
+            self.namedRecordingCount = try await voices.nameUnknownVoice(id: voice.id, personId: me.id, clips: clips)
             return "you"
         }
     }
 
-    func nameAsNewPerson(_ voice: UnknownVoiceDisplay, name: String, recordings: Set<String>? = nil) async -> String? {
+    func nameAsNewPerson(_ voice: UnknownVoiceDisplay, name: String, clips: Set<String>? = nil) async -> String? {
         await answer {
+            guard let voices = self.voices else { throw SpeakerEditorError.voiceUnavailable }
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             let person = try await self.peopleSource.createPerson(name: trimmed)
-            _ = try await self.voices?.nameUnknownVoice(id: voice.id, personId: person.id, recordings: recordings)
+            self.namedRecordingCount = try await voices.nameUnknownVoice(id: voice.id, personId: person.id, clips: clips)
             return trimmed
         }
     }

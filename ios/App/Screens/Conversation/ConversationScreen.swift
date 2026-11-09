@@ -899,7 +899,7 @@ struct ConversationScreen: View {
         Task {
             do {
                 if yes {
-                    let count = try await VoiceSources.current?.nameUnknownVoice(id: id, personId: possible.person.id, recordings: nil) ?? 0
+                    let count = try await VoiceSources.current?.nameUnknownVoice(id: id, personId: possible.person.id, clips: nil) ?? 0
                     UndoCenter.shared.snackbar = WhoIsThisModel.namedNotice(possible.name, count: count, voiceId: id,
                                                                             personId: possible.person.id) { await load() }
                 } else {

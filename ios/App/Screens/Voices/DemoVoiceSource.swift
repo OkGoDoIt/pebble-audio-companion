@@ -72,7 +72,17 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
                                       isRunning: true, canUndo: false, progress: 12.4)
         return display
     }
-    func updates() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
+    private var listeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    func updates() -> AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            listeners[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.listeners[id] = nil }
+            }
+        }
+    }
+    private func changed() { for listener in listeners.values { listener.yield(()) } }
     func prepareModels(progress: @escaping @Sendable (Double) -> Void) async throws { progress(1) }
     func setEnabled(_ enabled: Bool) async throws {}
     func currentUser(name: String) async throws -> Person { people[0] }
@@ -86,8 +96,41 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
     }
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async {}
     func unknownVoices() async -> [UnknownVoiceDisplay] { unknown }
-    func nameUnknownVoice(id: String, personId: String, recordings: Set<String>?) async throws -> Int {
-        let count = recordings?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
+    private var splitOrigins: [String: String] = [:]
+    private var splitUndo: [String: [UnknownVoiceDisplay]] = [:]
+    func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft {
+        guard let voice = unknown.first(where: { $0.id == id }) else { throw VoiceSplitError.unavailable }
+        let token = UUID().uuidString
+        splitOrigins[token] = id
+        let groups = stride(from: 0, to: voice.clips.count, by: 2).map { Array(voice.clips[$0..<min($0 + 2,voice.clips.count)]) }
+        return VoiceSplitDraft(id: token, groups: groups)
+    }
+    func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft {
+        guard draft.groups.indices.contains(group) else { throw VoiceSplitError.changed }
+        var result = draft
+        result.groups.replaceSubrange(group...group,with: draft.groups[group].map { [$0] })
+        return result
+    }
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
+        guard let original = splitOrigins[draft.id] else { throw VoiceSplitError.changed }
+        splitUndo[draft.id] = unknown
+        unknown.removeAll { $0.id == original }
+        for (index,clips) in draft.groups.enumerated() {
+            var voice = UnknownVoiceDisplay(id: "split-\(draft.id)-\(index)",recordingCount: Set(clips.map(\.segmentId)).count,
+                detail: "Split for review",clips: clips,speechMs: Int64(clips.count) * 4_000)
+            voice.repaired = true
+            unknown.insert(voice,at: 0)
+        }
+        changed()
+        return draft.id
+    }
+    func undoVoiceSplit(id: String) async throws {
+        guard let prior = splitUndo.removeValue(forKey: id) else { throw VoiceSplitError.changed }
+        unknown = prior
+        changed()
+    }
+    func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
+        let count = clips?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
         unknown.removeAll { $0.id == id }
         return count
     }
