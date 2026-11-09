@@ -129,6 +129,21 @@ public final class TranscriptIndex: TranscriptIndexing {
         guard !items.isEmpty else { return }
         try database.writer.write { db in
             for item in items {
+                let body = Self.body(of: item)
+                let tags = item.tags.joined(separator: ", ")
+                // Re-donation is normal after grouping or voice matching. FTS DELETE/INSERT
+                // rewrites its token index even for identical text, causing GB/day of writes.
+                // Compare the persisted document so this also holds after an app relaunch.
+                if !item.excluded {
+                    let existing = try Row.fetchAll(
+                        db, sql: "SELECT title, body, tags FROM search_fts WHERE entityId = ? AND kind = ?",
+                        arguments: [item.id, item.kind.rawValue]
+                    )
+                    if existing.count == 1, let row = existing.first,
+                       row["title"] as String? == item.title,
+                       row["body"] as String? == body,
+                       row["tags"] as String? == tags { continue }
+                }
                 try db.execute(
                     sql: "DELETE FROM search_fts WHERE entityId = ? AND kind = ?",
                     arguments: [item.id, item.kind.rawValue]
@@ -143,8 +158,8 @@ public final class TranscriptIndex: TranscriptIndexing {
                         item.id,
                         item.kind.rawValue,
                         item.title,
-                        Self.body(of: item),
-                        item.tags.joined(separator: ", "),
+                        body,
+                        tags,
                     ]
                 )
             }

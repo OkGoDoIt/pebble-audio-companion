@@ -12,6 +12,30 @@ import Testing
         TranscriptIndex(database: try AppDatabase.inMemory())
     }
 
+    @Test func repeatedDonationsWriteNothingButEditsAndExclusionsStillApply() throws {
+        let db = try AppDatabase.inMemory()
+        var item = IndexItem(id: "conversation", kind: .conversation, title: "Planning",
+                             summary: "Lunch", tags: ["friends"], fullText: "Meet at noon",
+                             contentCreationDateMs: 1)
+        try TranscriptIndex(database: db).upsert([item])
+        let before = try db.writer.write { $0.totalChangesCount }
+        // A fresh index object must use the persisted content, not an in-memory cache.
+        let index = TranscriptIndex(database: db)
+        try index.upsert([item, item])
+        #expect(try db.writer.write { $0.totalChangesCount } == before)
+        item.title = "Dinner"
+        item.summary = "Evening"
+        item.fullText = "Meet at sunset"
+        item.tags = ["plans"]
+        try index.upsert([item])
+        #expect(try index.search("sunset").count == 1)
+        #expect(try index.search("noon").isEmpty)
+        #expect(try index.search("plans").count == 1)
+        item.excluded = true
+        try index.upsert([item])
+        #expect(try index.search("sunset").isEmpty)
+    }
+
     @Test func searchMatchesTitleAndTags() throws {
         let index = try makeIndex()
         try index.upsert([
