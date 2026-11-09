@@ -70,20 +70,20 @@ Delivery and final test results are recorded in the workspace implementation pro
 
 ### Checked build
 
-- Core package: all 2,809 tests in the first full run passed (two previously recorded expected
-  issues). After the additional missing-print regression, 2,810 tests ran; the voice regressions
-  passed. Two unrelated timing-sensitive checks failed during host load: recovery and a receiver
-  keepalive. The receiver check passed on isolated rerun; recovery was 2.34 s against a 2 s limit.
-  Neither recovery nor receiver code was changed for this feature.
-- Native App tests: 817 passed. Shared helper tests: 44 passed. The simulator logs contain existing
-  Apple asset/Spotlight diagnostics; these are not a claim of a clean system log.
-- Protocol fixtures: all 150 checked successfully.
-- Phone UI automatic split/refine/review/save test passed. Manual separation/Undo and tablet checks
-  were expanded after the first pass; the final result is recorded in the workspace log.
-- Signed iPhone Release build succeeded; a final incremental build includes the last regression
-  fixes. Physical phone installation and battery measurements remain unavailable while G17 is
-  disconnected. This change does not claim on-device quality or battery verification.
+- Final full core package: **2,810 tests passed**, with two pre-existing expected issues.
+  Earlier loaded-host runs hit existing recovery/receiver timing checks; both passed in the final
+  full run. Warm library recovery measured 0.55 s against its 2 s limit. No timing limits changed.
+- Native App tests: **817 passed**. Shared helper tests: **44 passed**. Simulator logs include
+  existing Apple asset/Spotlight diagnostics; this is not a claim of a clean system log.
+- Native UI: automatic split/refine/review/save and manual selection/separation/Undo passed on
+  both phone and tablet simulators. A further phone check confirmed selected-checkbox state.
+  Screenshots were opened and inspected; all displayed content is synthetic.
+- Protocol fixtures: **150 verified**. Privacy scan: **0 places hit** before publication.
+- Final signed iPhone Release build succeeded and passed strict signature verification. It uses
+  the existing main bundle identifier and iPhone device family. The installable app is retained
+  in the private local investigation’s build folder; G17 was disconnected, so installation and
+  on-device battery/recognition verification are still pending.
 
-Tablet visual review uses a QA-only device-family override to exercise the same SwiftUI at larger
-sizes. The shipping app’s existing iPhone-only device family is unchanged; native iPad adoption is
-being implemented separately. Three HTML candidates were also reviewed at 390, 820, and 1280 px.
+Tablet visual review used a QA-only device-family override and the simulator’s floating window.
+The shipping app’s existing iPhone-only device family is unchanged; native iPad adoption is being
+implemented separately. Three HTML candidates were also reviewed at 390, 820, and 1280 px.

@@ -19,10 +19,10 @@ not an evaluation of recognition quality. Audio buttons illustrate playback stat
 - C: select individual clips, initially none selected, with Select all/Clear selection and a
   separate naming step. Different speakers from the same recording remain independently selectable.
 
-Recommended composition: A as the main flow, C as its escape hatch; B could be another action
+Chosen composition: A as the main flow, C as its escape hatch; B could be another action
 from a chosen clip. Preserve the existing quick checklist for the mostly-correct group case.
 All directions reuse the current app tint, system typography, spacing, and card/button radii.
-This is a behavior/layout prototype; final SwiftUI must still be rendered and reviewed.
+This is a behavior/layout prototype; the accompanying native screenshots show the implemented flow.
 
 ## Findings in the original source
 
@@ -93,3 +93,7 @@ warning/error log was empty. Computed tint `#5b5bd6`, card radius 12 px, button 
 Captures: `comparison-desktop.jpg`, `comparison-tablet.jpg`, `smaller-groups-phone.jpg`,
 `smaller-groups-large-text.jpg`, and `before-phone.jpg`. The before image recreates the current
 flow with synthetic clips; the user's private screenshot is not included in this repository.
+
+Native captures: `native-phone-groups.png`, `native-phone-further.png`, `native-phone-clip.png`,
+`native-phone-saved.png`, `native-tablet-groups.png`, and `native-tablet-selection.png`. Native
+automatic and manual workflows passed on both simulators; see `../../voice-group-repair.md`.

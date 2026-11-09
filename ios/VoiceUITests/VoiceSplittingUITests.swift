@@ -60,6 +60,7 @@ final class VoiceSplittingUITests: XCTestCase {
         app.buttons["Clear selection"].tap()
         app.buttons.matching(NSPredicate(format: "value == %@", "Not checked")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "value == %@", "Checked")).firstMatch.waitForExistence(timeout: 3))
         capture(app,"Manual clip selection")
         app.buttons["Separate selected clips"].tap()
         XCTAssertTrue(app.buttons["Keep 4 groups"].waitForExistence(timeout: 8))
