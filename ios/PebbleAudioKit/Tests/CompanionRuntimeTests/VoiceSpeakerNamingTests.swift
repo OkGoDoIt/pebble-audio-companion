@@ -463,3 +463,107 @@ private actor ScriptedAnalyzer: SpeakerSpeechAnalyzing {
         #expect(coverage.byPerson.first?.personId == dana.id)
     }
 }
+
+extension VoiceClusterWorkflowTests {
+    @Test func splitPreviewSaveRegroupAndUndoPreserveAllAudio() async throws {
+        var archive = try await Archive()
+        for _ in 0..<3 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let original = try #require(try await archive.service.unknownVoiceGroups().first)
+        let preview = try await archive.service.splitPreview(speakerIDs: original.speakerIds)
+        #expect(preview.atoms.count == 12)
+        #expect(preview.groups.count == 3)
+        let refined = try await preview.refined(group: 0, individual: true)
+        #expect(refined.groups.count == 6)
+        #expect(Set(refined.groups.flatMap { $0 }).count == 12)
+        let undo = try await archive.service.saveSplit(refined)
+        try await archive.settle()
+        let split = try await archive.service.unknownVoiceGroups(limit: 100)
+        #expect(split.count == 6, "Even a single crop stays reachable")
+        #expect(split.reduce(0) { $0 + $1.speechMs } == original.speechMs)
+        #expect(split.allSatisfy { $0.repaired })
+        // Restarting the service's store client retains durable constraints.
+        let inputs = try await VoiceSpeakerStore(db: archive.db).clusterInputs(minimumCrops: 3)
+        #expect(inputs.count == 6)
+        #expect(inputs.allSatisfy { !$0.separations.isEmpty && $0.requiresReview })
+        try await archive.service.undoSplit(undo)
+        try await archive.settle()
+        let restored = try await archive.service.unknownVoiceGroups()
+        #expect(restored.count == 1)
+        #expect(restored.first?.speechMs == original.speechMs)
+        #expect(try await VoiceSplitStore(db: archive.db).constraints().isEmpty)
+    }
+
+    @Test func anUnreadablePrintRemainsReviewableThroughSaveAndRegroup() async throws {
+        var archive = try await Archive()
+        for _ in 0..<2 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let original = try #require(try await archive.service.unknownVoiceGroups().first)
+        // Simulate an original sample that is no longer available, while its saved crop remains.
+        try await archive.db.writer.write { d in
+            try d.execute(sql: "DELETE FROM voice_turn_prints WHERE id=(SELECT MIN(id) FROM voice_turn_prints)")
+        }
+        let preview = try await archive.service.splitPreview(speakerIDs: original.speakerIds)
+        #expect(preview.atoms.count == 8)
+        let all = try await preview.refined(group: 0, individual: true)
+        _ = try await archive.service.saveSplit(all)
+        try await archive.settle()
+        let groups = try await archive.service.unknownVoiceGroups(limit: 100)
+        #expect(groups.reduce(0) { $0 + $1.speechMs } == original.speechMs)
+        #expect(groups.allSatisfy { $0.repaired })
+        #expect(groups.count == all.groups.count)
+    }
+
+    @Test func savingAStaleSplitOrIncompletePartitionNeverLosesClips() async throws {
+        var archive = try await Archive()
+        for _ in 0..<2 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let original = try #require(try await archive.service.unknownVoiceGroups().first)
+        var preview = try await archive.service.splitPreview(speakerIDs: original.speakerIds)
+        let good = preview
+        preview.groups[0].removeLast()
+        await #expect(throws: VoiceSplitError.self) { try await archive.service.saveSplit(preview) }
+        #expect(try await VoiceSplitStore(db: archive.db).constraints().isEmpty)
+        let person = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        try await archive.service.confirmUnknownVoice(original, personId: person.id)
+        await #expect(throws: VoiceSplitError.self) { try await archive.service.saveSplit(good) }
+        #expect(try await VoiceSplitStore(db: archive.db).constraints().isEmpty)
+    }
+
+    @Test func undoDoesNotEraseANewerNameAndSelectionUsesSpeakerIDs() async throws {
+        var archive = try await Archive()
+        for _ in 0..<2 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let original = try #require(try await archive.service.unknownVoiceGroups().first)
+        let preview = try await archive.service.splitPreview(speakerIDs: original.speakerIds)
+        let refined = try await preview.refined(group: 0, individual: true)
+        let undo = try await archive.service.saveSplit(refined)
+        try await archive.settle()
+        let group = try #require(try await archive.service.unknownVoiceGroups(limit: 100).first { $0.speechMs == 3_000 })
+        let person = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        try await archive.service.confirmUnknownVoice(group, personId: person.id)
+        try await archive.settle()
+        await #expect(throws: VoiceSplitError.self) { try await archive.service.undoSplit(undo) }
+        let names = try await archive.names(group.crops[0].segmentId)
+        #expect(names.count == 1)
+        #expect((names.first?.attribution.endMediaMs ?? 0) - (names.first?.attribution.startMediaMs ?? 0) <= 3_000)
+        #expect(try await VoiceSplitStore(db: archive.db).constraints().isEmpty == false)
+        let other = VoiceUnmatchedCrop(id: "999",segmentId: group.crops[0].segmentId,startMediaMs: 6_000,endMediaMs: 9_000,
+            sourceRevision: "r",recipeID: "r",embeddingJSON: Data(),speechConfidence: 1)
+        let mixed = VoiceRecognitionService.UnknownVoiceGroup(clusterId: 1,crops: [group.crops[0],other])
+        #expect(mixed.selecting(clips: [group.crops[0].id]).crops.count == 1)
+    }
+}
+
+extension VoiceSpeakerNamingTests {
+    @Test func repairedClipDoesNotNameTheRestOfAMixedTranscriptParagraph() {
+        var first = speaker(1, [(0,3_000)], person: "dana")
+        first.repaired = true
+        var second = speaker(2, [(3_000,6_000)])
+        second.repaired = true
+        let result = names([first,second], turns: [0..<12_000])
+        #expect(result.count == 1)
+        #expect(result.first?.startMediaMs == 0)
+        #expect(result.first?.endMediaMs == 3_000)
+    }
+}

@@ -33,6 +33,8 @@ public struct VoiceSpeakerInput: Sendable {
     public var person: String?
     public var rejected: Set<String>
     public var ignored: Bool
+    public var separations: [String: String] = [:]
+    public var requiresReview: Bool = false
 }
 
 /// A recording's speakers as read for naming.
@@ -42,6 +44,7 @@ public struct VoiceNamingSpeaker: Equatable, Sendable {
     public var personId: String?
     public var suggestedPersonId: String?
     public var score: Double?
+    public var repaired = false
     public init(id: Int64, crops: [VoiceSpeakerCrop], personId: String?, suggestedPersonId: String?, score: Double?) {
         self.id = id; self.crops = crops; self.personId = personId
         self.suggestedPersonId = suggestedPersonId; self.score = score
@@ -88,6 +91,7 @@ public struct VoiceClusterClip: Equatable, Sendable {
 /// A group of speakers with no name: a voice to ask about.
 public struct VoiceCluster: Equatable, Sendable {
     public var id: Int64
+    public var repaired = false
     public var speechMs: Int64
     public var lastHeardMs: Int64
     public var suggestedPersonId: String?
@@ -210,7 +214,16 @@ public struct VoiceSpeakerStore: Sendable {
     /// old speaker it shares the most audio with.
     public func replaceSpeakers(_ recordings: [(segmentId: String, drafts: [VoiceSpeakerDraft])]) async throws {
         try await db.writer.write { d in
+            let constraints = try VoiceSplitStore.constraints(d)
             for (segmentId, drafts) in recordings {
+                // A split may have been saved while this derivation was in flight. Never let
+                // that old result pool across the new boundaries; the next pass rereads them.
+                if drafts.contains(where: { draft in
+                    Set(draft.crops.map { crop in
+                        let signature = VoiceSplitConstraint.signature(for: [crop], constraints: constraints[segmentId] ?? [])
+                        return signature.keys.sorted().map { "\($0)=\(signature[$0]!)" }.joined(separator: "|")
+                    }).count > 1
+                }) { continue }
                 guard try Bool.fetchOne(d, sql: "SELECT EXISTS(SELECT 1 FROM voice_print_sources WHERE segmentId = ?)",
                                         arguments: [segmentId]) == true else { continue }
                 let old = try Row.fetchAll(d, sql: "SELECT id, cropsJSON FROM voice_speakers WHERE segmentId = ?", arguments: [segmentId])
@@ -232,7 +245,12 @@ public struct VoiceSpeakerStore: Sendable {
                         INSERT INTO voice_speakers(segmentId,cropsJSON,cropCount,speechMs,voice,recipe) VALUES (?,?,?,?,?,?)
                         """, arguments: [segmentId, json, draft.crops.count, draft.crops.reduce(0) { $0 + $1.endMs - $1.startMs },
                                          draft.sealedVoice, recipe])
-                    added.append((d.lastInsertedRowID, draft.crops))
+                    let addedID = d.lastInsertedRowID
+                    if draft.sealedVoice == nil,
+                       !VoiceSplitConstraint.signature(for: draft.crops, constraints: constraints[segmentId] ?? []).isEmpty {
+                        try d.execute(sql: "UPDATE voice_speakers SET clusterId=? WHERE id=?", arguments: [addedID, addedID])
+                    }
+                    added.append((addedID, draft.crops))
                 }
                 for gone in old where !kept.contains(gone.id) {
                     let goneCrops = Self.decode(gone.json)
@@ -260,9 +278,10 @@ public struct VoiceSpeakerStore: Sendable {
                 SELECT (SELECT COUNT(*) FROM voice_speakers) AS a, (SELECT COALESCE(MAX(id), 0) FROM voice_speakers) AS b,
                     (SELECT COUNT(*) FROM voice_speaker_decisions) AS c, (SELECT COALESCE(SUM(id), 0) FROM voice_speaker_decisions) AS d,
                     (SELECT COUNT(*) FROM speaker_corrections) AS e, (SELECT COALESCE(MAX(createdAtMs), 0) FROM speaker_corrections) AS f,
-                    (SELECT corpusRevision FROM voice_recognition_config WHERE id = 1) AS g
+                    (SELECT corpusRevision FROM voice_recognition_config WHERE id = 1) AS g,
+                    (SELECT COALESCE(SUM(id),0) FROM voice_split_ranges) AS h
                 """)!
-            return "\(row["a"] as Int64):\(row["b"] as Int64):\(row["c"] as Int64):\(row["d"] as Int64):\(row["e"] as Int64):\(row["f"] as Int64):\(row["g"] as Int64)"
+            return "\(row["a"] as Int64):\(row["b"] as Int64):\(row["c"] as Int64):\(row["d"] as Int64):\(row["e"] as Int64):\(row["f"] as Int64):\(row["g"] as Int64):\(row["h"] as Int64)"
         }
     }
 
@@ -270,6 +289,7 @@ public struct VoiceSpeakerStore: Sendable {
     /// of a speaker's audio counts as a word about the speaker, for someone with a voice to go by.
     public func clusterInputs(minimumCrops: Int) async throws -> [VoiceSpeakerInput] {
         try await db.reader.read { d in
+            let constraints = try VoiceSplitStore.constraints(d)
             var decisions: [Int64: (person: String?, rejected: Set<String>, ignored: Bool, excluded: Bool)] = [:]
             for row in try Row.fetchAll(d, sql: "SELECT speakerId, kind, personId FROM voice_speaker_decisions ORDER BY id") {
                 let id: Int64 = row["speakerId"], person: String? = row["personId"]
@@ -300,23 +320,28 @@ public struct VoiceSpeakerStore: Sendable {
             let rows = try Row.fetchAll(d, sql: """
                 SELECT s.id, s.segmentId, s.cropCount, s.cropsJSON, s.voice, r.recipeJSON FROM voice_speakers s
                 JOIN voice_print_recipes r ON r.id = s.recipe
-                WHERE s.voice IS NOT NULL AND s.cropCount >= ?
+                WHERE s.voice IS NOT NULL AND (s.cropCount >= ? OR EXISTS (SELECT 1 FROM voice_split_ranges x WHERE x.segmentId=s.segmentId))
                 """, arguments: [minimumCrops])
             return rows.compactMap { row -> VoiceSpeakerInput? in
                 let id: Int64 = row["id"], segmentId: String = row["segmentId"]
                 let decision = decisions[id]
                 if decision?.excluded == true { return nil }
+                let separation = VoiceSplitConstraint.signature(for: Self.decode(row["cropsJSON"]), constraints: constraints[segmentId] ?? [])
+                let requiresReview = !separation.isEmpty && decision?.person == nil
                 var person = decision?.person
-                if person == nil, decision?.ignored != true, let onHere = labels[segmentId] {
+                if person == nil, !requiresReview, decision?.ignored != true, let onHere = labels[segmentId] {
                     let tally = Self.labelledCrops(Self.decode(row["cropsJSON"]), labels: onHere)
                     if let best = tally.max(by: { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }) {
                         person = best.key
                     }
                 }
                 if let rejected = decision?.rejected, let named = person, rejected.contains(named) { person = nil }
-                return VoiceSpeakerInput(id: id, segmentId: segmentId, cropCount: row["cropCount"],
+                var input = VoiceSpeakerInput(id: id, segmentId: segmentId, cropCount: row["cropCount"],
                     sealedVoice: row["voice"], recipeJSON: row["recipeJSON"], person: person,
                     rejected: decision?.rejected ?? [], ignored: decision?.ignored ?? false)
+                input.separations = separation
+                input.requiresReview = requiresReview
+                return input
             }
         }
     }
@@ -342,10 +367,13 @@ public struct VoiceSpeakerStore: Sendable {
     @discardableResult public func applyClusters(_ assignments: [VoiceSpeakerAssignment]) async throws -> Int {
         try await db.writer.write { d in
             let byId = Dictionary(uniqueKeysWithValues: assignments.map { ($0.speakerId, $0) })
+            let splits = try VoiceSplitStore.constraints(d)
             var stale = Set<String>()
-            for row in try Row.fetchAll(d, sql: "SELECT id, segmentId, clusterId, personId, score, suggestedPersonId, suggestedScore, hidden FROM voice_speakers") {
+            for row in try Row.fetchAll(d, sql: "SELECT id, segmentId, cropsJSON, clusterId, personId, score, suggestedPersonId, suggestedScore, hidden FROM voice_speakers") {
                 let id: Int64 = row["id"]
                 let new = byId[id]
+                // Unreadable repaired samples stay visible for manual review.
+                if new == nil, !VoiceSplitConstraint.signature(for: Self.decode(row["cropsJSON"]), constraints: splits[row["segmentId"] as String] ?? []).isEmpty { continue }
                 let personId: String? = row["personId"], suggested: String? = row["suggestedPersonId"]
                 let clusterId: Int64? = row["clusterId"], hidden: Bool = row["hidden"]
                 if personId != new?.personId || suggested != new?.suggestedPersonId { stale.insert(row["segmentId"]) }
@@ -366,12 +394,15 @@ public struct VoiceSpeakerStore: Sendable {
 
     public func namingInputs(segmentIds: [String]) async throws -> [VoiceNamingRecording] {
         try await db.reader.read { d in
-            try segmentIds.map { segmentId in
+            let constraints = try VoiceSplitStore.constraints(d)
+            return try segmentIds.map { segmentId in
                 let speakers = try Row.fetchAll(d, sql: """
                     SELECT id, cropsJSON, personId, suggestedPersonId, score FROM voice_speakers WHERE segmentId = ? ORDER BY id
                     """, arguments: [segmentId]).map {
-                    VoiceNamingSpeaker(id: $0["id"], crops: Self.decode($0["cropsJSON"]), personId: $0["personId"],
+                    var speaker = VoiceNamingSpeaker(id: $0["id"], crops: Self.decode($0["cropsJSON"]), personId: $0["personId"],
                                        suggestedPersonId: $0["suggestedPersonId"], score: $0["score"])
+                    speaker.repaired = !VoiceSplitConstraint.signature(for: speaker.crops, constraints: constraints[segmentId] ?? []).isEmpty
+                    return speaker
                 }
                 let blocked = try Row.fetchAll(d, sql: """
                     SELECT startMediaMs, endMediaMs FROM speaker_corrections WHERE segmentId = ?
@@ -474,10 +505,11 @@ public struct VoiceSpeakerStore: Sendable {
     /// might be someone: on its own it isn't worth asking about yet.
     public func unnamedClusters(limit: Int) async throws -> [VoiceCluster] {
         try await db.reader.read { d in
-            try Self.clusters(d, only: nil)
-                .filter { $0.recordingCount >= 2 || $0.suggestedPersonId != nil }
-                .sorted { $0.speechMs == $1.speechMs ? $0.id < $1.id : $0.speechMs > $1.speechMs }
-                .prefix(limit)
+            let found = try Self.clusters(d, only: nil)
+            return found
+                .filter { $0.recordingCount >= 2 || $0.suggestedPersonId != nil || $0.repaired }
+                .sorted { $0.repaired != $1.repaired ? $0.repaired : ($0.speechMs == $1.speechMs ? $0.id < $1.id : $0.speechMs > $1.speechMs) }
+                .prefix(max(limit, found.filter(\.repaired).count))
                 .map(Self.clearestFirst)
         }
     }
@@ -495,6 +527,7 @@ public struct VoiceSpeakerStore: Sendable {
 
     private static func clusters(_ d: Database, only: Int64?) throws -> [VoiceCluster] {
         var clusters: [Int64: VoiceCluster] = [:]
+        let splitConstraints = try VoiceSplitStore.constraints(d)
         let scope = only == nil ? "" : "AND clusterId = ?"
         for row in try Row.fetchAll(d, sql: """
             SELECT id, segmentId, clusterId, cropsJSON, speechMs, suggestedPersonId, suggestedScore FROM voice_speakers
@@ -507,6 +540,7 @@ public struct VoiceSpeakerStore: Sendable {
             let heardAt = heardAt(segmentId)
             var cluster = clusters[clusterId] ?? VoiceCluster(id: clusterId, speechMs: 0, lastHeardMs: 0,
                 suggestedPersonId: row["suggestedPersonId"], suggestedScore: row["suggestedScore"], clips: [])
+            cluster.repaired = cluster.repaired || !VoiceSplitConstraint.signature(for: crops, constraints: splitConstraints[segmentId] ?? []).isEmpty
             cluster.speechMs += speech
             cluster.lastHeardMs = max(cluster.lastHeardMs, heardAt)
             cluster.clips.append(VoiceClusterClip(speakerId: row["id"], segmentId: segmentId, startMediaMs: best.startMs,

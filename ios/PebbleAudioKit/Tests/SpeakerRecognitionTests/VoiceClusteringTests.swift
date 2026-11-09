@@ -118,3 +118,31 @@ import Testing
         #expect(groups.count == 40)
     }
 }
+
+extension VoiceClusteringTests {
+    @Test func savedSeparationsSurviveMicroClusteringAndAnUnmarkedBridge() {
+        var noise = Noise(state: 43)
+        var items = (0..<7).map { item(0, $0, &noise) }
+        items[0].separations = ["split":"left"]
+        items[1].separations = ["split":"right"]
+        let groups = VoiceClustering.cluster(items)
+        #expect(!groups.contains { $0.members.contains(0) && $0.members.contains(1) })
+        // Until reviewed, no outsider can quietly supply a name to either child.
+        items[0].requiresReview = true
+        items[1].requiresReview = true
+        items[2].person = "dana"
+        let reviewed = VoiceClustering.cluster(items)
+        #expect(reviewed.first { $0.members.contains(0) }?.person == nil)
+        #expect(reviewed.first { $0.members.contains(1) }?.person == nil)
+    }
+
+    @Test func subdivisionRejectsWeakPairsAndKeepsUnreadableSamples() throws {
+        let a: [Float] = [1,0], b: [Float] = [0.8,0.6], c: [Float] = [0.28,0.96]
+        let vectors: [[Float]?] = [a,b,c,nil]
+        let groups = try VoiceSubdivision.split(vectors)
+        #expect(groups.flatMap { $0 }.sorted() == [0,1,2,3])
+        #expect(!groups.contains { $0.contains(0) && $0.contains(2) })
+        #expect(groups.contains([3]))
+        #expect(try VoiceSubdivision.split([a,a,a]).count == 3, "Explicit repeated splitting reaches individual prints")
+    }
+}

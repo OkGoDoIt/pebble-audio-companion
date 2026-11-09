@@ -275,7 +275,7 @@ public struct VoicePrintStore: Sendable {
         guard let pairs = try? JSONDecoder().decode([[Int64]].self, from: Data(json.utf8)) else { return [] }
         return pairs.compactMap { $0.count == 2 && $0[1] > $0[0] ? $0[0]..<$0[1] : nil }
     }
-    private static func print(_ row: Row) -> VoiceTurnPrint {
+    static func print(_ row: Row) -> VoiceTurnPrint {
         VoiceTurnPrint(id: row["id"], startMediaMs: row["startMediaMs"], endMediaMs: row["endMediaMs"],
             speechConfidence: row["speechConfidence"], runID: row["runID"], recipeJSON: row["recipeJSON"],
             sealedEmbedding: row["embedding"])

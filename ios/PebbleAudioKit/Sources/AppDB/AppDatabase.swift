@@ -935,6 +935,9 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-speakers-v1") { db in
             try VoiceSpeakerStore.installSchema(db)
         }
+        migrator.registerMigration("voice-split-ranges-v1") { db in
+            try VoiceSplitStore.installSchema(db)
+        }
         try migrator.migrate(writer)
     }
 }

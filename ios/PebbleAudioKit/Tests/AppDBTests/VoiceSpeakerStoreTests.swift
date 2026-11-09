@@ -138,3 +138,26 @@ import Testing
         #expect(tally == ["dana": 2], "A sliver of a crop isn't that crop")
     }
 }
+
+extension VoiceSpeakerStoreTests {
+    @Test func staleDerivationCannotJoinSavedPartsAndSeparationSurvivesReanalysis() async throws {
+        let (db,store) = try await ready()
+        let original = draft([crop(0,3_000),crop(3_000,6_000),crop(6_000,9_000)])
+        try await store.replaceSpeakers([("seg-1-a-1",[original])])
+        let id = try #require(try await store.clusterInputs(minimumCrops: 1).first?.id)
+        let splitStore = VoiceSplitStore(db: db)
+        let snapshot = try await splitStore.snapshot(speakerIDs: [id])
+        _ = try await splitStore.save(snapshot, parts: [
+            VoiceSplitPart(group: "a",memberID: id,cropIndices: [0],sealedVoice: Data([1]),recipeJSON: Data("{}".utf8)),
+            VoiceSplitPart(group: "b",memberID: id,cropIndices: [1,2],sealedVoice: Data([1]),recipeJSON: Data("{}".utf8))])
+        let before = try await store.clusterInputs(minimumCrops: 1)
+        // A background result prepared before the human split arrives late.
+        try await store.replaceSpeakers([("seg-1-a-1",[original])])
+        #expect(try await store.clusterInputs(minimumCrops: 1).map(\.id) == before.map(\.id))
+        // Reanalysis retires derived prints, but human range decisions belong to the source.
+        _ = try await VoiceIdentityStore(db: db).prepareSource(segmentId: "seg-1-a-1", revision: "new")
+        #expect(try await splitStore.constraints()["seg-1-a-1"]?.count == 3)
+        try await db.writer.write { try $0.execute(sql: "DELETE FROM voice_sources WHERE segmentId='seg-1-a-1'") }
+        #expect(try await splitStore.constraints().isEmpty)
+    }
+}

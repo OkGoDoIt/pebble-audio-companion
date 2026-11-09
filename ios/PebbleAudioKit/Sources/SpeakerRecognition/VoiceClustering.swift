@@ -24,6 +24,8 @@ public enum VoiceClustering {
         public var rejected: Set<String>
         /// They've said to stop asking about this voice.
         public var ignored: Bool
+        public var separations: [String: String] = [:]
+        public var requiresReview = false
         public init(source: String, voice: [Float], cropCount: Int, person: String? = nil,
                     rejected: Set<String> = [], ignored: Bool = false) {
             self.source = source; self.voice = voice; self.cropCount = cropCount
@@ -79,8 +81,12 @@ public enum VoiceClustering {
         var person: String?
         var ignored: Bool
         var rejected: Set<String>
+        var separations: [String: String]
+        var requiresReview: Bool
 
         func allows(_ other: Working) -> Bool {
+            if separations.contains(where: { key, value in other.separations[key].map { $0 != value } ?? false }) { return false }
+            if (requiresReview || other.requiresReview) && separations != other.separations { return false }
             if let person, let theirs = other.person, person != theirs { return false }
             if let person, other.rejected.contains(person) { return false }
             if let theirs = other.person, rejected.contains(theirs) { return false }
@@ -94,6 +100,8 @@ public enum VoiceClustering {
             person = person ?? other.person
             ignored = ignored || other.ignored
             rejected.formUnion(other.rejected)
+            separations.merge(other.separations) { old, _ in old }
+            requiresReview = requiresReview || other.requiresReview
         }
     }
 
@@ -149,7 +157,7 @@ public enum VoiceClustering {
         for index in order {
             let item = items[index]
             let single = Working(members: [index], sum: item.voice, person: item.person,
-                                 ignored: item.ignored, rejected: item.rejected)
+                                 ignored: item.ignored, rejected: item.rejected, separations: item.separations, requiresReview: item.requiresReview)
             var best: Float = -.infinity
             var bestGroup = -1
             for k in groups.indices where groups[k].allows(single) {
@@ -224,7 +232,7 @@ public enum VoiceClustering {
             let n = Float(group.members.count)
             let similarity = group.members.map { Double(dot(items[$0].voice, group.sum) / n) }
             var suggestion: Suggestion?
-            if group.person == nil, !group.ignored {
+            if group.person == nil, !group.ignored, !group.requiresReview {
                 var ranked: [(person: String, score: Double)] = []
                 for (person, heard) in people where !group.rejected.contains(person) {
                     let alike = dot(group.sum, heard.sum) / (n * Float(heard.count))
