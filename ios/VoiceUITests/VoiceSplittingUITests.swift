@@ -70,7 +70,7 @@ final class VoiceSplittingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["voice.demo-voice-1"].waitForExistence(timeout: 5))
     }
     @MainActor private func capture(_ app: XCUIApplication, _ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }
