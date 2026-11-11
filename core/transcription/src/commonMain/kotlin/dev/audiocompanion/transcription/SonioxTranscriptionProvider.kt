@@ -370,7 +370,7 @@ class SonioxTranscriptionProvider(
     companion object {
         const val PROVIDER_ID = "soniox"
         const val DEFAULT_BASE_URL = "https://api.soniox.com"
-        const val DEFAULT_MODEL = "stt-async-v5"
+        const val DEFAULT_MODEL = "stt-async-v6"
         private const val DEFAULT_POLL_INTERVAL_MS = 2_000L
         private const val DEFAULT_MAX_POLL_ATTEMPTS = 150
         private const val DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024

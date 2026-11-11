@@ -104,7 +104,7 @@ class SonioxRealtimeProvider(
 
     companion object {
         const val DEFAULT_URL = "wss://stt-rt.soniox.com/transcribe-websocket"
-        const val DEFAULT_MODEL = "stt-rt-v5"
+        const val DEFAULT_MODEL = "stt-rt-v6"
 
         /** Soniox raw-audio format token for 16-bit signed little-endian PCM. */
         const val RAW_PCM_FORMAT = "s16le"

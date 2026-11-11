@@ -10,7 +10,7 @@ import UIKit
 // `--environment-variables`), which no tap on the icon can do. It uploads the bodies a Mac copied
 // into `diagnostics/soniox-level-test/bodies/` with the Soniox key this phone already holds, so the
 // key never leaves the phone, and sends each one the way `SonioxTranscriptionProvider` does:
-// the same multipart body, `stt-async-v5`, speaker labels on, no language hint. It sends no
+// the same multipart body, its default model, speaker labels on, no language hint. It sends no
 // context, because the app's context is the wearer's own "About You" text. Each raw transcript goes
 // to `results/<name>.json` for the Mac to score; each upload is deleted on Soniox once read. A body
 // that already has a result is skipped, so a relaunch only sends what is missing, and a refused

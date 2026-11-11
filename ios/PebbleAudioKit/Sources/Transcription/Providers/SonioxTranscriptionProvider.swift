@@ -18,7 +18,9 @@ import Foundation
 public final class SonioxTranscriptionProvider: TranscriptionProvider, CloudUploadCapable {
     public static let providerId = "soniox"
     public static let defaultBaseUrl = "https://api.soniox.com"
-    public static let defaultModel = "stt-async-v5"
+    /// v6 since 2026-11-11: Soniox removes the v5 models on 2026-12-15 (v6 is a drop-in, same
+    /// API, same price). Changing it re-transcribes nothing; `modelUsed` only records it.
+    public static let defaultModel = "stt-async-v6"
     public static let defaultPollIntervalMs: Int64 = 2_000
     public static let defaultMaxPollAttempts = 150
     public static let defaultMaxUploadBytes = 100 * 1024 * 1024

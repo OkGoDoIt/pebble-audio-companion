@@ -596,7 +596,7 @@ fun cloudProviderLabel(provider: CloudProvider): String = when (provider) {
 
 fun cloudProviderDescription(provider: CloudProvider): String = when (provider) {
     CloudProvider.OpenAi -> "OpenAI Audio transcriptions (gpt-transcribe). Uses the OpenAI API key."
-    CloudProvider.Soniox -> "Soniox async transcription (stt-async-v5). Uses the Soniox API key."
+    CloudProvider.Soniox -> "Soniox async transcription (stt-async-v6). Uses the Soniox API key."
 }
 
 fun cloudProviderSubtitle(mode: TranscriptionMode): String = when (mode) {

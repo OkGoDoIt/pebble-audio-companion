@@ -12,7 +12,8 @@ import Foundation
 /// reconnect through.
 public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
     public static let defaultUrl = "wss://stt-rt.soniox.com/transcribe-websocket"
-    public static let defaultModel = "stt-rt-v5"
+    /// v6 since 2026-11-11: Soniox removes the v5 models on 2026-12-15.
+    public static let defaultModel = "stt-rt-v6"
 
     /// Soniox raw-audio format token for 16-bit signed little-endian PCM.
     /// It is "s16le", NOT "pcm_s16le" — the wrong value makes the server reject the stream and
