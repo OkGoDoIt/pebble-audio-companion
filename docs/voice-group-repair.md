@@ -15,6 +15,21 @@ Two voices from the same recording are now independently selectable. Small saved
 in Voices to name even below the usual discovery thresholds. A group is a review aid, not a claim
 that each group represents a distinct person; several groups may later receive the same name.
 
+### Naming a group where it is heard (November 11, 2026)
+
+Splitting only to find each small group again in Voices to name was a second errand. Each group
+card now has **Who is this?**: it opens the people list over that group's clips, and one tap
+answers and returns. The card then leads with the person and offers **Change**. Answers are part
+of the draft, so the bottom button becomes **Save**: the split is saved, then each answered group
+is named, and the rest stay voices to name. Several groups may be the same person, and an answer
+about one group says nothing about the others. Splitting a named group again clears its name;
+taking clips out of it leaves the name on what stays. Undo after a save with names takes the
+names back and keeps the groups. `saveSplitGroups` returns each child with its own new speakers
+so the answer cannot reach anything else.
+
+Undo from the snackbar now refreshes the voice screens at once; since the screens began resting
+five seconds between updates, a restored voice could take that long to reappear.
+
 ## Similar products and the choice here
 
 [Google Photos face groups](https://support.google.com/photos/answer/6128838?hl=en) lets people

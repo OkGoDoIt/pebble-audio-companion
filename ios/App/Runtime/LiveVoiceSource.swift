@@ -288,16 +288,21 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         return VoiceSplitDraft(id: draft.id,groups: preview.groups.map { $0.compactMap { clips[$0] } },payload: preview)
     }
 
-    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
-        let undo = try await service.saveSplit(splitPreview(draft))
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> VoiceSplitResult {
+        let saved = try await service.saveSplitGroups(splitPreview(draft))
+        let undo = saved.undo
         splitUndos[undo.operation] = undo
         unknownGroups.removeAll()
+        // Kept under their own ids: a name given with the split goes to these speakers, whatever
+        // the next sort numbers their voices.
+        let ids = saved.groups.indices.map { "split-\(undo.operation)-\($0)" }
+        for (id, group) in zip(ids, saved.groups) { unknownGroups[id] = group }
         changed()
         Task { [weak self] in
             try? await Task.sleep(for: SnackbarItem.lifetime + .seconds(2))
             self?.splitUndos[undo.operation] = nil
         }
-        return undo.operation
+        return VoiceSplitResult(undoToken: undo.operation, groupIDs: ids)
     }
 
     func undoVoiceSplit(id: String) async throws {

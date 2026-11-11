@@ -494,6 +494,32 @@ extension VoiceClusterWorkflowTests {
         #expect(try await VoiceSplitStore(db: archive.db).constraints().isEmpty)
     }
 
+    @Test func aGroupNamedWithTheSplitNamesOnlyItsOwnSpeakers() async throws {
+        var archive = try await Archive()
+        for _ in 0..<3 { _ = try await archive.record(Self.a) }
+        try await archive.settle()
+        let original = try #require(try await archive.service.unknownVoiceGroups().first)
+        let preview = try await archive.service.splitPreview(speakerIDs: original.speakerIds)
+        let saved = try await archive.service.saveSplitGroups(preview)
+        #expect(saved.groups.count == preview.groups.count)
+        #expect(saved.groups.reduce(0) { $0 + $1.speechMs } == original.speechMs)
+        #expect(Set(saved.groups.flatMap(\.speakerIds)) == Set(saved.undo.newIDs))
+        let person = try await PeopleStore(db: archive.db).createPerson(name: "Dana")
+        let first = try #require(saved.groups.first)
+        try await archive.service.confirmUnknownVoice(first, personId: person.id)
+        try await archive.settle()
+        let named = try await archive.db.reader.read { d in
+            try Int64.fetchAll(d, sql: "SELECT id FROM voice_speakers WHERE personId = ?", arguments: [person.id])
+        }
+        #expect(Set(named) == Set(first.speakerIds))
+        let rejected = try await archive.db.reader.read { d in
+            try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM voice_speaker_decisions WHERE kind = 'rejected' AND personId = ?", arguments: [person.id])
+        }
+        #expect(rejected == 0, "The other groups may be the same person")
+        let left = try await archive.service.unknownVoiceGroups(limit: 100)
+        #expect(left.count == preview.groups.count - 1)
+    }
+
     @Test func anUnreadablePrintRemainsReviewableThroughSaveAndRegroup() async throws {
         var archive = try await Archive()
         for _ in 0..<2 { _ = try await archive.record(Self.a) }

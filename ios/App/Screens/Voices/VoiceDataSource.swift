@@ -253,7 +253,9 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     /// One voice with what was said in each of its clips, for listening through it.
     func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft
     func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft
-    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String
+    /// Saves the groups as reviewed. Each one comes back with an id `nameUnknownVoice` and
+    /// `undoNaming` take, so a group can be named in the same step.
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> VoiceSplitResult
     func undoVoiceSplit(id: String) async throws
     func discardVoiceSplit(id: String)
     func voiceDetail(id: String) async -> UnknownVoiceDisplay?
@@ -281,6 +283,12 @@ protocol VoiceRecognitionDataSource: AnyObject, Sendable {
     func removeExamples(ids: [String]) async throws
 }
 
+extension Notification.Name {
+    /// A person took an answer back from the offer to undo it. The voice screens rest between
+    /// the updates work in progress sends; this one they show at once.
+    static let voiceAnswerTakenBack = Notification.Name("voiceAnswerTakenBack")
+}
+
 @MainActor
 enum VoiceSources {
     static var current: (any VoiceRecognitionDataSource)?
@@ -290,7 +298,7 @@ enum VoiceSources {
 extension VoiceRecognitionDataSource {
     func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft { throw VoiceSplitError.unavailable }
     func refineVoiceSplit(_ draft: VoiceSplitDraft, group: Int, individual: Bool) async throws -> VoiceSplitDraft { throw VoiceSplitError.unavailable }
-    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String { throw VoiceSplitError.unavailable }
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> VoiceSplitResult { throw VoiceSplitError.unavailable }
     func undoVoiceSplit(id: String) async throws { throw VoiceSplitError.unavailable }
     func discardVoiceSplit(id: String) {}
 }

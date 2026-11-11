@@ -111,7 +111,7 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
         result.groups.replaceSubrange(group...group,with: draft.groups[group].map { [$0] })
         return result
     }
-    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> VoiceSplitResult {
         guard let original = splitOrigins[draft.id] else { throw VoiceSplitError.changed }
         splitUndo[draft.id] = unknown
         unknown.removeAll { $0.id == original }
@@ -122,7 +122,7 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
             unknown.insert(voice,at: 0)
         }
         changed()
-        return draft.id
+        return VoiceSplitResult(undoToken: draft.id, groupIDs: draft.groups.indices.map { "split-\(draft.id)-\($0)" })
     }
     func undoVoiceSplit(id: String) async throws {
         guard let prior = splitUndo.removeValue(forKey: id) else { throw VoiceSplitError.changed }
@@ -132,6 +132,7 @@ final class DemoVoiceSource: VoiceRecognitionDataSource {
     func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
         let count = clips?.count ?? unknown.first { $0.id == id }?.recordingCount ?? 0
         unknown.removeAll { $0.id == id }
+        changed()
         return count
     }
     func voiceDetail(id: String) async -> UnknownVoiceDisplay? { unknown.first { $0.id == id } }

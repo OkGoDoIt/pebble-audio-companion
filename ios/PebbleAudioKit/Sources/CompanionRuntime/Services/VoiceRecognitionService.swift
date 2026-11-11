@@ -69,7 +69,7 @@ public actor VoiceRecognitionService {
     private let models: any VoiceModelManaging
     private let analyzer: any SpeakerSpeechAnalyzing
     private let policy: SpeakerMatchPolicy
-    private let recipeID: String
+    let recipeID: String
     let protector: any VoiceProfileProtecting
     private var validatedCorpus: Int64?
     private var processing = false

@@ -19,7 +19,12 @@ final class VoiceSettingsModel {
     private let injectedSource: (any VoiceRecognitionDataSource)?
     private var source: (any VoiceRecognitionDataSource)? { injectedSource ?? VoiceSources.current }
 
-    init(source: (any VoiceRecognitionDataSource)? = nil) { injectedSource = source }
+    init(source: (any VoiceRecognitionDataSource)? = nil) {
+        injectedSource = source
+        NotificationCenter.default.addObserver(forName: .voiceAnswerTakenBack, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.refresh() }
+        }
+    }
 
     /// Work in progress reports constantly on the charger. This rest keeps the screens from
     /// chasing it; what a person answers here refreshes them at once anyway.

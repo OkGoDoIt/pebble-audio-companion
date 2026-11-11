@@ -55,6 +55,12 @@ public struct VoiceSplitPreview: Sendable {
     }
 }
 
+public struct VoiceSplitSaved: Sendable {
+    public let undo: VoiceSplitUndo
+    /// One per reviewed group, in the same order.
+    public let groups: [VoiceRecognitionService.UnknownVoiceGroup]
+}
+
 extension VoiceRecognitionService {
     public func splitPreview(speakerIDs: [Int64]) async throws -> VoiceSplitPreview {
         let snapshot = try await VoiceSplitStore(db: store.db).snapshot(speakerIDs: speakerIDs)
@@ -80,10 +86,19 @@ extension VoiceRecognitionService {
     }
 
     public func saveSplit(_ preview: VoiceSplitPreview) async throws -> VoiceSplitUndo {
+        try await saveSplitGroups(preview).undo
+    }
+
+    /// Saves the split and hands back each child, in the order reviewed, so one can be named in
+    /// the same step. A child holds exactly its own new speakers: an answer about it says
+    /// nothing about the other children.
+    public func saveSplitGroups(_ preview: VoiceSplitPreview) async throws -> VoiceSplitSaved {
         let protector = protector
-        let parts = try await voiceSplitWork {
+        let (parts, shown) = try await voiceSplitWork {
             let atoms = Dictionary(uniqueKeysWithValues: preview.atoms.map { ($0.id,$0) })
             var parts: [VoiceSplitPart] = []
+            // The clearest sample of each part, to stand for its new speaker.
+            var shown: [VoiceSplitAtom] = []
             for group in preview.groups {
                 try Task.checkCancellation()
                 let groupID = UUID().uuidString.lowercased()
@@ -99,15 +114,33 @@ extension VoiceRecognitionService {
                     }
                     parts.append(VoiceSplitPart(group: groupID,memberID: memberID,
                         cropIndices: local.map(\.cropIndex),sealedVoice: sealed,recipeJSON: recipe))
+                    shown.append(local.max { $0.confidence < $1.confidence } ?? local[0])
                 }
             }
-            return parts
+            return (parts, shown)
         }
         try Task.checkCancellation()
         let undo = try await VoiceSplitStore(db: store.db).save(preview.snapshot, parts: parts)
         clusterKey = nil
         changed()
-        return undo
+        // The store saves one speaker per part, in order.
+        let atoms = Dictionary(uniqueKeysWithValues: preview.atoms.map { ($0.id,$0) })
+        var crops: [String: [VoiceUnmatchedCrop]] = [:]
+        var order: [String] = []
+        for (index, part) in parts.enumerated() where undo.newIDs.indices.contains(index) {
+            if crops[part.group] == nil { order.append(part.group) }
+            crops[part.group, default: []].append(VoiceUnmatchedCrop(id: String(undo.newIDs[index]),
+                segmentId: shown[index].segmentId, startMediaMs: shown[index].startMs, endMediaMs: shown[index].endMs,
+                sourceRevision: "", recipeID: recipeID, embeddingJSON: Data(),
+                speechConfidence: Double(shown[index].confidence) / 100))
+        }
+        let groups = zip(order, preview.groups).map { part, ids in
+            var group = UnknownVoiceGroup(clusterId: Int64(crops[part]?.first?.id ?? "") ?? 0, crops: crops[part] ?? [],
+                speechMs: ids.compactMap { atoms[$0] }.reduce(Int64(0)) { $0 + $1.endMs - $1.startMs })
+            group.repaired = true
+            return group
+        }
+        return VoiceSplitSaved(undo: undo, groups: groups)
     }
 
     public func undoSplit(_ undo: VoiceSplitUndo) async throws {

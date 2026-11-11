@@ -386,6 +386,7 @@ final class WhoIsThisModel {
         SnackbarItem(message: Copy.Voices.named(name, in: count), actionTitle: Copy.Common.undo, action: {
             Task { @MainActor in
                 try? await VoiceSources.current?.undoNaming(id: voiceId, personId: personId)
+                NotificationCenter.default.post(name: .voiceAnswerTakenBack, object: nil)
                 await afterUndo()
             }
         })

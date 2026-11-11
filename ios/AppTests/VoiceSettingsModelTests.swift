@@ -64,9 +64,10 @@ import Testing
     func prepareVoiceSplit(id: String) async throws -> VoiceSplitDraft {
         guard let splitDraft else { throw Failure.unavailable }; return splitDraft
     }
-    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> String {
+    func saveVoiceSplit(_ draft: VoiceSplitDraft) async throws -> VoiceSplitResult {
         if failSplit { throw Failure.unavailable }
-        savedSplit = draft; return "undo"
+        savedSplit = draft
+        return VoiceSplitResult(undoToken: "undo", groupIDs: draft.groups.indices.map { "child-\($0)" })
     }
     func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
         namedUnknown.append((id, personId, clips))
