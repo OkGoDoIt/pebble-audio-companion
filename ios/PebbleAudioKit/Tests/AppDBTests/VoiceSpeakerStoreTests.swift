@@ -138,6 +138,35 @@ import Testing
         #expect(try await store.applyClusters(assignments(person: nil)) == 2)
     }
 
+    /// One speaker joining a big group nudges every member's likeness to it. That alone must not
+    /// rewrite the members: on the phone it rewrote the wearer's 2,000 rows on every sort.
+    @Test func aNudgedScoreIsNotWrittenAgain() async throws {
+        let (db, store) = try await ready()
+        try await store.replaceSpeakers([("seg-1-a-1", [draft([crop(0, 3_000)])]), ("seg-2-a-1", [draft([crop(0, 3_000)])])])
+        let ids = try await store.clusterInputs(minimumCrops: 1).map(\.id)
+        let sam = try await PeopleStore(db: db).createPerson(name: "Sam")
+        func apply(_ score: Double, suggested: Double? = nil) async throws -> Int {
+            let before = try await db.writer.write { $0.totalChangesCount }
+            try await store.applyClusters(ids.map {
+                VoiceSpeakerAssignment(speakerId: $0, clusterId: ids[0], personId: nil, score: score,
+                    suggestedPersonId: suggested == nil ? nil : sam.id, suggestedScore: suggested, ignored: false)
+            })
+            return try await db.writer.write { $0.totalChangesCount } - before
+        }
+        func stored() async throws -> [Double] {
+            try await db.reader.read { try Double.fetchAll($0, sql: "SELECT score FROM voice_speakers ORDER BY id") }
+        }
+        #expect(try await apply(0.7) == 2)
+        #expect(try await apply(0.7001) == 0, "A nudge is not a change")
+        #expect(try await stored() == [0.7, 0.7])
+        #expect(try await apply(0.7049) == 0)
+        #expect(try await apply(0.706) == 2, "Drift adds up against what was stored")
+        #expect(try await stored() == [0.706, 0.706])
+        #expect(try await apply(0.706, suggested: 0.6) > 0, "A new suggestion is written")
+        #expect(try await db.reader.read { try Double.fetchAll($0, sql: "SELECT suggestedScore FROM voice_speakers") } == [0.6, 0.6])
+        #expect(try await apply(0.706, suggested: 0.6002) == 0)
+    }
+
     @Test func aRecordingsIdSaysWhenItWasHeard() {
         #expect(VoiceSpeakerStore.heardAt("seg-1793857917060-2930a5af-578") == 1_793_857_917_060)
         #expect(VoiceSpeakerStore.heardAt("anything") == 0)

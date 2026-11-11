@@ -161,9 +161,12 @@ public struct VoicePrintStore: Sendable {
                 for name in names where !kept.contains(Key(start: name.startMediaMs, end: name.endMediaMs, person: name.personId, disposition: name.disposition.rawValue)) {
                     if try Self.insertName(d, name) { differs = true }
                 }
-                try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = ? WHERE segmentId = ?",
-                              arguments: [corpusRevision, source.segmentId])
-                if let speechMs = update.speechMs {
+                // Every naming pass reaches here for each recording it read; write only what moved.
+                if (row["matchedCorpus"] as Int64?) != corpusRevision {
+                    try d.execute(sql: "UPDATE voice_print_sources SET matchedCorpus = ? WHERE segmentId = ?",
+                                  arguments: [corpusRevision, source.segmentId])
+                }
+                if let speechMs = update.speechMs, (row["speechMs"] as Int64?) != speechMs {
                     try d.execute(sql: "UPDATE voice_print_sources SET speechMs = ? WHERE segmentId = ?",
                                   arguments: [speechMs, source.segmentId])
                 }

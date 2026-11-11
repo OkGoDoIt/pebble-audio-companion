@@ -379,7 +379,8 @@ public struct VoiceSpeakerStore: Sendable {
                 if personId != new?.personId || suggested != new?.suggestedPersonId { stale.insert(row["segmentId"]) }
                 let score: Double? = row["score"], suggestedScore: Double? = row["suggestedScore"]
                 if personId != new?.personId || suggested != new?.suggestedPersonId || clusterId != new?.clusterId
-                    || score != new?.score || suggestedScore != new?.suggestedScore || hidden != (new?.ignored ?? false) {
+                    || Self.scoreMoved(score, new?.score) || Self.scoreMoved(suggestedScore, new?.suggestedScore)
+                    || hidden != (new?.ignored ?? false) {
                     try d.execute(sql: """
                         UPDATE voice_speakers SET clusterId = ?, personId = ?, score = ?, suggestedPersonId = ?, suggestedScore = ?, hidden = ?
                         WHERE id = ?
@@ -389,6 +390,20 @@ public struct VoiceSpeakerStore: Sendable {
             }
             for segmentId in stale { try VoicePrintStore.markStale(d, segmentId: segmentId) }
             return stale.count
+        }
+    }
+
+    /// How far a stored similarity may lag the latest sort. A score is a member's likeness to its
+    /// group's average, so one speaker joining the wearer's group of thousands nudged every
+    /// member's score by about 1e-4 and rewrote the whole table: about 2 GB a day on the phone
+    /// (2026-11-11). Scores are only read against thresholds a hundred times coarser.
+    static let scoreTolerance = 0.005
+
+    static func scoreMoved(_ stored: Double?, _ new: Double?) -> Bool {
+        switch (stored, new) {
+        case (nil, nil): return false
+        case let (stored?, new?): return abs(stored - new) >= scoreTolerance
+        default: return true
         }
     }
 
