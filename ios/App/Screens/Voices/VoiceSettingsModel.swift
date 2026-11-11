@@ -21,14 +21,39 @@ final class VoiceSettingsModel {
 
     init(source: (any VoiceRecognitionDataSource)? = nil) { injectedSource = source }
 
+    /// Work in progress reports constantly on the charger. This rest keeps the screens from
+    /// chasing it; what a person answers here refreshes them at once anyway.
+    var restAfterRefresh: Duration = .seconds(5)
+    /// Voice screens showing now. Refreshing for none of them is work nobody sees.
+    private var screensShowing = 0
+    private var appActive = true
+    private var missedUpdate = false
+    private var observing = false
+    var isOnScreen: Bool { screensShowing > 0 && appActive }
+
+    func screenAppeared() { screensShowing += 1; catchUp() }
+    func screenDisappeared() { screensShowing = max(0, screensShowing - 1) }
+    func appBecame(active: Bool) { appActive = active; catchUp() }
+
+    /// Back on screen after updates went by unread: one refresh covers them all.
+    private func catchUp() {
+        guard isOnScreen, missedUpdate else { return }
+        missedUpdate = false
+        Task { await refresh() }
+    }
+
+    /// One loop per model, however many of its screens ask.
     func observe() async {
+        guard !observing else { return }
+        observing = true
+        defer { observing = false }
         await refresh()
         guard let source else { return }
         for await _ in source.updates() {
             if Task.isCancelled { return }
+            guard isOnScreen else { missedUpdate = true; continue }
             await refresh()
-            // Work in progress reports often; a second's rest keeps this screen from chasing it.
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: restAfterRefresh)
         }
     }
 

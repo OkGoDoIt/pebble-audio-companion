@@ -5,6 +5,7 @@ import SwiftUI
 /// been found, and the voices still without a name. Recognition's own controls come last, except
 /// while it's off, when they're all there is to do.
 struct VoiceSettingsScreen: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: VoiceSettingsModel
     @State private var player = WhoIsThisModel()
     @State private var setup = false
@@ -51,7 +52,9 @@ struct VoiceSettingsScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .task { await model.observe() }
-        .onDisappear { player.stop() }
+        .onAppear { model.screenAppeared() }
+        .onDisappear { player.stop(); model.screenDisappeared() }
+        .onChange(of: scenePhase, initial: true) { _, phase in model.appBecame(active: phase == .active) }
         .sheet(item: $asking, onDismiss: { Task { await model.refresh() } }) { voice in
             WhoIsThisSheet(voice: voice) { UndoCenter.shared.snackbar = $0 }
         }
@@ -321,6 +324,8 @@ struct VoicesToNameScreen: View {
         }
         .navigationTitle(Copy.Voices.toName)
         .task { await model.observe() }
+        .onAppear { model.screenAppeared() }
+        .onDisappear { model.screenDisappeared() }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $asking, onDismiss: { Task { await model.refresh() } }) { voice in
             WhoIsThisSheet(voice: voice) { UndoCenter.shared.snackbar = $0 }

@@ -95,7 +95,8 @@ struct VoiceProfileScreen: View {
             }
         }
         .task(id: "\(personId):\(model.possibleMatches.map(\.id).joined())") { await load() }
-        .onDisappear { player.stop() }
+        .onAppear { model.screenAppeared() }
+        .onDisappear { player.stop(); model.screenDisappeared() }
         .fullScreenCover(item: $reviewing, onDismiss: { Task { await model.refresh(); await load() } }) { voice in
             VoiceReviewScreen(voice: voice) { UndoCenter.shared.snackbar = $0 }
         }
@@ -264,7 +265,8 @@ struct VoiceAppearancesScreen: View {
         }
         .navigationTitle(personName)
         .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { player.stop() }
+        .onAppear { model.screenAppeared() }
+        .onDisappear { player.stop(); model.screenDisappeared() }
     }
 }
 
@@ -298,7 +300,8 @@ struct VoiceSamplesScreen: View {
         }
         .navigationTitle(Copy.Voices.confirmedSamples)
         .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { player.stop() }
+        .onAppear { model.screenAppeared() }
+        .onDisappear { player.stop(); model.screenDisappeared() }
         .sheet(isPresented: $adding, onDismiss: { Task { await model.refresh() } }) {
             if let profile { VoiceSetupScreen(person: profile.person) }
         }

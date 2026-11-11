@@ -15,11 +15,14 @@ import Testing
     var scopes: [Int?] = []
     var cancelled = false
     var removedExampleIDs: [String] = []
+    var snapshotCount = 0
+    var updateStream: AsyncStream<Void>?
     func snapshot() async throws -> VoiceSettingsDisplay {
+        snapshotCount += 1
         if let snapshotOverride { return try await snapshotOverride() }
         return state
     }
-    func updates() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
+    func updates() -> AsyncStream<Void> { updateStream ?? AsyncStream { $0.finish() } }
     func prepareModels(progress: @escaping @Sendable (Double) -> Void) async throws {
         preparationCount += 1
         if failPreparation { throw Failure.unavailable }
@@ -183,6 +186,37 @@ struct VoiceSettingsModelTests {
         #expect(Set(people.compactMap { colors[$0.id] }).count == 6)
         #expect(!people.contains { colors[$0.id] == PersonPalette.youIndex })
         #expect(PersonPalette.indices(of: [you] + people) == colors, "Stable")
+    }
+
+    /// Off screen, the voice screens read nothing however much work reports in; back on
+    /// screen, one refresh catches up.
+    @Test func nothingIsReadWhileTheScreensAreAway() async {
+        let source = VoiceTestSource()
+        let (updates, report) = AsyncStream<Void>.makeStream()
+        source.updateStream = updates
+        let model = VoiceSettingsModel(source: source)
+        model.restAfterRefresh = .zero
+        model.screenAppeared()
+        let observing = Task { await model.observe() }
+        func settle(until done: () -> Bool) async {
+            for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        await settle { source.snapshotCount == 1 }
+        report.yield()
+        await settle { source.snapshotCount == 2 }
+        #expect(source.snapshotCount == 2, "On screen, an update is read")
+
+        model.screenDisappeared()
+        for _ in 0..<5 { report.yield() }
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(source.snapshotCount == 2, "Away, nothing is read")
+
+        model.screenAppeared()
+        await settle { source.snapshotCount == 3 }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(source.snapshotCount == 3, "Back, one read covers what went by")
+        observing.cancel()
+        report.finish()
     }
 
     @Test func turningOffNeverDownloadsAndPreservesPeople() async {

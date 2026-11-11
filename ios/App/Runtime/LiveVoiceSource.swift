@@ -22,7 +22,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let run = runs.first { $0.runID == plan?.runID }
         let everyone = try await composition.people.listPeople().map(\.person)
         let colors = PersonPalette.indices(of: everyone)
-        let coverage = try await service.coverage()
+        let coverage = try await cachedCoverage()
         let stats = Dictionary(coverage.byPerson.map { ($0.personId, $0) }, uniquingKeysWith: { a, _ in a })
         var people: [VoicePersonDisplay] = []
         for person in everyone {
@@ -142,7 +142,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         if enabled, try await service.historyPlans().isEmpty {
             _ = try await service.recognizeHistory(fromMs: 0, toMs: Int64(Date().timeIntervalSince1970 * 1_000))
         }
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func currentUser(name: String) async throws -> Person {
         try await composition.people.ensureCurrentUser(displayName: name)
@@ -150,7 +150,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     func enrollPCM(personId: String, pcm16LE: Data, sessionID: String, kind: VoiceSampleKind?) async throws -> Int {
         let result = try await service.enrollPCM(personId: personId, pcm16LE: pcm16LE, sessionID: sessionID)
         try await record(kind, of: result)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
         return result.examplesAdded
     }
     func watchIsStreaming() async -> Bool {
@@ -165,7 +165,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let result = try await service.enrollWatch(personId: personId, fromWallMs: fromWallMs,
                                                    toWallMs: toWallMs, sessionID: sessionID)
         try await record(kind, of: result)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
         return result.examplesAdded
     }
     private func record(_ kind: VoiceSampleKind?, of result: VoiceEnrollmentOutcome) async throws {
@@ -180,7 +180,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         // A long passage still teaches the voice: its first 30 seconds are plenty.
         let result = try await service.enroll(personId: personId, segmentId: turn.segmentId,
                                               startMediaMs: start, endMediaMs: min(full, start + 30_000))
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
         return result
     }
     /// Every voice the screens have been shown. Kept past the next read: an answer goes to the
@@ -189,7 +189,35 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     /// Waiting out the offer to undo before learning from an answer.
     private var learning: [String: Task<Void, Never>] = [:]
 
+    /// People & voices reads these at most this often unless something it shows was answered:
+    /// voices are sorted again on every pass, and re-reading coverage on each one dirtied 1 GB of
+    /// SQLite temp files in 22 minutes on the phone (2026-11-11, on the charger, screen open).
+    private static let freshForSeconds: TimeInterval = 30
+    private var coverageCache: (at: Date, value: VoiceCoverage)?
+    private var voicesCache: (at: Date, value: [UnknownVoiceDisplay])?
+
+    /// Something a person did changed what the screens show: read it again, and say so.
+    private func changed() {
+        coverageCache = nil
+        voicesCache = nil
+        composition.runtime.notifyVoiceConfigurationChanged()
+    }
+
+    private func cachedCoverage() async throws -> VoiceCoverage {
+        if let cached = coverageCache, Date().timeIntervalSince(cached.at) < Self.freshForSeconds { return cached.value }
+        let value = try await service.coverage()
+        coverageCache = (Date(), value)
+        return value
+    }
+
     func unknownVoices() async -> [UnknownVoiceDisplay] {
+        if let cached = voicesCache, Date().timeIntervalSince(cached.at) < Self.freshForSeconds { return cached.value }
+        let voices = await readUnknownVoices()
+        voicesCache = (Date(), voices)
+        return voices
+    }
+
+    private func readUnknownVoices() async -> [UnknownVoiceDisplay] {
         guard (try? await service.status().configuration.mode) == .local,
               let groups = try? await service.unknownVoiceGroups(limit: 60) else { return [] }
         for group in groups { unknownGroups[group.id] = group }
@@ -264,7 +292,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let undo = try await service.saveSplit(splitPreview(draft))
         splitUndos[undo.operation] = undo
         unknownGroups.removeAll()
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
         Task { [weak self] in
             try? await Task.sleep(for: SnackbarItem.lifetime + .seconds(2))
             self?.splitUndos[undo.operation] = nil
@@ -277,7 +305,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         try await service.undoSplit(undo)
         splitUndos[id] = nil
         unknownGroups.removeAll()
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
 
     func nameUnknownVoice(id: String, personId: String, clips: Set<String>?) async throws -> Int {
@@ -285,14 +313,14 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let group = clips.map { whole.selecting(clips: $0) } ?? whole
         guard !group.crops.isEmpty else { return 0 }
         try await service.confirmUnknownVoice(group, personId: personId)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
         // Samples come from the models, and the offer to undo is still up: this waits.
         let service = service
         learning[id] = Task { [weak self] in
             try? await Task.sleep(for: SnackbarItem.lifetime + .seconds(1))
             guard !Task.isCancelled else { return }
             await service.learnFrom(group, personId: personId)
-            self?.composition.runtime.notifyVoiceConfigurationChanged()
+            self?.changed()
         }
         return group.recordingCount
     }
@@ -302,13 +330,13 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         learning[id] = nil
         guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
         try await service.undoUnknownVoice(group, personId: personId)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
 
     func rejectSuggestion(id: String, personId: String) async throws {
         guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
         try await service.rejectSuggestion(group, personId: personId)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
 
     func appearances(personId: String) async -> [VoiceAppearanceDisplay] {
@@ -326,7 +354,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
 
     func notThisPerson(_ appearance: VoiceAppearanceDisplay, personId: String) async throws {
         try await service.notThisPerson(speakerIds: appearance.speakerIds, personId: personId)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
 
     /// The transcript paragraph a clip sits in, when most of the clip is inside it: naming the
@@ -344,11 +372,11 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         guard let group = await group(id) else { throw SpeakerEditorError.voiceUnavailable }
         try await service.dismissUnknownVoice(group)
         unknownGroups[id] = nil
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func ignoreUnknownClip(_ clip: UnknownVoiceClip) async throws {
         try await service.ignoreUnknownClip(segmentId: clip.segmentId, startMediaMs: clip.startMs, endMediaMs: clip.endMs)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func clipAudio(segmentId: String, startMs: Int64, endMs: Int64) async -> Data? {
         try? await service.clipPCM(segmentId: segmentId, startMediaMs: startMs, endMediaMs: endMs)
@@ -360,7 +388,7 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
     func recognizeAfterLearning(personId: String, since earliestMs: Int64?) async {
         // A name changes what voices sort into, and the names follow from saved prints. Nothing
         // has to be listened to again.
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func cancelEnrollment() async {
         service.cancelEnrollment()
@@ -370,27 +398,27 @@ final class LiveVoiceSource: VoiceRecognitionDataSource {
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         let from = days.map { now - Int64(max(1, $0)) * 86_400_000 } ?? 0
         _ = try await service.recognizeHistory(fromMs: from, toMs: now)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func cancelRun(id: String) async throws {
         try await service.cancel(runId: id)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func undoRun(id: String) async throws {
         try await service.undo(runId: id)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func clearAutomaticNames() async throws {
         try await service.clearAutomaticNames()
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func forgetVoice(personId: String) async throws {
         try await service.forgetProfile(personId: personId)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
     func removeExamples(ids: [String]) async throws {
         try await service.removeExamples(ids: ids)
-        composition.runtime.notifyVoiceConfigurationChanged()
+        changed()
     }
 }
 
