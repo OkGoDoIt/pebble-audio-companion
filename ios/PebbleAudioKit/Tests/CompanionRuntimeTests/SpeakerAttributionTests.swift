@@ -1,5 +1,6 @@
 import AppDB
 import Foundation
+import Intelligence
 import Testing
 import Transcription
 
@@ -27,6 +28,33 @@ struct SpeakerAttributionTests {
         VoiceResolvedAttribution(attribution: VoiceAutomaticAttribution(personId: person.id, segmentId: "s",
             startMediaMs: start, endMediaMs: end, sourceRevision: "digest", recipeID: "recipe",
             score: 0.95, margin: 0.2, calibrationID: "test", runID: "run", disposition: disposition), person: person)
+    }
+
+    /// A transcript that came without speaker labels takes the speakers the app told apart from
+    /// the audio, and breaks where they change. One with labels keeps the provider's.
+    @Test func unlabelledSpeechTakesTheAppsOwnSpeakers() {
+        let text = "Did you go? Yes, twice."
+        let words = [TranscriptWord(text: "Did", startMs: 0, endMs: 300), TranscriptWord(text: "you", startMs: 300, endMs: 600),
+                     TranscriptWord(text: "go?", startMs: 600, endMs: 900), TranscriptWord(text: "Yes,", startMs: 2_000, endMs: 2_400),
+                     TranscriptWord(text: "twice.", startMs: 2_400, endMs: 3_000)]
+        let identity = SpeakerIdentitySnapshot(ownSpeakers: [
+            VoiceOwnSpeaker(segmentId: "s", label: "1", crops: [0..<1_000]),
+            VoiceOwnSpeaker(segmentId: "s", label: "2", crops: [1_900..<3_100]),
+        ])
+        func turns(_ segments: [TranscriptSegment], words: [TranscriptWord]) -> [Intelligence.SpeakerAttributedTurn] {
+            SpeakerAttribution.attributedTurns(segments: segments, words: words, segmentId: "s",
+                                               identity: identity, legacyAssignments: [])
+        }
+        let local = turns([TranscriptSegment(text: text, startMs: 0, endMs: 3_000)], words: words)
+        #expect(local.map(\.originalSpeaker) == ["1", "2"])
+        #expect(local.map(\.text).joined() == text, "Every character kept")
+
+        let labelled = turns([TranscriptSegment(text: text, startMs: 0, endMs: 3_000, speaker: "4")], words: words)
+        #expect(labelled.allSatisfy { $0.originalSpeaker == "4" }, "The provider's labels stand")
+
+        let untimed = turns([TranscriptSegment(text: "Did you go?", startMs: 0, endMs: 900),
+                             TranscriptSegment(text: "Yes, twice.", startMs: 2_000, endMs: 3_000)], words: [])
+        #expect(untimed.map(\.originalSpeaker) == ["1", "2"], "Whole turns, with no word timings")
     }
 
     @Test func wordAlignmentNamesOnlyCoveredWordsAndPreservesEveryOriginalCharacter() {

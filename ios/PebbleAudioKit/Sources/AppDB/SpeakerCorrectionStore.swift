@@ -33,26 +33,58 @@ public enum SpeakerCorrectionResolution: Equatable, Sendable {
 }
 
 /// Read once for a displayed/exported group of segments, then resolve turns without DB reads.
+/// One of a recording's speakers as the app told them apart from the audio itself. A transcript
+/// that came without speaker labels uses `label` for them: "1", "2", in the order they first spoke.
+public struct VoiceOwnSpeaker: Equatable, Sendable {
+    public var segmentId: String
+    public var label: String
+    public var crops: [Range<Int64>]
+    public init(segmentId: String, label: String, crops: [Range<Int64>]) {
+        self.segmentId = segmentId; self.label = label; self.crops = crops
+    }
+}
+
 public struct SpeakerIdentitySnapshot: Equatable, Sendable {
     public var revision: Int64
     public var currentUserPersonId: String?
     public var corrections: [SpeakerCorrection]
     public var automaticAttributions: [VoiceResolvedAttribution]
+    public var ownSpeakers: [VoiceOwnSpeaker]
 
     public init(
         revision: Int64 = 0, currentUserPersonId: String? = nil,
-        corrections: [SpeakerCorrection] = [], automaticAttributions: [VoiceResolvedAttribution] = []
+        corrections: [SpeakerCorrection] = [], automaticAttributions: [VoiceResolvedAttribution] = [],
+        ownSpeakers: [VoiceOwnSpeaker] = []
     ) {
         self.revision = revision
         self.currentUserPersonId = currentUserPersonId
         self.corrections = corrections
         self.automaticAttributions = automaticAttributions
+        self.ownSpeakers = ownSpeakers
+    }
+
+    /// Which of the recording's own speakers said this stretch: whose clips cover most of it, or
+    /// failing that, whose are closest within a breath either side. Nil where nobody was heard.
+    public func ownSpeaker(segmentId: String, startMediaMs: Int64, endMediaMs: Int64) -> String? {
+        let speakers = ownSpeakers.filter { $0.segmentId == segmentId }
+        guard !speakers.isEmpty else { return nil }
+        func most(_ lower: Int64, _ upper: Int64) -> String? {
+            var top: (label: String, ms: Int64)?
+            for speaker in speakers {
+                let ms = speaker.crops.reduce(Int64(0)) { $0 + max(0, min($1.upperBound, upper) - max($1.lowerBound, lower)) }
+                if ms > (top?.ms ?? 0) { top = (speaker.label, ms) }
+            }
+            return top?.label
+        }
+        let end = max(endMediaMs, startMediaMs + 1)
+        return most(startMediaMs, end) ?? most(startMediaMs - 1_500, end + 1_500)
     }
 
     /// Just one recording's decisions, to resolve many turns of it.
     public func narrowed(to segmentId: String) -> SpeakerIdentitySnapshot {
         var narrowed = self
         narrowed.corrections = corrections.filter { $0.segmentId == segmentId }
+        narrowed.ownSpeakers = ownSpeakers.filter { $0.segmentId == segmentId }
         narrowed.automaticAttributions = automaticAttributions.filter { $0.attribution.segmentId == segmentId }
         return narrowed
     }
@@ -207,7 +239,9 @@ public struct SpeakerCorrectionStore: Sendable {
                 SELECT DISTINCT segmentId FROM conversation_segments WHERE conversationId = ?
                 """, arguments: [conversationId])
             return try Self.fetchSnapshot(d, segmentIds: segments)
-        }.values(in: db.reader)
+        // Speakers are sorted again across the whole archive; most of that is someone else's
+        // conversation, and a read that comes out the same tells this screen nothing.
+        }.removeDuplicates().values(in: db.reader)
     }
 
     public func affectedConversationIds(
@@ -299,6 +333,9 @@ public struct SpeakerCorrectionStore: Sendable {
         let currentUser: String? = state?["currentUserPersonId"]
         var corrections: [SpeakerCorrection] = []
         var automatic: [VoiceResolvedAttribution] = []
+        var own: [VoiceOwnSpeaker] = []
+        // Partial historical schema fixtures predate the app's own speakers.
+        let hasOwnSpeakers = try d.tableExists("voice_speakers")
         // Bound SQLite's variables for large exports/backfills. No audio or transcript is read.
         let unique = Array(Set(segmentIds)).sorted()
         for offset in stride(from: 0, to: unique.count, by: 400) {
@@ -319,10 +356,11 @@ public struct SpeakerCorrectionStore: Sendable {
                                              person: person, createdAtMs: row["createdAtMs"])
                 }
             automatic += try VoiceIdentityStore.fetchAutomatic(d, segmentIds: batch, currentUserPersonId: currentUser)
+            if hasOwnSpeakers { own += try VoiceSpeakerStore.ownSpeakers(d, segmentIds: batch) }
         }
         return SpeakerIdentitySnapshot(revision: state?["revision"] ?? 0,
                                        currentUserPersonId: currentUser, corrections: corrections,
-                                       automaticAttributions: automatic)
+                                       automaticAttributions: automatic, ownSpeakers: own)
     }
 
     // MARK: - Additive schema and transactional change propagation

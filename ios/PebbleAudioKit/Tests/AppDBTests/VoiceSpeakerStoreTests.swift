@@ -101,6 +101,17 @@ import Testing
         #expect(spans.first { $0.clusterId == 100 }?.suggestedPersonId == dana.id)
     }
 
+    /// A recording's own speakers are numbered by who spoke first, for transcripts with no labels.
+    @Test func ownSpeakersAreNumberedByWhoSpokeFirst() async throws {
+        let (db, store) = try await ready()
+        try await store.replaceSpeakers([("seg-1-a-1", [draft([crop(5_000, 8_000)]), draft([crop(0, 3_000), crop(9_000, 12_000)])])])
+        let snapshot = try await SpeakerCorrectionStore(db: db).snapshot(segmentIds: ["seg-1-a-1", "seg-2-a-1"])
+        #expect(snapshot.ownSpeakers.map(\.label) == ["1", "2"])
+        #expect(snapshot.ownSpeakers.first?.crops == [0..<3_000, 9_000..<12_000])
+        #expect(snapshot.ownSpeaker(segmentId: "seg-1-a-1", startMediaMs: 5_500, endMediaMs: 7_000) == "2")
+        #expect(snapshot.ownSpeaker(segmentId: "seg-2-a-1", startMediaMs: 0, endMediaMs: 3_000) == nil, "Nobody heard there")
+    }
+
     @Test func deletingAPersonTakesWhatWasSaidAboutThem() async throws {
         let (db, store) = try await ready()
         let dana = try await PeopleStore(db: db).createPerson(name: "Dana")

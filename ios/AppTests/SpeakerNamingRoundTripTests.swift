@@ -6,6 +6,30 @@ import Transcription
 
 @Suite("speaker selection survives provider token boundaries") @MainActor
 struct SpeakerNamingRoundTripTests {
+    /// An on-device transcript has no speaker labels; the app's own speakers give it Speaker 1
+    /// and Speaker 2, broken where the voice changes.
+    @Test func aTranscriptWithNoLabelsShowsTheAppsOwnSpeakers() async throws {
+        let id = "local"
+        var transcript = PieceLibrary.transcript(id, [
+            Transcription.TranscriptSegment(text: "Did you go? Yes, twice.", startMs: 1_000, endMs: 4_000, speaker: nil)])
+        transcript.words = [
+            Transcription.TranscriptWord(text: "Did", startMs: 1_000, endMs: 1_300),
+            Transcription.TranscriptWord(text: "you", startMs: 1_300, endMs: 1_600),
+            Transcription.TranscriptWord(text: "go?", startMs: 1_600, endMs: 1_900),
+            Transcription.TranscriptWord(text: "Yes,", startMs: 3_000, endMs: 3_400),
+            Transcription.TranscriptWord(text: "twice.", startMs: 3_400, endMs: 4_000),
+        ]
+        let identity = SpeakerIdentitySnapshot(ownSpeakers: [
+            VoiceOwnSpeaker(segmentId: id, label: "1", crops: [1_000..<2_000]),
+            VoiceOwnSpeaker(segmentId: id, label: "2", crops: [2_900..<4_100]),
+        ])
+        let rows = await LiveWorld.walkMembers([ConversationMember(segmentId: id, startMediaMs: 0, endMediaMs: 10_000)],
+            metas: [id: PieceLibrary.meta(id, index: 0)], transcripts: [id: transcript],
+            assignments: [], identities: identity).transcript
+        let names = rows.compactMap { item -> String? in if case .turn(let turn) = item { turn.name } else { nil } }
+        #expect(names == ["Speaker 1", "Speaker 2"])
+    }
+
     @Test func namingThenClearingASelectedRunSurvivesReloadAndExport() async throws {
         let id = "tokenized"
         let text = (0..<35).map { "word\($0)" }.joined(separator: " ") + "."

@@ -293,6 +293,8 @@ public actor VoiceRecognitionService {
                         }
                     }.value
                     try await speakers.replaceSpeakers(sorted)
+                    // A transcript without speaker labels reads its speakers from these.
+                    changedSegments.formUnion(toSort.map(\.segmentId))
                 }
             }
             try await sortVoicesIfNeeded(examples: examples)

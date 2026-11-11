@@ -33,6 +33,11 @@ public enum SpeakerTranscriptAttribution {
         // Looked up per word below: only this recording's rows, however long the conversation.
         let identity = identity.narrowed(to: segmentId)
         return segments.flatMap { turn -> [SpeakerAttributedTurn] in
+            // A transcript with no speaker labels takes the speakers the app told apart itself.
+            let provided = turn.speaker.flatMap { $0.isEmpty ? nil : $0 }
+            func speaker(_ start: Int64, _ end: Int64) -> String? {
+                provided ?? identity.ownSpeaker(segmentId: segmentId, startMediaMs: start, endMediaMs: end)
+            }
             var low = 0, high = ordered.count
             while low < high {
                 let middle = (low + high) / 2
@@ -67,7 +72,7 @@ public enum SpeakerTranscriptAttribution {
                 let resolved = identity.resolvedIdentity(segmentId: segmentId, startMediaMs: turn.startMs,
                     endMediaMs: turn.endMs, speaker: turn.speaker, legacyAssignments: legacyAssignments)
                 return [SpeakerAttributedTurn(text: turn.text, startMs: turn.startMs, endMs: turn.endMs,
-                    originalSpeaker: turn.speaker, person: resolved?.person,
+                    originalSpeaker: speaker(turn.startMs, turn.endMs), person: resolved?.person,
                     isVoiceMatch: resolved?.isVoiceMatch ?? false, words: words, confidence: turn.confidence)]
             }
             // Provider "words" can be subword tokens, including zero-duration syllables.
@@ -106,15 +111,17 @@ public enum SpeakerTranscriptAttribution {
                 let resolved = identity.resolvedWordIdentity(segmentId: segmentId,
                     startMediaMs: start, endMediaMs: end > start ? end : start + (start < Int64.max ? 1 : 0),
                     speaker: turn.speaker, legacyAssignments: legacyAssignments)
+                let label = speaker(start, end > start ? end : start + 1)
                 if let last = out.last, last.person?.id == resolved?.person.id,
                    last.isVoiceMatch == (resolved?.isVoiceMatch ?? false),
+                   last.originalSpeaker == label,
                    start - last.endMs < 1_000 {
                     out[out.count - 1].text += unit.text
                     out[out.count - 1].endMs = max(last.endMs, end)
                     out[out.count - 1].words += unit.words
                 } else {
                     out.append(SpeakerAttributedTurn(text: unit.text, startMs: start, endMs: end,
-                        originalSpeaker: turn.speaker, person: resolved?.person,
+                        originalSpeaker: label, person: resolved?.person,
                         isVoiceMatch: resolved?.isVoiceMatch ?? false, words: unit.words, confidence: turn.confidence))
                 }
             }

@@ -661,6 +661,31 @@ public struct VoiceSpeakerStore: Sendable {
         }
     }
 
+    /// These recordings' speakers, numbered in each recording by when they first spoke.
+    static func ownSpeakers(_ d: Database, segmentIds: [String]) throws -> [VoiceOwnSpeaker] {
+        guard !segmentIds.isEmpty else { return [] }
+        let marks = Array(repeating: "?", count: segmentIds.count).joined(separator: ",")
+        let rows = try Row.fetchAll(d, sql: "SELECT id, segmentId, cropsJSON FROM voice_speakers WHERE segmentId IN (\(marks))",
+                                    arguments: StatementArguments(segmentIds))
+        var bySegment: [String: [(id: Int64, crops: [Range<Int64>])]] = [:]
+        for row in rows {
+            let crops = decode(row["cropsJSON"]).map { $0.startMs..<max($0.startMs + 1, $0.endMs) }
+            guard !crops.isEmpty else { continue }
+            bySegment[row["segmentId"], default: []].append((row["id"], crops))
+        }
+        var out: [VoiceOwnSpeaker] = []
+        for segmentId in bySegment.keys.sorted() {
+            let speakers = bySegment[segmentId]!.sorted {
+                let a = $0.crops.map(\.lowerBound).min()!, b = $1.crops.map(\.lowerBound).min()!
+                return a == b ? $0.id < $1.id : a < b
+            }
+            for (index, speaker) in speakers.enumerated() {
+                out.append(VoiceOwnSpeaker(segmentId: segmentId, label: String(index + 1), crops: speaker.crops))
+            }
+        }
+        return out
+    }
+
     // --- codec --------------------------------------------------------------------------------
 
     /// A recording's id leads with when it began.

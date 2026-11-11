@@ -97,7 +97,8 @@ enum TranscriptItems {
         // clock and cutting rules this used to spell out here).
         var renderSegments = segments
         var resolvedByKey: [String: SpeakerAttributedTurn] = [:]
-        if timebase == .media, !identities.automaticAttributions.isEmpty || !identities.corrections.isEmpty {
+        if timebase == .media, !identities.automaticAttributions.isEmpty || !identities.corrections.isEmpty
+            || identities.ownSpeakers.contains(where: { $0.segmentId == segmentId }) {
             let attributed = SpeakerAttribution.attributedTurns(
                 segments: segments.map { Transcription.TranscriptSegment(text: $0.text, startMs: $0.startMs,
                                                                           endMs: $0.endMs, speaker: $0.speaker) },
