@@ -57,6 +57,26 @@ struct SpeakerAttributionTests {
         #expect(untimed.map(\.originalSpeaker) == ["1", "2"], "Whole turns, with no word timings")
     }
 
+    /// A speaker for a single word is noise, and a word the app heard nobody say belongs to
+    /// whoever was talking around it: neither starts a new turn.
+    @Test func strayWordsAndUnheardWordsStayWithTheSpeakerAroundThem() {
+        let text = "So I said we should go early and then nobody came."
+        let tokens = text.split(separator: " ").map(String.init)
+        let words = tokens.enumerated().map { index, token in
+            TranscriptWord(text: token, startMs: Int64(index) * 400, endMs: Int64(index) * 400 + 300)
+        }
+        let identity = SpeakerIdentitySnapshot(ownSpeakers: [
+            // Speaker 1 throughout, with one word that sounded like speaker 2 and a stretch
+            // (words 7-8) no clip covers at all.
+            VoiceOwnSpeaker(segmentId: "s", label: "1", crops: [0..<1_600, 2_000..<2_700, 3_600..<4_500]),
+            VoiceOwnSpeaker(segmentId: "s", label: "2", crops: [1_600..<1_950]),
+        ])
+        let turns = SpeakerAttribution.attributedTurns(segments: [TranscriptSegment(text: text, startMs: 0, endMs: 4_500)],
+            words: words, segmentId: "s", identity: identity, legacyAssignments: [])
+        #expect(turns.map(\.originalSpeaker) == ["1"])
+        #expect(turns.map(\.text).joined() == text)
+    }
+
     @Test func wordAlignmentNamesOnlyCoveredWordsAndPreservesEveryOriginalCharacter() {
         let transcript = SegmentTranscript(segmentId: "s", text: "Hello,  Alex! Bye.", modeUsed: .localOnly,
             providerId: "test", createdAtMs: 0,

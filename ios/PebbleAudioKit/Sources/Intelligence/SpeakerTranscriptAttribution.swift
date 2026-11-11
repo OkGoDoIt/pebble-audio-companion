@@ -32,11 +32,18 @@ public enum SpeakerTranscriptAttribution {
         let ordered = words.sorted { $0.startMs < $1.startMs }
         // Looked up per word below: only this recording's rows, however long the conversation.
         let identity = identity.narrowed(to: segmentId)
+        // The last of the app's own speakers heard, carried over words it heard nobody say.
+        var carried: (label: String, endMs: Int64)?
         return segments.flatMap { turn -> [SpeakerAttributedTurn] in
             // A transcript with no speaker labels takes the speakers the app told apart itself.
             let provided = turn.speaker.flatMap { $0.isEmpty ? nil : $0 }
-            func speaker(_ start: Int64, _ end: Int64) -> String? {
-                provided ?? identity.ownSpeaker(segmentId: segmentId, startMediaMs: start, endMediaMs: end)
+            func own(_ start: Int64, _ end: Int64) -> String? {
+                identity.ownSpeaker(segmentId: segmentId, startMediaMs: start, endMediaMs: end)
+            }
+            /// A short pause doesn't change who's talking.
+            func carriedLabel(at start: Int64) -> String? {
+                guard let carried, start - carried.endMs < Self.carryMs else { return nil }
+                return carried.label
             }
             var low = 0, high = ordered.count
             while low < high {
@@ -71,8 +78,13 @@ public enum SpeakerTranscriptAttribution {
             guard !words.isEmpty, tokenText == expected else {
                 let resolved = identity.resolvedIdentity(segmentId: segmentId, startMediaMs: turn.startMs,
                     endMediaMs: turn.endMs, speaker: turn.speaker, legacyAssignments: legacyAssignments)
+                var label = provided
+                if provided == nil, resolved == nil {
+                    label = own(turn.startMs, turn.endMs) ?? carriedLabel(at: turn.startMs)
+                    if let label { carried = (label, turn.endMs) }
+                }
                 return [SpeakerAttributedTurn(text: turn.text, startMs: turn.startMs, endMs: turn.endMs,
-                    originalSpeaker: speaker(turn.startMs, turn.endMs), person: resolved?.person,
+                    originalSpeaker: label, person: resolved?.person,
                     isVoiceMatch: resolved?.isVoiceMatch ?? false, words: words, confidence: turn.confidence)]
             }
             // Provider "words" can be subword tokens, including zero-duration syllables.
@@ -100,8 +112,7 @@ public enum SpeakerTranscriptAttribution {
                     units.append((text, [word]))
                 }
             }
-            var out: [SpeakerAttributedTurn] = []
-            for unit in units {
+            var entries: [WordRun] = units.map { unit in
                 let lexical = unit.words.filter { $0.text.contains { $0.isLetter || $0.isNumber } }
                 let timed = lexical.isEmpty ? unit.words : lexical
                 let start = timed.map(\.startMs).min()!
@@ -111,22 +122,88 @@ public enum SpeakerTranscriptAttribution {
                 let resolved = identity.resolvedWordIdentity(segmentId: segmentId,
                     startMediaMs: start, endMediaMs: end > start ? end : start + (start < Int64.max ? 1 : 0),
                     speaker: turn.speaker, legacyAssignments: legacyAssignments)
-                let label = speaker(start, end > start ? end : start + 1)
-                if let last = out.last, last.person?.id == resolved?.person.id,
-                   last.isVoiceMatch == (resolved?.isVoiceMatch ?? false),
-                   last.originalSpeaker == label,
-                   start - last.endMs < 1_000 {
-                    out[out.count - 1].text += unit.text
-                    out[out.count - 1].endMs = max(last.endMs, end)
-                    out[out.count - 1].words += unit.words
+                return WordRun(text: unit.text, words: unit.words, start: start, end: end, resolved: resolved, label: provided)
+            }
+            if provided == nil { Self.labelOwnSpeakers(&entries, own: own, carried: &carried) }
+            var out: [SpeakerAttributedTurn] = []
+            for entry in entries {
+                if let last = out.last, last.person?.id == entry.resolved?.person.id,
+                   last.isVoiceMatch == (entry.resolved?.isVoiceMatch ?? false),
+                   last.originalSpeaker == entry.label,
+                   entry.start - last.endMs < 1_000 {
+                    out[out.count - 1].text += entry.text
+                    out[out.count - 1].endMs = max(last.endMs, entry.end)
+                    out[out.count - 1].words += entry.words
                 } else {
-                    out.append(SpeakerAttributedTurn(text: unit.text, startMs: start, endMs: end,
-                        originalSpeaker: label, person: resolved?.person,
-                        isVoiceMatch: resolved?.isVoiceMatch ?? false, words: unit.words, confidence: turn.confidence))
+                    out.append(SpeakerAttributedTurn(text: entry.text, startMs: entry.start, endMs: entry.end,
+                        originalSpeaker: entry.label, person: entry.resolved?.person,
+                        isVoiceMatch: entry.resolved?.isVoiceMatch ?? false, words: entry.words, confidence: turn.confidence))
                 }
             }
             return out
         }
     }
 
+    /// How long a pause can run with the same person still talking.
+    static let carryMs: Int64 = 2_000
+    /// A label held for this few words, between others, is a stray and not a new speaker.
+    static let strayWords = 2
+    /// A pause this short either side means the words ran on without a break.
+    static let strayPauseMs: Int64 = 500
+
+    /// Unnamed words take the app's own speakers. Named words keep their name, and don't split
+    /// on a speaker number nobody sees. Words the app heard nobody say carry the speaker around
+    /// them, and a stray word or two takes its neighbour's: a speaker for one word is noise.
+    fileprivate static func labelOwnSpeakers(_ entries: inout [WordRun], own: (Int64, Int64) -> String?,
+                                             carried: inout (label: String, endMs: Int64)?) {
+        let unnamed = entries.indices.filter { entries[$0].resolved == nil }
+        for index in unnamed {
+            let entry = entries[index]
+            entries[index].label = own(entry.start, entry.end > entry.start ? entry.end : entry.start + 1)
+        }
+        // Heard by nobody: the speaker just before, across a short pause, else the next one heard.
+        var previous = carried
+        for index in unnamed {
+            if let label = entries[index].label {
+                previous = (label, entries[index].end)
+            } else if let previous, entries[index].start - previous.endMs < carryMs {
+                entries[index].label = previous.label
+            }
+        }
+        var next: String?
+        for index in unnamed.reversed() {
+            if let label = entries[index].label { next = label } else { entries[index].label = next }
+        }
+        // Strays: a word or two mid-flow, with the same person either side and no pause around
+        // it, is theirs. A short reply after a pause ("Yes, twice.") is a turn of its own.
+        var runStart = 0
+        while runStart < unnamed.count {
+            var runEnd = runStart
+            while runEnd + 1 < unnamed.count, unnamed[runEnd + 1] == unnamed[runEnd] + 1,
+                  entries[unnamed[runEnd + 1]].label == entries[unnamed[runStart]].label { runEnd += 1 }
+            let first = unnamed[runStart], last = unnamed[runEnd]
+            let words = (runStart...runEnd).reduce(0) { $0 + entries[unnamed[$1]].wordCount }
+            if words <= strayWords, runStart > 0, runEnd + 1 < unnamed.count,
+               unnamed[runStart - 1] == first - 1, unnamed[runEnd + 1] == last + 1,
+               let neighbour = entries[first - 1].label, neighbour == entries[last + 1].label,
+               neighbour != entries[first].label,
+               entries[first].start - entries[first - 1].end < strayPauseMs,
+               entries[last + 1].start - entries[last].end < strayPauseMs {
+                for index in first...last { entries[index].label = neighbour }
+            }
+            runStart = runEnd + 1
+        }
+        if let last = unnamed.last, let label = entries[last].label { carried = (label, entries[last].end) }
+    }
+}
+
+/// A word, or a few run together, on its way to becoming part of a turn.
+fileprivate struct WordRun {
+    var text: String
+    var words: [Transcription.TranscriptWord]
+    var start: Int64
+    var end: Int64
+    var resolved: ResolvedSpeakerIdentity?
+    var label: String?
+    var wordCount: Int { text.split(whereSeparator: { $0.isWhitespace }).count }
 }
