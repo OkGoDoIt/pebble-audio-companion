@@ -41,6 +41,13 @@ Measured offline on 223 real recordings: the wearer's group is 62.9% of crop spe
 labels that exist today. Leave-one-out: wearer 98 s right and 1 s unnamed, others 33 s correctly
 unnamed, one 3 s slip. All 10 same-recording pairs in one group shared a Soniox label.
 
+**Transcripts with no speaker labels** (2026-11-11). On-device transcription gives none, so the
+app's own speakers label them: Speaker 1, Speaker 2, numbered in each recording by who spoke
+first, from `voice_speakers` via `SpeakerIdentitySnapshot.ownSpeakers`. Names win, and a provider's
+labels are never replaced. Words no clip covers carry the speaker around them (pause < 2 s). A
+word or two mid-flow, with one person on both sides and pauses < 0.5 s, is folded into theirs. The
+numbering restarts per recording, as provider labels do.
+
 **The screens** (approved 2026-11-05, canvas mockups round 2):
 
 - *People & voices*: coverage ("55% of what's been said has a name", a bar in each person's colour),
