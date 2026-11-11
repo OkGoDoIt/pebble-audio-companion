@@ -53,6 +53,16 @@ public enum AiModels {
             recommended: true,
             contextTokens: 922_000
         ),
+        // GPT-6.1 Terra (added 2026-11-11; released by OpenAI 2026-10-26): the middle of the
+        // ladder at $1/$5 per MTok — ten times GPT-6 Luna, half GPT-6.1 Sol. Same window and
+        // the same request shape (Responses API, low/medium effort, structured outputs).
+        AiModelSpec(
+            id: "gpt-6.1-terra",
+            displayName: "GPT-6.1 Terra",
+            description: "Balances intelligence and cost: more capable than GPT-6 Luna on hard "
+                + "questions, at half GPT-6.1 Sol's price.",
+            contextTokens: 922_000
+        ),
         AiModelSpec(
             id: "gpt-6.1-sol",
             displayName: "GPT-6.1 Sol",
@@ -79,14 +89,14 @@ public enum AiModels {
         AiModelSpec(
             id: "gpt-5.6-terra",
             displayName: "GPT-5.6 Terra",
-            description: "Balances intelligence and cost. Stronger on long, noisy, or "
-                + "many-speaker transcripts; GPT-6.1 Sol costs slightly less.",
+            description: "The previous middle model. GPT-6.1 Terra is newer and costs about "
+                + "half as much.",
             contextTokens: 400_000
         ),
         AiModelSpec(
             id: "gpt-5.6-sol",
             displayName: "GPT-5.6 Sol",
-            description: "The previous frontier model, at twice GPT-6.1 Sol's price.",
+            description: "The previous frontier model, at more than twice GPT-6.1 Sol's price.",
             contextTokens: 400_000
         ),
     ]
