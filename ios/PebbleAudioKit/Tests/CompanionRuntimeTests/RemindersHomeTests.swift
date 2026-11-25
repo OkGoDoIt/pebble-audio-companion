@@ -1,4 +1,5 @@
 import AppDB
+import EventKit
 import Foundation
 import Testing
 
@@ -37,7 +38,7 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             counter += 1
             let item = AppleReminder(
                 id: "apple-\(counter)", listId: listId, title: draft.title, done: draft.done,
-                dueAtMs: draft.dueAtMs, dueHasTime: false, modifiedAtMs: clock)
+                dueAtMs: draft.dueAtMs, dueHasTime: false, modifiedAtMs: clock, link: draft.url)
             _items[item.id] = item
             return item
         }
@@ -48,6 +49,7 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             item.title = draft.title
             item.done = draft.done
             item.dueAtMs = draft.dueAtMs
+            item.link = draft.url ?? item.link
             item.modifiedAtMs = clock
             _items[id] = item
             return item
@@ -64,6 +66,33 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
     func delete(id: String) throws {
         if failDelete { throw CocoaError(.fileWriteUnknown) }
         lock.withLock { _items[id] = nil }
+    }
+    private(set) var linkWrites = 0
+    /// A list that takes the save and keeps no link.
+    var dropsLinks = false
+    func setLink(_ link: URL, on id: String) throws {
+        lock.withLock {
+            linkWrites += 1
+            if !dropsLinks { _items[id]?.link = link }
+        }
+    }
+    func linked(to followUpIds: Set<String>) async -> [String: AppleReminder] {
+        lock.withLock {
+            var found: [String: AppleReminder] = [:]
+            for item in _items.values {
+                if let id = ReminderLink.followUpId(in: item.link), followUpIds.contains(id) { found[id] = item }
+            }
+            return found
+        }
+    }
+    /// The same reminder under a new identifier, as a move to another account leaves it.
+    func reidentify(_ id: String, as new: String, listId: String) {
+        lock.withLock {
+            guard var item = _items.removeValue(forKey: id) else { return }
+            item.id = new
+            item.listId = listId
+            _items[new] = item
+        }
     }
     func reminders(ids: [String]) -> [AppleReminder] { lock.withLock { ids.compactMap { _items[$0] } } }
     func observeChanges(_ onChange: @escaping @Sendable () -> Void) -> AnyObject { NSObject() }
@@ -236,6 +265,87 @@ private final class FakeAlerts: ReminderAlertScheduling, @unchecked Sendable {
         #expect(apple.item(a)?.done == true)
         #expect(apple.item(b) == nil)
         #expect(try await store.load(id: "b")?.appleId == nil)
+    }
+
+    @Test func aReminderLinksBackAndOlderOnesGetTheirLinkOnce() async throws {
+        try await put("a")
+        try await put("b")
+        try await put("finished")
+        let home = home()
+        apple.clock = now - 60_000
+        try await home.switchToApple(.existing(id: "todo"))
+        let a = try #require(try await store.load(id: "a")?.appleId)
+        let finished = try #require(try await store.load(id: "finished")?.appleId)
+        #expect(apple.item(a)?.link?.absoluteString == "companion://followup/a")
+
+        // Made before the link worked, in the form the app could not open.
+        apple.edit(a, at: now - 60_000) { $0.link = URL(string: "companion://followup?id=a") }
+        apple.edit(finished, at: now + 5_000) {
+            $0.link = nil
+            $0.done = true
+        }
+        await home.sync()
+        await home.sync()
+        #expect(apple.item(a)?.link?.absoluteString == "companion://followup/a")
+        #expect(apple.linkWrites == 1)
+
+        // One that won't hold a link is tried once, not on every change it causes.
+        let b = try #require(try await store.load(id: "b")?.appleId)
+        apple.dropsLinks = true
+        apple.edit(b, at: now - 60_000) { $0.link = nil }
+        for _ in 0..<3 { await home.sync() }
+        #expect(apple.linkWrites == 2)
+    }
+
+    @Test func aReminderWithANewIdentifierIsFoundByItsLinkNotFiledAway() async throws {
+        try await put("a")
+        try await put("b")
+        let home = home()
+        try await home.switchToApple(.existing(id: "todo"))
+        let a = try #require(try await store.load(id: "a")?.appleId)
+        let b = try #require(try await store.load(id: "b")?.appleId)
+        apple.reidentify(a, as: "moved", listId: "groceries")
+        apple.edit("moved", at: now + 5_000) { $0.done = true }
+        try apple.delete(id: b)
+        await home.sync()
+
+        let found = try await store.load(id: "a")
+        #expect(found?.appleId == "moved" && found?.appleListId == "groceries")
+        #expect(found?.archivedAtMs == nil && found?.done == true)
+        // One that is really gone still leaves the list.
+        #expect(try await store.load(id: "b")?.archivedAtMs != nil)
+    }
+
+    @Test func anAppSideChangeKeepsWhatThePersonPutOnTheReminder() throws {
+        let day = RemindersHome.startOfDay(now)
+        let date = { (ms: Int64) in Date(timeIntervalSince1970: Double(ms) / 1000) }
+        let reminder = EKReminder(eventStore: EKEventStore())
+        let place = EKAlarm()
+        place.structuredLocation = EKStructuredLocation(title: "Home")
+        place.proximity = .enter
+
+        // Due at 3:30 PM, set in Reminders, with its alarm and one for a place.
+        var parts = Calendar.current.dateComponents([.year, .month, .day], from: date(day))
+        parts.hour = 15
+        parts.minute = 30
+        reminder.dueDateComponents = parts
+        reminder.alarms = [EKAlarm(absoluteDate: Calendar.current.date(from: parts)!), place]
+
+        // The same day: nothing moves.
+        EventKitReminders.setDueDay(day, alarmAtMs: day + 9 * 3_600_000, on: reminder)
+        #expect(reminder.dueDateComponents?.hour == 15 && reminder.alarms?.count == 2)
+
+        // The next day: still 3:30 PM, its alarm with it, the place alarm untouched.
+        EventKitReminders.setDueDay(day + 86_400_000, alarmAtMs: nil, on: reminder)
+        #expect(reminder.dueDateComponents?.hour == 15 && reminder.dueDateComponents?.minute == 30)
+        let moved = date(day + 86_400_000 + (15 * 60 + 30) * 60_000)
+        #expect(reminder.alarms?.compactMap(\.absoluteDate) == [moved])
+        #expect(reminder.alarms?.contains { $0.structuredLocation != nil } == true)
+
+        // No date: the due alarm goes, the place alarm stays.
+        EventKitReminders.setDueDay(nil, alarmAtMs: nil, on: reminder)
+        #expect(reminder.dueDateComponents == nil)
+        #expect(reminder.alarms?.count == 1 && reminder.alarms?.first?.structuredLocation != nil)
     }
 
     @Test func switchingBackBringsOpenRemindersHome() async throws {

@@ -46,6 +46,9 @@ public actor RemindersHome {
     private var observers: [AnyObject] = []
     private var pending: Task<Void, Never>?
     private var creatingIDs: Set<String> = []
+    /// Reminders given their link this run: once each, so one that won't hold a link (or a link
+    /// someone takes off) is never written again and again.
+    private var linkedThisRun: Set<String> = []
     private var syncing = false
     private var syncAgain = false
 
@@ -226,8 +229,14 @@ public actor RemindersHome {
             apple.reminders(ids: rows.compactMap(\.appleId)).map { ($0.id, $0) },
             uniquingKeysWith: { a, _ in a })
         let now = nowMs()
+        // Not where they were left: before calling one deleted, look for it by the link it
+        // carries. A reminder moved to another account comes back with a new identifier.
+        let lost = Set(
+            rows.filter { $0.appleId.map { onApple[$0] == nil } == true && $0.stage == .reminder
+                && $0.archivedAtMs == nil }.map(\.id))
+        let relinked = lost.isEmpty ? [:] : await apple.linked(to: lost)
         for row in rows {
-            guard let appleId = row.appleId else { continue }
+            guard var appleId = row.appleId else { continue }
             // Off the list in the app: skipped, filed away, or no longer a reminder.
             if row.stage != .reminder || row.archivedAtMs != nil {
                 // Keep the mapping on failure so a later pass can finish the removal.
@@ -235,17 +244,28 @@ public actor RemindersHome {
                 try await followUps.setApple(id: row.id, appleId: nil, listId: nil)
                 continue
             }
-            guard let theirs = onApple[appleId] else {
+            guard let theirs = onApple[appleId] ?? relinked[row.id] else {
                 // Deleted in Apple Reminders: it leaves the list here too, filed away, findable.
                 try await followUps.setArchived(id: row.id, true, nowMs: now)
                 try await followUps.setApple(id: row.id, appleId: nil, listId: nil)
                 log?("reminders: one was deleted in Apple Reminders")
                 continue
             }
-            if theirs.listId != row.appleListId {
+            if theirs.id != appleId || theirs.listId != row.appleListId {
+                if theirs.id != appleId { log?("reminders: one found again by its link") }
+                appleId = theirs.id
                 try await followUps.setApple(id: row.id, appleId: appleId, listId: theirs.listId)
             }
-            guard !Self.agree(row, theirs) else { continue }
+            guard !Self.agree(row, theirs) else {
+                if !row.done, let link = ReminderLink.url(followUpId: row.id), theirs.link != link,
+                    linkedThisRun.insert(appleId).inserted
+                {
+                    do { try apple.setLink(link, on: appleId) } catch {
+                        log?("reminders: one could not take its link: \(error)")
+                    }
+                }
+                continue
+            }
             if Self.changedAt(row) > theirs.modifiedAtMs {
                 _ = try apple.update(id: appleId, to: draft(row, prefs))
             } else {
@@ -304,7 +324,7 @@ public actor RemindersHome {
         AppleReminderDraft(
             title: item.text,
             notes: item.quote.map { "“\($0)”" },
-            url: URL(string: "companion://followup?id=\(item.id)"),
+            url: ReminderLink.url(followUpId: item.id),
             dueAtMs: item.dueAtMs,
             alarmAtMs: prefs.dueAlerts ? item.dueAtMs.map { Self.alertTime($0, prefs) } : nil,
             done: item.done)

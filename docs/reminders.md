@@ -89,9 +89,33 @@ switch happens without asking.
 - Ticked, renamed, re-dated or moved in Apple Reminders: the app follows (by
   `calendarItemIdentifier`, whatever list it is in now).
 - Deleted in Apple Reminders: it leaves the list in the app too (archived, findable).
+- Found by its link before it counts as deleted: a reminder moved to another account gets a new
+  identifier, and the app follows it there.
+- A change made in the app writes the title, the due day, the tick, and the link, and nothing else.
+  Notes, a time of day, places, and alarms the person added in Reminders stay. (The quote goes into
+  the notes once, when the reminder is made.)
 - Access turned off in iOS Settings while the home is Apple: new reminders are kept in the app
   and sent on when access returns; Settings › Reminders shows "Reminders access is off" with
   **Open Settings**.
+
+### Links, both ways
+
+Both were added on 2026-11-25, and both rest on things Apple doesn't document.
+
+- **Reminders to the app.** Each reminder carries `companion://followup/{id}` (`ReminderLink`).
+  Reminders shows the app's icon under the title, and a "Shared from Pebble Audio" row in Details
+  that opens the reminder here, with its quote and its conversation. The link is written twice:
+  in EventKit's public `url`, which Reminders never shows and the app uses to recognize its own,
+  and in `EKReminder`'s `action`, which is not in the headers. Without `action` there is no row and
+  nothing else changes. A device with no app for `companion://` shows no row.
+- **The app to Reminders.** **Open in Reminders** on a reminder opens that reminder's Details, at
+  `x-apple-reminderkit://REMCDReminder/{calendarItemIdentifier}/details`.
+- Open reminders made earlier get their link on the next sync, once each. `url` is what decides
+  whether one needs it, so a link a list won't keep is tried once per launch.
+
+What was tried, on an iOS 27.0 simulator with a local list: `url` alone is saved and never shown;
+`companion://` in the notes is tappable but shows the raw address; ReminderKit's URL attachments,
+tags, and `NSUserActivity` saved and showed nothing.
 
 ## Alerts
 
