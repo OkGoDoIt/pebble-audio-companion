@@ -51,7 +51,8 @@ final class FakeUbiquity: UbiquityFiles, @unchecked Sendable {
                 isUploading: !uploaded.contains(key) && uploadErrors[key] == nil && !evicted,
                 isDownloaded: !evicted,
                 isDownloading: downloadsPending.contains(key),
-                uploadError: uploadErrors[key])
+                uploadError: uploadErrors[key],
+                uploadOutOfSpace: uploadErrors[key] == "quota exceeded")
         }
     }
 
@@ -521,6 +522,14 @@ final class TierClock: @unchecked Sendable {
         #expect(await w.meta(old).coldStorage?.isEvicted == false)
         #expect(await w.store.readFrames(old).count == 50)
         #expect(await w.tier.summary().lastError?.contains("quota exceeded") == true)
+        #expect(await w.tier.summary().isFull)
+        // Room was made: it goes through, and stops being said.
+        w.files.uploadErrors = [:]
+        w.files.completeUploads()
+        await w.tier.sweep()
+        #expect(await w.tier.summary().isFull == false)
+        #expect(await w.tier.summary().lastError == nil)
+        #expect(await w.meta(old).coldStorage?.isEvicted == true)
     }
 
     @Test func aRangeDeleteOnEvictedAudioSaysItMustBeFetchedFirst() async throws {

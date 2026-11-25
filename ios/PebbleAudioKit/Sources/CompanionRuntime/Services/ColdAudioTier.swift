@@ -49,13 +49,16 @@ public struct UbiquitousFileStatus: Equatable, Sendable {
     public var isDownloaded: Bool
     public var isDownloading: Bool
     public var uploadError: String?
+    /// The upload was refused because the person's iCloud storage is full.
+    public var uploadOutOfSpace: Bool
     public var downloadError: String?
 
     public init(
         exists: Bool, isUploaded: Bool = false, isUploading: Bool = false,
         isDownloaded: Bool = false, isDownloading: Bool = false,
-        uploadError: String? = nil, downloadError: String? = nil
+        uploadError: String? = nil, uploadOutOfSpace: Bool = false, downloadError: String? = nil
     ) {
+        self.uploadOutOfSpace = uploadOutOfSpace
         self.exists = exists
         self.isUploaded = isUploaded
         self.isUploading = isUploading
@@ -176,6 +179,8 @@ public actor ColdAudioTier {
         public var restoring: Restore?
         /// The last thing that went wrong, until the next sweep that goes right.
         public var lastError: String?
+        /// What went wrong is that the person's iCloud storage is full.
+        public var isFull = false
 
         public struct Restore: Equatable, Sendable {
             public var done: Int
@@ -217,6 +222,7 @@ public actor ColdAudioTier {
     private var lastSweepAtMs: Int64?
     private var lastSweptPolicy: ColdStoragePolicy?
     private var lastError: String?
+    private var cloudIsFull = false
     private var pendingAfterLastSweep = false
     /// When each evicted copy was last fetched (or first seen downloaded), for the re-evict.
     private var fetchedAtMs: [String: Int64] = [:]
@@ -308,6 +314,7 @@ public actor ColdAudioTier {
         }
         summary.restoring = restore
         summary.lastError = lastError
+        summary.isFull = cloudIsFull
         return summary
     }
 
@@ -371,6 +378,7 @@ public actor ColdAudioTier {
         var changed = false
         var pending = false
         var sweepError: String?
+        var full = false
         let now = nowMs()
         let metas = await store.listSegments()
         var known = Set<String>()
@@ -436,6 +444,7 @@ public actor ColdAudioTier {
             if !cold.isEvicted {
                 if let error = status.uploadError {
                     sweepError = "upload \(id): \(error)"
+                    full = full || status.uploadOutOfSpace
                     pending = true
                 } else if status.isUploaded, !status.isUploading {
                     do {
@@ -532,6 +541,7 @@ public actor ColdAudioTier {
 
         pendingAfterLastSweep = pending
         lastError = sweepError
+        cloudIsFull = full
         if let sweepError { log.write("cold storage: \(sweepError)") }
         return changed
     }
@@ -664,6 +674,8 @@ public final class FileManagerUbiquity: UbiquityFiles {
             isDownloaded: downloading == .current || downloading == .downloaded,
             isDownloading: values.ubiquitousItemIsDownloading ?? false,
             uploadError: values.ubiquitousItemUploadingError.map { "\($0.localizedDescription)" },
+            uploadOutOfSpace: values.ubiquitousItemUploadingError?.code
+                == NSUbiquitousFileNotUploadedDueToQuotaError,
             downloadError: values.ubiquitousItemDownloadingError.map { "\($0.localizedDescription)" }
         )
     }
