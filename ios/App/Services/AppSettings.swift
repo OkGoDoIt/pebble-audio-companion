@@ -317,11 +317,30 @@ final class AppSettings {
     }
 
     /// REAL (Q7 — the old app's was placebo). Days of audio kept; enforced by retention.
+    /// `AppSettings.keepForever` deletes nothing by age.
     var retentionDays: Int {
         didSet {
-            defaults.set(retentionDays, forKey: Keys.retentionDays)
+            storeRetentionDays()
             mirrorToRuntime()
         }
+    }
+
+    nonisolated static let keepForever = RuntimeSettingsDefaults.keepForever
+
+    /// Forever is its own key, beside a day count every build understands. A build from before
+    /// Forever reads an unknown day count as the 30-day default and deletes everything older on
+    /// its first pass, and an older build can be back on the phone at any time (a branch, a
+    /// rollback). It finds one year instead.
+    private func storeRetentionDays() {
+        let forever = retentionDays == AppSettings.keepForever
+        defaults.set(forever, forKey: Keys.retentionForever)
+        defaults.set(forever ? 365 : retentionDays, forKey: Keys.retentionDays)
+    }
+
+    private static func storedRetentionDays(_ defaults: UserDefaults) -> Int? {
+        if defaults.bool(forKey: Keys.retentionForever) { return keepForever }
+        let days = defaults.integer(forKey: Keys.retentionDays)
+        return retentionOptions.contains(days) ? days : nil
     }
 
     /// Total on-disk limit for stored audio, in bytes. **0 = no limit, and that is the default.**
@@ -468,8 +487,8 @@ final class AppSettings {
         defaults.set(previous.settingValue, forKey: Keys.captureIntent)
     }
 
-    /// The approved "Keep audio" options (6.7).
-    static let retentionOptions = [7, 14, 30, 90, 180, 365]
+    /// The "Keep recordings" options. Sourced from the kit, like the limit below.
+    static let retentionOptions = RuntimeSettingsDefaults.retentionDaysOptions
 
     /// The "Storage limit" options, in bytes; `0` is "No limit" and the default. Sourced from the
     /// kit so the picker can only ever store a value retention understands.
@@ -480,7 +499,7 @@ final class AppSettings {
     /// Row value for a storage limit — "No limit" or e.g. "5 GB". The options are exact
     /// gibibytes, so they are named as round numbers rather than run through a measured-size
     /// formatter that would render the chosen "2 GB" back as "2.0 GB".
-    static func retentionLimitLabel(_ bytes: Int64) -> String {
+    nonisolated static func retentionLimitLabel(_ bytes: Int64) -> String {
         bytes <= 0 ? "No limit" : "\(bytes / (1 << 30)) GB"
     }
 
@@ -603,9 +622,8 @@ final class AppSettings {
             (defaults.object(forKey: Keys.askSemanticRecall) as? Bool) ?? true
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
         onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
-        let storedRetention = defaults.integer(forKey: Keys.retentionDays)
-        retentionDays = AppSettings.retentionOptions.contains(storedRetention)
-            ? storedRetention : 30
+        let storedRetention = AppSettings.storedRetentionDays(defaults)
+        retentionDays = storedRetention ?? RuntimeSettingsDefaults.retentionDays
         // Absent key => 0 => no limit. Nobody has ever been offered this choice, so nobody's
         // audio may be evicted by it until they make one.
         let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
@@ -623,11 +641,11 @@ final class AppSettings {
         // onboarding gate without a reinstall. DEBUG builds only.
         let args = ProcessInfo.processInfo.arguments
         // `-storage.seed` (see `StorageSeed`) fills eight months of recordings; the default
-        // "Keep audio · 30 days" would sweep most of them on the first pass. Read here, before
-        // the composition runs that pass.
-        if args.contains("-storage.seed") {
+        // "Keep recordings · 1 month" would sweep most of them on the first pass. Read here,
+        // before the composition runs that pass; a choice made since is left alone.
+        if args.contains("-storage.seed"), storedRetention == nil {
             retentionDays = 365
-            defaults.set(365, forKey: Keys.retentionDays)
+            storeRetentionDays()
         }
         if args.contains("-onboarding.reset") {
             onboardingComplete = false
@@ -702,8 +720,7 @@ final class AppSettings {
             askSemanticRecallEnabled = stored
         }
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
-        let storedRetention = defaults.integer(forKey: Keys.retentionDays)
-        if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
+        if let stored = AppSettings.storedRetentionDays(defaults) { retentionDays = stored }
         let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
         if AppSettings.retentionLimitOptions.contains(storedLimit) { retentionMaxBytes = storedLimit }
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
@@ -747,6 +764,7 @@ final class AppSettings {
         static let wavExport = "automatic_wav_export"
         static let onboardingComplete = "onboarding_complete"
         static let retentionDays = "retention_days"
+        static let retentionForever = "retention_forever"
         static let retentionMaxBytes = "retention_max_bytes"
         static let transcriptsConfigured = "transcripts_configured"
         static let lossAlerts = "loss_alerts_enabled"

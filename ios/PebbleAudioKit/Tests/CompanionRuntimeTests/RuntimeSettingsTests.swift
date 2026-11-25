@@ -43,6 +43,21 @@ import Transcription
         #expect(RuntimeSettingsSnapshot(retentionDays: 0).retentionConfig.maxAgeMs > 0)
     }
 
+    /// "Forever" is no age cap, all the way to the policy retention enforces: not an overflow,
+    /// and not a day.
+    @Test func keepForeverIsNoAgeCapAtAll() {
+        let forever = RuntimeSettingsSnapshot(
+            retentionDays: RuntimeSettingsDefaults.keepForever, coldStorageEnabled: true,
+            coldStorageMinAgeDays: 365)
+        #expect(forever.retentionConfig.maxAgeMs == .max)
+        #expect(retentionConfig(for: forever).maxAgeMs == .max)
+        #expect(forever.retentionConfig.maxTotalBytes == .max)
+        // Nothing is deleted by age, so every move age can happen.
+        #expect(forever.effectiveColdStorageMinAgeDays == 365)
+        #expect(forever.coldStoragePolicy.enabled)
+        #expect(RuntimeSettingsDefaults.retentionDaysOptions.last == RuntimeSettingsDefaults.keepForever)
+    }
+
     // MARK: - The iCloud move age against Keep audio
 
     /// The 2026-10-20 defect: move at 60 days, delete at 30, so the switch moved nothing, ever.
@@ -74,7 +89,7 @@ import Transcription
         #expect(D.effectiveColdStorageMinAgeDays(chosen: 365, retentionDays: 365) == 180)
         #expect(D.effectiveColdStorageMinAgeDays(chosen: 14, retentionDays: 30) == 14)
         // Every pairing the two pickers can store ends younger than Keep audio, or nil.
-        for keep in [7, 14, 30, 90, 180, 365] {
+        for keep in D.retentionDaysOptions {
             for age in D.coldStorageMinAgeOptions {
                 if let effective = D.effectiveColdStorageMinAgeDays(chosen: age, retentionDays: keep) {
                     #expect(effective < keep)

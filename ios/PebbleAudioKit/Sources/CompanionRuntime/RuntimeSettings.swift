@@ -24,6 +24,7 @@ public protocol RuntimeSettings: Sendable {
     var automaticWavExportEnabled: Bool { get }
     var onboardingComplete: Bool { get }
     /// REAL (the KMP one was placebo): days of audio kept, wired into `RetentionManager`.
+    /// `RuntimeSettingsDefaults.keepForever` deletes nothing by age.
     var retentionDays: Int { get }
     /// Total on-disk cap for stored audio, wired into `RetentionManager`. **`0` means no limit.**
     /// Defaulted so callers that only expose "Keep audio for N days" need not declare it.
@@ -125,7 +126,7 @@ extension RuntimeSettings {
     /// The retention policy this settings state implies.
     public var retentionConfig: RetentionConfigInputs {
         RetentionConfigInputs(
-            maxAgeMs: Int64(max(1, retentionDays)) * 24 * 60 * 60 * 1000,
+            maxAgeMs: RuntimeSettingsDefaults.maxAgeMs(retentionDays: retentionDays),
             // 0 (and anything below it) is "no size limit", not "delete everything on the next
             // sweep" — which is what a literal 0 would have meant to `RetentionManager`.
             maxTotalBytes: retentionMaxBytes > 0 ? retentionMaxBytes : .max
@@ -195,6 +196,23 @@ public enum RuntimeSettingsDefaults {
     ]
 
     public static let retentionDays = 30
+
+    /// "Keep recordings · Forever": no recording is ever old enough to delete. The largest value
+    /// on purpose, so every comparison against an age ("is the move age younger than this?")
+    /// is right without knowing about it, and any code that forgets it errs toward keeping.
+    public static let keepForever = Int.max
+
+    /// The "Keep recordings" choices, in days, shortest first.
+    public static let retentionDaysOptions = [7, 14, 30, 90, 180, 365, keepForever]
+
+    /// `retentionDays` as the age cap retention enforces. Zero and below are clamped to a day
+    /// rather than read as "delete everything"; anything too large to express in milliseconds,
+    /// which `keepForever` is, is no cap at all.
+    public static func maxAgeMs(retentionDays: Int) -> Int64 {
+        let (ms, overflow) = Int64(max(1, retentionDays))
+            .multipliedReportingOverflow(by: 24 * 60 * 60 * 1000)
+        return overflow ? .max : ms
+    }
 
     /// Off until chosen: audio leaving the phone is a rule the person has to have seen.
     public static let coldStorageEnabled = false
