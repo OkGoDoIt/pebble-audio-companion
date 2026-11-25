@@ -181,13 +181,22 @@ public actor EnrichmentService {
     /// Recording-now screen, all of which read the grouped tables — was blocked behind however
     /// long the AI backlog took. A migrated library with 145 unenriched conversations therefore
     /// froze the world at whatever moment the backfill started, while recording carried on.
-    public func enrichPass() async throws -> [String] {
+    ///
+    /// `liveOnly` looks at the conversation still being recorded (and any whose ends can still
+    /// move) and nothing else. See `PipelinePass` for when that is enough.
+    public func enrichPass(liveOnly: Bool = false) async throws -> [String] {
         isEnriching = true
         defer { isEnriching = false }
         // A cloud AI account on hold is checked here, on its own schedule, before anything asks
         // whether the router is available — see `EnrichmentWorker.probeHeldAccountIfDue`. A
         // success lifts the hold, whose handler wakes every stage it parked.
         await worker.probeHeldAccountIfDue(foreground: isForeground())
+        if liveOnly {
+            let open = await enrichmentInputs().filter(\.isOpen)
+            guard !open.isEmpty else { return [] }
+            return try await worker.enrich(
+                open, pieceTranscriptOf: pieceTranscriptOf, liveTextOf: liveTextOf)
+        }
         // The boundary review rides in the AI stage rather than the grouping one on purpose:
         // `regroupPass` is deliberately AI-free so the whole app's view of reality never waits
         // on a provider. Verdicts written here are read by the NEXT regroup, so a confirmed

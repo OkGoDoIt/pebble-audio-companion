@@ -96,6 +96,21 @@ import Testing
         #expect(store.version("seg-1") != first)
     }
 
+    /// The version is remembered, so every way this store changes a file has to forget it.
+    @Test func everyWriteAndDeleteMovesTheRememberedVersion() throws {
+        let store = store(try makeTempRoot("transcripts"))
+        #expect(store.version("seg-1") == "absent")
+        try store.save("seg-1", result: routed("hello world"))
+        #expect(store.version("seg-1") != "absent", "an absence is not remembered past a save")
+        try store.save("seg-2", result: routed("another"))
+        _ = store.version("seg-2")
+        try store.delete("seg-1")
+        #expect(store.version("seg-1") == "absent")
+        #expect(store.version("seg-2") != "absent")
+        try store.deleteAll()
+        #expect(store.version("seg-2") == "absent")
+    }
+
     @Test func loadOfMissingSegmentIsNull() throws {
         #expect(store(try makeTempRoot("transcripts")).load("seg-missing") == nil)
     }

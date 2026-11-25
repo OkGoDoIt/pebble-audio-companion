@@ -96,6 +96,17 @@ public struct FollowUpExtractionStore: Sendable {
                     """)
             // The retry bookkeeping `AiRetryPolicy` needs, added in place so a table created by
             // an earlier build picks it up.
+            // What each conversation's transcripts measured, so a launch does not decode the
+            // library to learn it again. Purely derived: see `FollowUpWorker.Measured`.
+            try db.execute(
+                sql: """
+                    CREATE TABLE IF NOT EXISTS follow_up_measures (
+                        conversationId TEXT PRIMARY KEY,
+                        epoch TEXT NOT NULL,
+                        inputKey TEXT NOT NULL,
+                        combined INTEGER
+                    )
+                    """)
             let existing = Set(try db.columns(in: "follow_up_extractions").map(\.name))
             let additions: [(name: String, definition: String)] = [
                 ("nextAttemptAtMs", "INTEGER"),
@@ -172,6 +183,44 @@ public struct FollowUpExtractionStore: Sendable {
             try db.execute(
                 sql: "DELETE FROM follow_up_extractions WHERE conversationId = ?",
                 arguments: [conversationId])
+            try db.execute(
+                sql: "DELETE FROM follow_up_measures WHERE conversationId = ?",
+                arguments: [conversationId])
+        }
+    }
+
+    /// The measures kept under `epoch`, by conversation. Anything from another epoch, or about a
+    /// conversation that is gone, is removed on the way.
+    func measures(epoch: String) async throws -> [String: (key: String, combined: Int?)] {
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM follow_up_measures
+                    WHERE epoch <> ? OR conversationId NOT IN (SELECT id FROM conversations)
+                    """, arguments: [epoch])
+            var out: [String: (key: String, combined: Int?)] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM follow_up_measures") {
+                out[row["conversationId"]] = (row["inputKey"], row["combined"])
+            }
+            return out
+        }
+    }
+
+    func saveMeasures(
+        _ measures: [String: (key: String, combined: Int?)], epoch: String
+    ) async throws {
+        guard !measures.isEmpty else { return }
+        try await db.writer.write { db in
+            for (id, measure) in measures {
+                try db.execute(
+                    sql: """
+                        INSERT INTO follow_up_measures (conversationId, epoch, inputKey, combined)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(conversationId) DO UPDATE SET
+                            epoch = excluded.epoch, inputKey = excluded.inputKey,
+                            combined = excluded.combined
+                        """, arguments: [id, epoch, measure.key, measure.combined])
+            }
         }
     }
 
@@ -297,11 +346,22 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// Freshness is judged on that length, and computing it means reading and JSON-decoding
     /// every member transcript; without the memo every pass did that for every finished
     /// conversation in the library, settled or not (see `EnrichmentWorker`).
+    ///
+    /// `combined` is nil for a conversation whose pieces hold no words at all. That answer has to
+    /// be remembered like any other: until 2026-11-25 it was not, and the 364 such conversations
+    /// of one library were decoded again on every pass.
+    ///
+    /// Kept in the database too (`follow_up_measures`), because iOS relaunches this app many
+    /// times a day and each launch used to decode every transcript to fill this in again. The
+    /// epoch is the build: a new one may clean transcripts differently, so it measures afresh.
     private struct Measured: Equatable {
         let key: String
-        let combined: Int
+        let combined: Int?
     }
     private let measured = TranscriptMemo<Measured>()
+    private let measureEpoch: String?
+    private let measuresLock = NSLock()
+    private var measuresLoaded = false
 
     /// `follow_up_covered_segments`, read once. The table is written by a migration and never
     /// again, so there is nothing to go stale; an empty set — every install that did not
@@ -318,9 +378,11 @@ public final class FollowUpWorker: @unchecked Sendable {
         contextOf: @escaping @Sendable (String) async -> FollowUpConversationContext? =
             { _ in nil },
         transcriptVersionOf: @escaping @Sendable (String) -> String? = { _ in nil },
+        measureEpoch: String? = nil,
         momentsBetween: @escaping @Sendable (Int64, Int64) async -> [Int64] = { _, _ in [] }
     ) {
         self.momentsBetween = momentsBetween
+        self.measureEpoch = measureEpoch
         self.candidates = candidates
         self.state = state
         self.router = router
@@ -361,6 +423,46 @@ public final class FollowUpWorker: @unchecked Sendable {
         guard let activeRouter = router else { return 0 }
         guard await activeRouter.isAvailable() else { return 0 }
 
+        await loadMeasures()
+        var fresh: [String: (key: String, combined: Int?)] = [:]
+        do {
+            let proposed = try await extractDue(
+                conversations, router: activeRouter, pieceTranscriptOf: pieceTranscriptOf,
+                speakerIdentityOf: speakerIdentityOf, measuredNow: &fresh)
+            await saveMeasures(fresh)
+            return proposed
+        } catch {
+            // A cancelled pass keeps what it measured: on a large library it is the only way the
+            // next one gets further.
+            await saveMeasures(fresh)
+            throw error
+        }
+    }
+
+    private func loadMeasures() async {
+        guard let measureEpoch, !measuresLock.withLock({ measuresLoaded }) else { return }
+        guard let saved = try? await state.measures(epoch: measureEpoch) else { return }
+        for (id, measure) in saved where measured.value(id) == nil {
+            measured.remember(id, key: Measured(key: measure.key, combined: measure.combined))
+        }
+        measuresLock.withLock { measuresLoaded = true }
+    }
+
+    /// Best effort: a measure that is not saved is measured again.
+    private func saveMeasures(_ measures: [String: (key: String, combined: Int?)]) async {
+        guard let measureEpoch, !measures.isEmpty else { return }
+        let state = self.state
+        // Its own task, so a cancelled pass still writes.
+        await Task { try? await state.saveMeasures(measures, epoch: measureEpoch) }.value
+    }
+
+    private func extractDue(
+        _ conversations: [EnrichmentConversation],
+        router activeRouter: AiModeRouter,
+        pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?,
+        speakerIdentityOf: ((String) async -> (SpeakerIdentitySnapshot, [SpeakerAssignment]))?,
+        measuredNow: inout [String: (key: String, combined: Int?)]
+    ) async throws -> Int {
         let ordered = conversations.sorted(by: EnrichmentWorker.newestFirst)
         let settledStates = try await state.all()
         let covered = try await coveredSegmentIds()
@@ -405,15 +507,19 @@ public final class FollowUpWorker: @unchecked Sendable {
                     continue
                 }
             }
+            // Nothing that could be read: no transcript is opened for it, so nothing about its
+            // transcripts needs asking either.
+            guard Self.isReadable(conversation) else { continue }
             // Same inputs as last time, and a state that says nothing to do: answer without
             // opening a single transcript. This is the steady state of every finished
             // conversation in the library, on every pass.
             let key = EnrichmentWorker.membershipKey(
                 conversation, transcriptVersionOf: transcriptVersionOf)
-            if let existing, let key,
-                let last = measured.value(conversation.conversationId), last.key == key,
-                last.combined == existing.sourceCharCount
-            {
+            let last = measured.value(conversation.conversationId).flatMap {
+                $0.key == key ? $0 : nil
+            }
+            if let last, last.combined == nil { continue }
+            if let existing, let last, last.combined == existing.sourceCharCount {
                 if existing.settled && !rereadForRequests { continue }
                 if let next = existing.nextAttemptAtMs, now < next { continue }
                 if existing.attempts >= Self.maxAttempts,
@@ -422,13 +528,14 @@ public final class FollowUpWorker: @unchecked Sendable {
                     continue
                 }
             }
-            guard var parts = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
-            else { continue }
-            let combined = parts.map(\.text).joined(separator: "\n\n").count
+            let read = partsIfDue(conversation, pieceTranscriptOf: pieceTranscriptOf)
+            let length = read.map { $0.map(\.text).joined(separator: "\n\n").count }
             if let key {
                 measured.remember(
-                    conversation.conversationId, key: Measured(key: key, combined: combined))
+                    conversation.conversationId, key: Measured(key: key, combined: length))
+                measuredNow[conversation.conversationId] = (key, length)
             }
+            guard var parts = read, let combined = length else { continue }
             // A different transcript length is a different question: start the budget over.
             let fresh = rereadForRequests || (existing.map { $0.sourceCharCount != combined } ?? true)
             if let existing, !fresh {
@@ -524,13 +631,17 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// One part per PIECE: the turns the conversation owns of each member, and nothing of the
     /// rest of that member — which belongs to the conversation before or after, and would
     /// otherwise have its commitments proposed twice, once under each.
+    private static func isReadable(_ conversation: EnrichmentConversation) -> Bool {
+        !conversation.isOpen && !conversation.members.isEmpty
+            && conversation.members.allSatisfy { !$0.isOpen && $0.isFullyTranscribed }
+            && conversation.members.contains { $0.transcriptionState == .complete }
+    }
+
     private func partsIfDue(
         _ conversation: EnrichmentConversation,
         pieceTranscriptOf: (ConversationMember) -> SegmentTranscript?
     ) -> [FollowUpSourcePart]? {
-        guard !conversation.isOpen, !conversation.members.isEmpty,
-            conversation.members.allSatisfy({ !$0.isOpen && $0.isFullyTranscribed })
-        else { return nil }
+        guard Self.isReadable(conversation) else { return nil }
         let parts: [FollowUpSourcePart] = conversation.parts.compactMap { member, piece in
             guard member.transcriptionState == .complete,
                 let transcript = pieceTranscriptOf(piece)

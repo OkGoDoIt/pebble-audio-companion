@@ -201,6 +201,7 @@ public final class FileTranscriptStore: Sendable {
     /// See `save` for what it is for; segment ids are never reused, so an id only ever
     /// enters this set.
     private let deletedSegments = DeletedSegments()
+    private let versions = Versions()
 
     private final class DeletedSegments: @unchecked Sendable {
         var ids: Set<String> = []
@@ -354,12 +355,52 @@ public final class FileTranscriptStore: Sendable {
     /// `CFURLCopyResourcePropertiesForKeys`. The AI stages call this for every member of every
     /// conversation on every pass, and on 2026-09-16 that was 3.3 s of a 5.2 s profile — 64 % of
     /// the app's CPU — confirming that a library nobody had touched was still the same.
+    ///
+    /// And asked of the file system ONCE per file. Even at one `stat` each, the AI stages ask
+    /// about every member of every conversation on every pass: on 2026-11-25 that was 7 s of a
+    /// 46 s foreground profile. Only this store writes these files, so it remembers the answer
+    /// and forgets it on every write and delete of its own.
     public func version(_ segmentId: String) -> String {
+        let (known, epoch) = versions.lookup(segmentId)
+        if let known { return known }
+        let version = versionOnDisk(segmentId)
+        versions.remember(segmentId, version, ifEpoch: epoch)
+        return version
+    }
+
+    private func versionOnDisk(_ segmentId: String) -> String {
         var status = stat()
         guard stat(transcriptURL(segmentId).path, &status) == 0 else { return "absent" }
         let modified =
             Double(status.st_mtimespec.tv_sec) + Double(status.st_mtimespec.tv_nsec) / 1e9
         return "\(status.st_size)@\(modified)"
+    }
+
+    /// The versions already asked for. The epoch is what makes the race safe: a reader that
+    /// looked at the file just before a write must not store what it saw just after it.
+    private final class Versions: @unchecked Sendable {
+        private let lock = NSLock()
+        private var known: [String: String] = [:]
+        private var epoch = 0
+
+        func lookup(_ id: String) -> (version: String?, epoch: Int) {
+            lock.withLock { (known[id], epoch) }
+        }
+        func remember(_ id: String, _ version: String, ifEpoch seen: Int) {
+            lock.withLock { if epoch == seen { known[id] = version } }
+        }
+        func forget(_ id: String) {
+            lock.withLock {
+                known[id] = nil
+                epoch &+= 1
+            }
+        }
+        func forgetAll() {
+            lock.withLock {
+                known = [:]
+                epoch &+= 1
+            }
+        }
     }
 
     /// Just the turn timings, for callers that need to know WHERE speech was and not what was
@@ -420,6 +461,7 @@ public final class FileTranscriptStore: Sendable {
             // Before the files: a save that arrives after this must find the segment deleted
             // even if removing a file throws.
             deletedSegments.ids.insert(segmentId)
+            defer { versions.forget(segmentId) }
             try removeIfExists(transcriptURL(segmentId))
             try removeIfExists(redactionsURL(segmentId))
         }
@@ -427,6 +469,7 @@ public final class FileTranscriptStore: Sendable {
 
     public func deleteAll() throws {
         try writeLock.withLock {
+            defer { versions.forgetAll() }
             let entries =
                 (try? FileManager.default.contentsOfDirectory(
                     at: transcriptsDir, includingPropertiesForKeys: nil)) ?? []
@@ -458,6 +501,7 @@ public final class FileTranscriptStore: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(transcript).write(to: tmp)
+        defer { versions.forget(transcript.segmentId) }
         try atomicMove(from: tmp, to: transcriptURL(transcript.segmentId))
     }
 

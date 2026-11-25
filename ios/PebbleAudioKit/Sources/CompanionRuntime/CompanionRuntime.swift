@@ -203,7 +203,10 @@ public actor CompanionRuntime {
     public nonisolated func notifyConfigChanged(reviveFailures: Bool) {
         wake.signal()
         guard reviveFailures else { return }
-        Task { await environment.transcription.reconsiderAfterConfigurationChange() }
+        Task {
+            await self.noteLibraryScanOwed()
+            await environment.transcription.reconsiderAfterConfigurationChange()
+        }
     }
 
     /// Something that could rescue a failed AI job changed — an `AiRecoveryKey` setting, the
@@ -217,11 +220,14 @@ public actor CompanionRuntime {
             await environment.recap.resetFailureBackoff()
             // The brief stage sleeps until its own backoff ends; that backoff was just lifted.
             await self.noteBriefsOwed()
+            await self.noteLibraryScanOwed()
             wake.signal()
         }
     }
 
     public nonisolated func notifyVoiceConfigurationChanged() { wake.signal() }
+
+    private func noteLibraryScanOwed() { passMemory?.noteLibraryScanOwed() }
 
     private func noteBriefsOwed() {
         passMemory?.noteBriefsOwed(atMs: clock.nowMs)
@@ -864,6 +870,7 @@ public actor CompanionRuntime {
             },
             regroup: { try await env.enrichment.regroupPass() },
             enrich: { try await env.enrichment.enrichPass() },
+            enrichLive: { try await env.enrichment.enrichPass(liveOnly: true) },
             donate: { ids in await env.enrichment.donate(conversationIds: ids) },
             extractFollowUps: { try await env.enrichment.followUpPass() },
             refreshRecap: { try await env.recap.refresh(onProgress: { health.progressed() }) },

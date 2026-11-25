@@ -819,7 +819,7 @@ final class AppComposition {
         // The AI workers memoise against this. A verdict that withholds part of a transcript
         // from the models changes it, so what was built from that text is built again.
         let aiTranscriptVersion: @Sendable (String) -> String = {
-            "\(transcripts.version($0))#\(audioContentMask.aiGeneration($0))"
+            "\(transcripts.version($0))#\(audioContentMask.aiFingerprint($0))"
         }
 
         let enrichment = EnrichmentService(
@@ -845,7 +845,8 @@ final class AppComposition {
                     return FollowUpConversationContext(
                         title: annotation.title, summary: annotation.summary)
                 },
-                transcriptVersionOf: aiTranscriptVersion
+                transcriptVersionOf: aiTranscriptVersion,
+                measureEpoch: "\(BuildInfo.gitRevision) \(BuildInfo.builtAtISO8601)"
             ),
             curator: FollowUpCurator(
                 candidates: followUpCandidates,

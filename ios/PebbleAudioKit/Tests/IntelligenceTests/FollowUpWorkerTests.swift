@@ -202,6 +202,73 @@ private final class LoadCounter: @unchecked Sendable {
         #expect(loads.value > firstPassLoads)
     }
 
+    /// 364 conversations of one library held no words in their own range, and "nothing to read"
+    /// was never remembered: their transcripts were decoded again on every pass.
+    @Test func aConversationWithNothingToReadIsReadOnce() async throws {
+        let provider = ScriptedAiProvider(response: Self.twoItems)
+        let version = VersionBox()
+        let worker = FollowUpWorker(
+            candidates: candidates, state: state,
+            router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly }),
+            nowMs: { [clock] in clock.now }, transcriptVersionOf: { _ in version.value })
+        // The piece is past the end of everything said.
+        let empty = EnrichmentConversation(
+            conversationId: "conv-1", isOpen: false, members: [meta("seg-1")],
+            pieces: [ConversationMember(segmentId: "seg-1", startMediaMs: 3_600_000)])
+        let loads = LoadCounter()
+        for _ in 0..<3 {
+            _ = try await worker.extract([empty], transcriptOf: {
+                loads.increment()
+                return self.transcript($0)
+            })
+        }
+        #expect(loads.value == 1)
+        #expect(provider.runCount == 0)
+
+        // The transcript is rewritten: it is looked at again.
+        version.value = "v2"
+        _ = try await worker.extract([empty], transcriptOf: {
+            loads.increment()
+            return self.transcript($0)
+        })
+        #expect(loads.value == 2)
+    }
+
+    private final class VersionBox: @unchecked Sendable { var value = "v1" }
+
+    /// iOS relaunches the app many times a day; each launch used to decode the whole library.
+    @Test func aRelaunchDoesNotReadTheLibraryAgainAndANewBuildDoes() async throws {
+        let provider = ScriptedAiProvider(response: Self.twoItems)
+        func launch(_ build: String) throws -> FollowUpWorker {
+            FollowUpWorker(
+                candidates: candidates, state: try FollowUpExtractionStore(db: db),
+                router: AiModeRouter(local: provider, remote: nil, mode: { .localOnly }),
+                nowMs: { [clock] in clock.now }, transcriptVersionOf: { _ in "v1" },
+                measureEpoch: build)
+        }
+        try await db.writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO conversations (id, startMs, timezone, state)
+                    VALUES ('conv-1', 0, 'UTC', 'closed')
+                    """)
+        }
+        let convs = [conversation("conv-1", members: [meta("seg-1")])]
+        let loads = LoadCounter()
+        let transcriptOf: (String) -> SegmentTranscript? = {
+            loads.increment()
+            return self.transcript($0)
+        }
+        _ = try await launch("build 1").extract(convs, transcriptOf: transcriptOf)
+        let first = loads.value
+        #expect(provider.runCount == 1)
+        _ = try await launch("build 1").extract(convs, transcriptOf: transcriptOf)
+        #expect(loads.value == first)
+        _ = try await launch("build 2").extract(convs, transcriptOf: transcriptOf)
+        #expect(loads.value > first)
+        #expect(provider.runCount == 1, "measured afresh, and settled as it was")
+    }
+
     @Test func aFinishedConversationProducesGroundedCandidates() async throws {
         let provider = ScriptedAiProvider(response: Self.twoItems)
         let written = try await worker(provider).extract(

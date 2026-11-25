@@ -81,6 +81,14 @@ public final class AudioContentMask: @unchecked Sendable {
         lock.withLock { aiGenerations[segmentId] ?? 0 }
     }
 
+    /// What this segment's AI ranges ARE, where `aiGeneration` only says they changed: the same
+    /// ranges give the same answer in every launch, so it can be part of a key that is kept.
+    public func aiFingerprint(_ segmentId: String) -> String {
+        let ranges = aiRanges(segmentId)
+        guard !ranges.isEmpty else { return "0" }
+        return ranges.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ",")
+    }
+
     /// Changes whenever this segment's speech ranges do; 0 while it has none. Part of the
     /// boundary layer's evidence cache key.
     public func speechGeneration(_ segmentId: String) -> Int {

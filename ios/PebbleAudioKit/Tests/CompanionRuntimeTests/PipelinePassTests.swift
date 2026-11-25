@@ -639,7 +639,10 @@ final class Recorder: @unchecked Sendable {
         #expect(calls.calls == ["enrich", "enrich"])
     }
 
-    @Test("the foreground never consults the gate")
+    /// The finished library is walked when something changed, when work is left, when something
+    /// was changed on purpose, and otherwise once a minute; the conversation being recorded is
+    /// looked at on every pass, because its title follows the talk.
+    @Test("a foreground pass with nothing new looks at the live conversation only")
     func foregroundAlwaysRunsAiStages() async throws {
         let clock = TestClock()
         let recorder = StageRecorder()
@@ -647,15 +650,41 @@ final class Recorder: @unchecked Sendable {
         let memory = PipelinePassMemory()
         var steps = PipelineSteps()
         steps.isForeground = { true }
-        steps.regroup = { false }
+        let changed = Flag()
+        steps.regroup = { changed.value }
         steps.enrich = { calls.record("enrich"); return [] }
+        steps.enrichLive = { calls.record("live"); return [] }
+        steps.judgeAudio = { calls.record("judge"); return false }
+        steps.extractFollowUps = { calls.record("followUps"); return false }
         steps.refreshRecap = { calls.record("recap"); return false }
         let pass = PipelinePass(
             steps: steps, clock: clock, memory: memory, onStage: { recorder.record($0) })
+        let everything = ["judge", "enrich", "followUps", "recap"]
+        _ = try await pass.run()
+        #expect(calls.calls == everything, "the first pass looks at everything")
+        calls.reset()
+
         for _ in 0..<3 { _ = try await pass.run() }
-        #expect(calls.calls.filter { $0 == "enrich" }.count == 3)
-        #expect(calls.calls.filter { $0 == "recap" }.count == 3)
+        #expect(calls.calls == ["live", "recap", "live", "recap", "live", "recap"])
+        calls.reset()
+
+        changed.value = true
+        _ = try await pass.run()
+        #expect(calls.calls == everything, "something changed")
+        changed.value = false
+        calls.reset()
+
+        memory.noteLibraryScanOwed()
+        _ = try await pass.run()
+        #expect(calls.calls == everything, "changed on purpose")
+        calls.reset()
+
+        await clock.advance(by: PipelinePacing.foregroundScanIntervalMs)
+        _ = try await pass.run()
+        #expect(calls.calls == everything, "what only the clock makes due")
     }
+
+    private final class Flag: @unchecked Sendable { var value = false }
 
     @Test("the recap is reconsidered on a long interval while backgrounded")
     func backgroundRecapIsPaced() async throws {

@@ -82,6 +82,9 @@ public struct PipelineSteps: Sendable {
     public var regroup: @Sendable () async throws -> Bool
     /// Returns the conversation ids whose annotation changed.
     public var enrich: @Sendable () async throws -> [String]
+    /// `enrich` for the conversation being recorded only: what keeps its title following the talk
+    /// on a foreground pass that has nothing else to look for.
+    public var enrichLive: @Sendable () async throws -> [String]
     public var donate: @Sendable ([String]) async -> Void
     /// Follow-up extraction over finished conversations. Returns true when it wrote anything.
     public var extractFollowUps: @Sendable () async throws -> Bool
@@ -147,6 +150,7 @@ public struct PipelineSteps: Sendable {
         judgeAudio: @escaping @Sendable () async throws -> Bool = { false },
         regroup: @escaping @Sendable () async throws -> Bool = { true },
         enrich: @escaping @Sendable () async throws -> [String] = { [] },
+        enrichLive: (@Sendable () async throws -> [String])? = nil,
         donate: @escaping @Sendable ([String]) async -> Void = { _ in },
         extractFollowUps: @escaping @Sendable () async throws -> Bool = { false },
         refreshRecap: @escaping @Sendable () async throws -> Bool = { false },
@@ -179,6 +183,7 @@ public struct PipelineSteps: Sendable {
         self.judgeAudio = judgeAudio
         self.regroup = regroup
         self.enrich = enrich
+        self.enrichLive = enrichLive ?? enrich
         self.donate = donate
         self.extractFollowUps = extractFollowUps
         self.refreshRecap = refreshRecap
@@ -217,6 +222,8 @@ public enum PipelinePacing {
     public static let modelIdleTimeoutMs: Int64 = 30_000
     /// Cap on segments transcribed per background catch-up burst.
     public static let catchUpMaxSegments = 10
+    /// How often a foreground pass walks the finished library when nothing has changed.
+    public static let foregroundScanIntervalMs: Int64 = 60_000
     /// How often the daily recap is reconsidered while backgrounded. It is a summary of the
     /// day; nobody is reading it while the app is not open, and the next foreground pass runs
     /// it regardless.
@@ -234,14 +241,16 @@ public enum PipelinePacing {
 /// The grouping stage already computes the one fact needed to skip them — whether ITS inputs
 /// changed — so this carries it, plus whether the AI stages themselves left work behind.
 ///
-/// Foreground passes never consult it: the person is looking, the live title and the Today
-/// card are expected to follow the conversation as it happens, and that freshness is what the
-/// foreground cadence is for.
+/// The foreground consults it too, since 2026-11-25: the live conversation is looked at on every
+/// foreground pass, because its title is expected to follow the talk, but the finished library is
+/// not (23.7 CPU-s of a 45 s foreground profile were spent finding it unchanged). What only the
+/// clock makes due there is found within `PipelinePacing.foregroundScanIntervalMs`.
 public final class PipelinePassMemory: @unchecked Sendable {
     private let lock = NSLock()
     private var _aiStagesLeftWork = true
     private var _lastBackgroundRecapAtMs: Int64?
     private var _briefsDueAtMs: Int64? = 0
+    private var _lastLibraryScanAtMs: Int64?
 
     public init() {}
 
@@ -270,6 +279,19 @@ public final class PipelinePassMemory: @unchecked Sendable {
         get { lock.withLock { _aiStagesLeftWork } }
         set { lock.withLock { _aiStagesLeftWork = newValue } }
     }
+
+    func libraryScanDue(atMs: Int64) -> Bool {
+        lock.withLock {
+            guard let last = _lastLibraryScanAtMs, last <= atMs else { return true }
+            return atMs - last >= PipelinePacing.foregroundScanIntervalMs
+        }
+    }
+
+    func noteLibraryScan(atMs: Int64) { lock.withLock { _lastLibraryScanAtMs = atMs } }
+
+    /// Something was changed on purpose (a setting, a key, a correction, a deletion): the next
+    /// foreground pass looks at everything rather than waiting out the minute.
+    public func noteLibraryScanOwed() { lock.withLock { _lastLibraryScanAtMs = nil } }
 
     /// Nil until the first backgrounded recap has run.
     var lastBackgroundRecapAtMs: Int64? {
@@ -467,26 +489,33 @@ public struct PipelinePass: Sendable {
             archiveChanged = true
         }
 
-        // 7-10 run only when there is something new for them to see. In the FOREGROUND that is
-        //      always: the person is looking, and the live title and Today card are expected to
-        //      follow the conversation as it happens. Backgrounded, the only readers are the
-        //      widget and Spotlight, and the grouping stage has just established whether a
-        //      single input changed. See `PipelinePassMemory`.
+        // 7-10 run only when there is something new for them to see. The grouping stage has just
+        //      established whether a single input changed. Backgrounded, the only readers are the
+        //      widget and Spotlight, and that answer is enough. In the FOREGROUND the live title
+        //      must follow the conversation as it happens, so the live one is always looked at;
+        //      the finished library is walked when something changed, when there is work left,
+        //      and otherwise once a minute (for what only the clock makes due, such as a retry).
+        //      See `PipelinePassMemory`.
         let foreground = steps.isForeground()
-        let aiStagesDue = foreground || groupingChanged || memory.aiStagesLeftWork
+        let scanDue =
+            groupingChanged || memory.aiStagesLeftWork
+            || (foreground && memory.libraryScanDue(atMs: clock.nowMs))
+        let aiStagesDue = foreground || scanDue
+        if scanDue { memory.noteLibraryScan(atMs: clock.nowMs) }
 
         // 6b. What the new transcripts' words are, before anything is titled from them. Its
         //     verdicts land in the NEXT pass's classification (and so the next enrich), which
         //     keeps this pass's inputs consistent with each other.
         let judged = try await stage(
-            .judgeAudio, fallback: false, heavy: true, when: aiStagesDue, steps.judgeAudio)
+            .judgeAudio, fallback: false, heavy: true, when: scanDue, steps.judgeAudio)
         if judged { processed = true }
 
         // 7/8. Titles + summaries, then search/Spotlight donation of exactly what changed.
         //      BOUNDED per pass: the backlog drains over many passes rather than holding this
         //      one open for minutes.
         let enriched = try await stage(
-            .enrich, fallback: [], heavy: true, when: aiStagesDue, steps.enrich)
+            .enrich, fallback: [], heavy: true, when: aiStagesDue,
+            scanDue ? steps.enrich : steps.enrichLive)
         try await stage(.donate, fallback: ()) {
             guard !enriched.isEmpty else { return }
             processed = true
@@ -497,12 +526,12 @@ public struct PipelinePass: Sendable {
         // 9. Follow-up extraction over finished conversations (plan Part 4.5) — after enrich,
         //    on the same durable transcripts, and bounded the same way.
         let followUpsWrote = try await stage(
-            .followUps, fallback: false, heavy: true, when: aiStagesDue, steps.extractFollowUps)
+            .followUps, fallback: false, heavy: true, when: scanDue, steps.extractFollowUps)
         if followUpsWrote {
             processed = true
             await steps.onDiagnosticsDirty()
         }
-        if aiStagesDue {
+        if scanDue {
             memory.aiStagesLeftWork = !enriched.isEmpty || followUpsWrote || judged
         }
         if !enriched.isEmpty || followUpsWrote || judged { archiveChanged = true }
