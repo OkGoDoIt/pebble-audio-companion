@@ -1,5 +1,4 @@
 import Foundation
-import StatusUI
 
 // Settings · Transcription & AI · On this iPhone — which engine transcribes on the phone.
 
@@ -26,7 +25,14 @@ extension Copy {
 
         /// "Needs 1.5 GB, 210 MB free".
         static func needsSpace(_ needed: Int64, free: Int64) -> String {
-            "Needs \(Formatting.storageSize(needed)), \(Formatting.storageSize(free)) free"
+            "Needs \(size(needed)), \(size(free)) free"
+        }
+
+        /// Decimal units, the same ones the model's own size is written in.
+        private static func size(_ bytes: Int64) -> String {
+            let megabytes = Double(bytes) / 1_000_000
+            return megabytes >= 1_000
+                ? String(format: "%.1f GB", megabytes / 1_000) : "\(Int(megabytes.rounded())) MB"
         }
 
         /// VoiceOver's reading of the bar.

@@ -96,5 +96,8 @@ struct LocalModelScreenTests {
     @Test("copy")
     func copy() {
         #expect(Copy.OnThisIPhone.downloaded(0.42, of: 631_823_041) == "265 of 632 MB")
+        #expect(
+            Copy.OnThisIPhone.needsSpace(1_463_646_082, free: 210_000_000)
+                == "Needs 1.5 GB, 210 MB free")
     }
 }

@@ -158,9 +158,12 @@ private struct LocalModelRow: View {
         layout {
             Button(action: choose) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(option.displayName)
-                        .font(AppFont.callout)
-                        .foregroundStyle(Tokens.label)
+                    HStack(spacing: 10) {
+                        Text(option.displayName)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Tokens.label)
+                        if typeSize.isAccessibilitySize { check }
+                    }
                     Text(detail)
                         .font(AppFont.footnote)
                         .foregroundStyle(state == .failed ? Tokens.attention : Tokens.tertiary)
@@ -176,7 +179,9 @@ private struct LocalModelRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(state == .unavailable || state.isBusy)
+            .disabled(state == .unavailable)
+            // Busy rows do nothing, but a disabled button would grey out the progress it shows.
+            .allowsHitTesting(!state.isBusy)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(isInUse ? .isSelected : [])
@@ -228,14 +233,21 @@ private struct LocalModelRow: View {
             NavigationLink(Copy.OnThisIPhone.storage) { SettingsStorageScreen() }
                 .buttonStyle(.smallBordered)
         case .installed:
-            if isInUse {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Tokens.tint)
-                    .accessibilityHidden(true)
-            }
+            if !typeSize.isAccessibilitySize { check }
         case .unavailable:
             EmptyView()
+        }
+    }
+
+    /// Beside the name at accessibility sizes, where the row stacks and a check on its own line
+    /// would belong to nothing.
+    @ViewBuilder
+    private var check: some View {
+        if isInUse {
+            Image(systemName: "checkmark")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Tokens.tint)
+                .accessibilityHidden(true)
         }
     }
 
