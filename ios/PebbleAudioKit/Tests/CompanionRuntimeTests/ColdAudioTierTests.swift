@@ -350,6 +350,7 @@ final class TierClock: @unchecked Sendable {
         await w.tier.sweep()
         #expect(await w.meta(a).coldStorage?.isEvicted == true)
 
+        w.setPolicy(ColdStoragePolicy(enabled: false, minAgeMs: .max))
         await w.tier.beginRestoreAll()
         #expect(await w.tier.summary().restoring == .init(done: 0, total: 2))
         // The first sweep starts the downloads and waits; the next finds them complete (the
@@ -364,8 +365,123 @@ final class TierClock: @unchecked Sendable {
             #expect(await w.store.localLogExists(id))
             #expect(await w.store.readFrames(id).count == 50)
         }
-        // With the rule still on, the next sweep would move them again: a restore is for
-        // people who turned the rule off first, and the screen does that.
+    }
+
+    /// Turning the rule back on ends a restore: what it brought home would only leave again.
+    @Test func turningTheRuleOnEndsARestore() async throws {
+        let w = try World()
+        let old = try await w.segment(ageDays: 90)
+        await w.tier.sweep()
+        w.files.completeUploads()
+        await w.tier.sweep()
+        w.setPolicy(ColdStoragePolicy(enabled: false, minAgeMs: .max))
+        await w.tier.beginRestoreAll()
+        #expect(await w.tier.isRestoring)
+
+        w.setPolicy(ColdStoragePolicy(enabled: true, minAgeMs: 60 * Self.day))
+        await w.tier.sweep()
+        #expect(await w.tier.isRestoring == false)
+        #expect(await w.meta(old).coldStorage?.isEvicted == true)
+    }
+
+    /// A recording deleted while it waited used to leave the restore one short for ever, and a
+    /// restore in progress blocks every new move.
+    @Test func aRestoreFinishesWhenARecordingInItIsDeleted() async throws {
+        let w = try World()
+        let a = try await w.segment(ageDays: 90)
+        let b = try await w.segment(ageDays: 120)
+        await w.tier.sweep()
+        w.files.completeUploads()
+        await w.tier.sweep()
+        w.setPolicy(ColdStoragePolicy(enabled: false, minAgeMs: .max))
+        await w.tier.beginRestoreAll()
+        try await w.store.deleteSegment(b)
+        await w.tier.sweep()
+        await w.tier.sweep()
+        #expect(await w.tier.summary().restoring == nil)
+        #expect(await w.meta(a).coldStorage == nil)
+    }
+
+    /// Turned off before the upload was confirmed: the bytes never left, so they stay, and an
+    /// upload that finishes afterwards must not take them.
+    @Test func turningTheRuleOffKeepsWhatHadNotLeftYet() async throws {
+        let w = try World()
+        let old = try await w.segment(ageDays: 90)
+        await w.tier.sweep()
+        #expect(await w.meta(old).coldStorage?.isEvicted == false)
+
+        w.setPolicy(ColdStoragePolicy(enabled: false, minAgeMs: .max))
+        w.files.completeUploads()
+        #expect(await w.tier.sweep())
+        #expect(await w.meta(old).coldStorage == nil)
+        #expect(await w.store.localLogExists(old))
+        #expect(await w.store.readFrames(old).count == 50)
+        #expect(w.files.evictions == 0)
+    }
+
+    // MARK: - Moving for room
+
+    /// Past the limit the oldest go until the rest fits, and no further; untranscribed and very
+    /// recent audio stays whatever the limit says.
+    @Test func aFullPhoneMovesItsOldestAudioAndNoMore() async throws {
+        let w = try World()
+        let untranscribed = try await w.segment(ageDays: 50, state: .pending)
+        let oldest = try await w.segment(ageDays: 40)
+        let older = try await w.segment(ageDays: 30)
+        let recent = try await w.segment(ageDays: 10)
+        let today = try await w.segment(ageDays: 1)
+        let each: Int64 = 50 * 39
+        // Five on the phone, room for three and a half.
+        w.setPolicy(ColdStoragePolicy(enabled: true, minAgeMs: .max, maxPhoneBytes: each * 7 / 2))
+
+        #expect(await w.tier.sweep())
+        for id in [oldest, older] { #expect(await w.meta(id).coldStorage != nil) }
+        for id in [untranscribed, recent, today] { #expect(await w.meta(id).coldStorage == nil) }
+        // Met: what is leaving no longer counts, so the next sweep takes nothing more.
+        await w.tier.sweep()
+        #expect(await w.meta(recent).coldStorage == nil)
+
+        // A limit nothing else can satisfy still leaves the last three days alone.
+        w.setPolicy(ColdStoragePolicy(enabled: true, minAgeMs: .max, maxPhoneBytes: 1))
+        await w.tier.sweep()
+        #expect(await w.meta(recent).coldStorage != nil)
+        #expect(await w.meta(today).coldStorage == nil)
+    }
+
+    @Test func ageAndRoomEachMoveAudioOnTheirOwn() async throws {
+        let w = try World()
+        let old = try await w.segment(ageDays: 90)
+        let young = try await w.segment(ageDays: 20)
+        let metas = await w.store.listSegments()
+        let each: Int64 = 50 * 39
+        func moved(_ policy: ColdStoragePolicy) -> [String] {
+            ColdAudioTier.movable(metas, policy: policy, now: w.clock.now).map(\.segmentId)
+        }
+        let age = 60 * Self.day
+        #expect(moved(ColdStoragePolicy(enabled: true, minAgeMs: age)) == [old])
+        // Room for both: age alone decides. Room for neither: both go, oldest first.
+        #expect(moved(ColdStoragePolicy(enabled: true, minAgeMs: age, maxPhoneBytes: each * 2)) == [old])
+        #expect(moved(ColdStoragePolicy(enabled: true, minAgeMs: age, maxPhoneBytes: each / 2)) == [old, young])
+        #expect(moved(ColdStoragePolicy(enabled: true, minAgeMs: .max)) == [])
+        #expect(moved(ColdStoragePolicy(enabled: false, minAgeMs: 0, maxPhoneBytes: 1)) == [])
+    }
+
+    /// A full iCloud, or none: audio waits on the phone, over the limit. Nothing is deleted for
+    /// room while iCloud is the next stop.
+    @Test func noICloudLeavesAudioOnThePhoneOverTheLimit() async throws {
+        let w = try World()
+        let old = try await w.segment(ageDays: 90)
+        let settings = RuntimeSettingsSnapshot(
+            retentionDays: RuntimeSettingsDefaults.keepForever, retentionMaxBytes: 1,
+            coldStorageEnabled: true, coldStorageMinAgeDays: RuntimeSettingsDefaults.neverByAge,
+            coldStorageMaxBytes: 1)
+        w.setPolicy(settings.coldStoragePolicy)
+        w.files.hasAccount = false
+        w.locator.invalidate()
+        await w.tier.sweep()
+        #expect(await w.store.localLogExists(old))
+        #expect(settings.retentionConfig.maxTotalBytes == .max)
+        #expect(settings.retentionConfig.maxAgeMs == .max)
     }
 
     @Test func noAccountMeansNothingMovesAndTheStateIsNamed() async throws {

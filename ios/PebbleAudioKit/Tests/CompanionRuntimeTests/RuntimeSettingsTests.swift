@@ -109,6 +109,28 @@ import Transcription
         }
     }
 
+    /// Moving by room alone needs no age, works under a Keep too short for any, and turns the
+    /// deleting limit off: a full phone sends audio on, and iCloud is where it goes.
+    @Test func theICloudRuleCanBeRoomAlone() {
+        for keep in [7, 30, RuntimeSettingsDefaults.keepForever] {
+            let settings = RuntimeSettingsSnapshot(
+                retentionDays: keep, retentionMaxBytes: 2 << 30, coldStorageEnabled: true,
+                coldStorageMinAgeDays: RuntimeSettingsDefaults.neverByAge, coldStorageMaxBytes: 5 << 30)
+            #expect(settings.effectiveColdStorageMinAgeDays == nil)
+            #expect(
+                settings.coldStoragePolicy
+                    == ColdStoragePolicy(enabled: true, minAgeMs: .max, maxPhoneBytes: 5 << 30))
+            #expect(settings.retentionConfig.maxTotalBytes == .max)
+        }
+        let neither = RuntimeSettingsSnapshot(
+            coldStorageEnabled: true, coldStorageMinAgeDays: RuntimeSettingsDefaults.neverByAge)
+        #expect(!neither.coldStoragePolicy.enabled)
+        // Off: the deleting limit is in force again.
+        let off = RuntimeSettingsSnapshot(retentionMaxBytes: 2 << 30, coldStorageMaxBytes: 5 << 30)
+        #expect(!off.coldStoragePolicy.enabled)
+        #expect(off.retentionConfig.maxTotalBytes == 2 << 30)
+    }
+
     @Test func retentionMaxBytesDefaultsWithoutTheAppDeclaringIt() {
         struct MinimalSettings: RuntimeSettings {
             var captureIntent: CaptureIntent = .active

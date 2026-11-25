@@ -25,14 +25,17 @@ import SegmentStore
 // a conversation whose audio is in iCloud says so and offers to fetch it; a container that
 // cannot be reached (no account, iCloud Drive off) is a named state, never "no audio".
 
-/// The user's rule: on or off, and how old audio must be before it moves.
+/// The user's rule: on or off, how old audio must be before it moves, and how much of it the
+/// phone holds before the oldest moves early. `.max` in either is "not by this".
 public struct ColdStoragePolicy: Equatable, Sendable {
     public var enabled: Bool
     public var minAgeMs: Int64
+    public var maxPhoneBytes: Int64
 
-    public init(enabled: Bool, minAgeMs: Int64) {
+    public init(enabled: Bool, minAgeMs: Int64, maxPhoneBytes: Int64 = .max) {
         self.enabled = enabled
         self.minAgeMs = minAgeMs
+        self.maxPhoneBytes = maxPhoneBytes
     }
 }
 
@@ -195,6 +198,10 @@ public actor ColdAudioTier {
     public static let pendingIntervalMs: Int64 = 60_000
     /// A copy fetched for playback is evicted again after sitting unused for this long.
     public static let refetchKeepMs: Int64 = 6 * 60 * 60_000
+    /// Audio younger than this never moves for room. It is what people play back and what the
+    /// cloud may still hear again (`StandInRehearing`); three days of recording is about 500 MB,
+    /// well under the smallest limit offered, so a limit can always be met without it.
+    public static let minimumAgeForSpaceMs: Int64 = 3 * 86_400_000
     /// How long `fetch` waits for the bytes before giving up.
     public static let fetchTimeoutMs: Int64 = 180_000
     public static let fetchPollMs: Int64 = 500
@@ -246,6 +253,26 @@ public actor ColdAudioTier {
     public static func isEligible(_ meta: SegmentMeta, minAgeMs: Int64, now: Int64) -> Bool {
         !meta.isOpen && meta.isFullyTranscribed && meta.frameCount > 0 && meta.logBytes > 0
             && meta.coldStorage == nil && now - meta.startWallMs >= minAgeMs
+    }
+
+    /// What a rule moves right now, oldest first: everything old enough, then the oldest of the
+    /// rest for as long as the phone holds more than the limit. The sweep and the Storage
+    /// screen's previews both ask this, so the number beside a choice is what the choice does.
+    public static func movable(
+        _ metas: [SegmentMeta], policy: ColdStoragePolicy, now: Int64
+    ) -> [SegmentMeta] {
+        guard policy.enabled else { return [] }
+        var onPhone = metas.reduce(Int64(0)) { $0 + ($1.coldStorage == nil ? $1.logBytes : 0) }
+        var out: [SegmentMeta] = []
+        for meta in metas.sorted(by: { $0.startWallMs < $1.startWallMs }) {
+            let oldEnough = isEligible(meta, minAgeMs: policy.minAgeMs, now: now)
+            let overLimit = onPhone > policy.maxPhoneBytes
+                && isEligible(meta, minAgeMs: minimumAgeForSpaceMs, now: now)
+            guard oldEnough || overLimit else { continue }
+            out.append(meta)
+            onPhone -= meta.logBytes
+        }
+        return out
     }
 
     /// What would move under a rule — the Storage screen's preview as the person moves the
@@ -348,6 +375,17 @@ public actor ColdAudioTier {
         let metas = await store.listSegments()
         var known = Set<String>()
 
+        // Turned back on while audio was coming home: it would only leave again.
+        if policy.enabled, restore != nil { cancelRestore() }
+        // A recording deleted while it waited its turn is not coming home, and a restore that
+        // waited for it would never finish (and, while it runs, nothing new may move).
+        if restore != nil {
+            let present = Set(metas.map(\.segmentId))
+            let gone = restoreQueue.filter { !present.contains($0) }
+            restoreQueue.removeAll { gone.contains($0) }
+            restore?.done += gone.count
+        }
+
         for meta in metas where !meta.isOpen {
             known.insert(meta.segmentId)
             guard let cold = meta.coldStorage,
@@ -361,6 +399,16 @@ public actor ColdAudioTier {
                     restoreQueue.remove(at: index)
                     restore?.done += 1
                     changed = true
+                case .waiting: pending = true
+                case .failed(let reason): sweepError = reason
+                }
+                continue
+            }
+            // The rule is off and this one had not left yet: its bytes are still here, so it
+            // stays. Nothing is downloaded for it; the file is renamed back.
+            if !policy.enabled, !cold.isEvicted {
+                switch await restoreOne(id, url: url) {
+                case .done: changed = true
                 case .waiting: pending = true
                 case .failed(let reason): sweepError = reason
                 }
@@ -430,9 +478,7 @@ public actor ColdAudioTier {
 
         // New moves, oldest first, when the rule is on and nothing is being brought back.
         if policy.enabled, restore == nil {
-            let candidates = metas
-                .filter { Self.isEligible($0, minAgeMs: policy.minAgeMs, now: now) }
-                .sorted { $0.startWallMs < $1.startWallMs }
+            let candidates = Self.movable(metas, policy: policy, now: now)
                 .prefix(Self.movesPerSweep)
             var moved = 0
             var movedBytes: Int64 = 0
