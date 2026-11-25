@@ -9,6 +9,8 @@ struct SettingsRow: View {
     let title: String
     var value: String? = nil
     var valueColor: Color = Tokens.meta
+    /// A second line under the title, for a row whose value needs one fact more.
+    var subtitle: String? = nil
     var showsChevron: Bool = true
     var action: (() -> Void)? = nil
 
@@ -52,10 +54,18 @@ struct SettingsRow: View {
     }
 
     private var titleText: some View {
-        Text(title)
-            .font(AppFont.callout)
-            .foregroundStyle(Tokens.label)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(AppFont.callout)
+                .foregroundStyle(Tokens.label)
+                .fixedSize(horizontal: false, vertical: true)
+            if let subtitle {
+                Text(subtitle)
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     @ViewBuilder

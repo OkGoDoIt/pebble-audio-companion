@@ -46,6 +46,7 @@ import Testing
         footprint.modelBytes = 700
         footprint.cacheBytes = 300
         footprint.temporaryBytes = 50
+        footprint.exportBytes = 60
         footprint.freeBytes = 9_000
         footprint.capacityBytes = 100_000
         var cold = ColdAudioTier.Summary(available: true)
@@ -64,7 +65,8 @@ import Testing
         #expect(overview.textBytes == 130)
         #expect(overview.modelBytes == 1_000)
         #expect(overview.temporaryBytes == 50)
-        #expect(overview.onPhoneBytes == 14_000 + 130 + 1_000 + 50)
+        #expect(overview.exportBytes == 60)
+        #expect(overview.onPhoneBytes == 14_000 + 130 + 1_000 + 60 + 50)
         #expect(overview.cloudAvailable)
         #expect(overview.cloudError == "quota")
     }
@@ -94,6 +96,77 @@ import Testing
         #expect(year == StoragePreview(bytes: 0, count: 0, percent: 0))
     }
 
+    /// What the Keep recordings picker says a choice would delete is what retention would delete:
+    /// closed recordings past the age, and nothing at all under Forever.
+    @Test func thePickerCountsWhatAShorterKeepWouldDelete() {
+        func count(_ days: Int) -> Int {
+            StoragePlanner.wouldDelete(metas: library, olderThanDays: days, nowMs: now)
+        }
+        #expect(count(7) == 5, "everything but the open one, iCloud's included")
+        #expect(count(90) == 2, "a and b; c is exactly 90 days old")
+        #expect(count(365) == 0)
+        #expect(count(AppSettings.keepForever) == 0)
+
+        var recovered = segment("r", ageDays: 400, bytes: 1_000)
+        recovered.recoveredAtMs = now
+        #expect(StoragePlanner.wouldDelete(metas: [recovered], olderThanDays: 7, nowMs: now) == 0)
+    }
+
+    /// Export says what it would write, and is not offered when the phone has no room for it.
+    @Test func exportIsMeasuredAgainstTheRoomThereIs() {
+        var overview = StoragePlanner.overview(metas: library, footprint: nil, cold: nil)
+        // Every closed recording whose audio is here (b, c, d, e), at 640 bytes a frame.
+        #expect(overview.exportAllBytes == [2_000, 3_000, 4_000, 5_000].reduce(0) { $0 + $1 / 39 } * 640)
+
+        overview.exportAllBytes = 90 << 30
+        overview.freeBytes = 91 << 30
+        #expect(!overview.exportFits, "filling the phone pauses recording")
+        overview.freeBytes = 92 << 30
+        #expect(overview.exportFits)
+        overview.freeBytes = 12 << 30
+        overview.exportBytes = 80 << 30
+        #expect(overview.exportFits, "files already exported are written over")
+    }
+
+    @Test func theDeletingLineSaysWhatTheTwoRulesAddUpTo() {
+        typealias S = Copy.Settings.Storage
+        let forever = AppSettings.keepForever
+        let fiveGB: Int64 = 5 << 30
+        #expect(
+            S.deletingLine(keepDays: forever, limitBytes: 0, cloud: true)
+                == "Nothing is deleted automatically.")
+        #expect(
+            S.deletingLine(keepDays: 365, limitBytes: 0, cloud: true)
+                == "After 1 year, a recording and its transcript are deleted, from iCloud too.")
+        #expect(S.deletingLine(keepDays: forever, limitBytes: fiveGB, cloud: false).contains("Past 5 GB"))
+        let both = S.deletingLine(keepDays: 30, limitBytes: fiveGB, cloud: false)
+        #expect(both.contains("After 1 month") && both.contains("Past 5 GB"))
+    }
+
+    /// Forever survives a relaunch, and leaves a build that has never heard of it a year rather
+    /// than a number it would read as 30 days.
+    @MainActor
+    @Test func foreverIsStoredSoThatNoBuildDeletesForIt() {
+        let suite = "keep-forever-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch() -> AppSettings {
+            AppSettings(defaults: defaults, keychain: KeychainStore(service: "tests.unused"))
+        }
+        #expect(launch().retentionDays == 30, "nothing stored yet")
+
+        launch().retentionDays = AppSettings.keepForever
+        #expect(defaults.integer(forKey: "retention_days") == 365)
+        let relaunched = launch()
+        #expect(relaunched.retentionDays == AppSettings.keepForever)
+        #expect(relaunched.runtimeSettings.retentionConfig.maxAgeMs == .max)
+        relaunched.reloadFromDefaults()
+        #expect(relaunched.retentionDays == AppSettings.keepForever)
+
+        relaunched.retentionDays = 90
+        #expect(launch().retentionDays == 90)
+    }
+
     @Test func theBarNeverOverflowsAndNeverHidesASmallPart() {
         let widths = StorageBar.widths([1_000, 1, 0, 9_000], total: 10_000, in: 300)
         #expect(widths[2] == 0)
@@ -103,10 +176,12 @@ import Testing
     }
 
     @Test func ageLabelsReadTheWayPeopleSayThem() {
+        #expect(Copy.Settings.Storage.ageLabel(7) == "1 week")
         #expect(Copy.Settings.Storage.ageLabel(14) == "2 weeks")
         #expect(Copy.Settings.Storage.ageLabel(30) == "1 month")
         #expect(Copy.Settings.Storage.ageLabel(60) == "2 months")
         #expect(Copy.Settings.Storage.ageLabel(180) == "6 months")
         #expect(Copy.Settings.Storage.ageLabel(365) == "1 year")
+        #expect(Copy.Settings.Storage.keepLabel(AppSettings.keepForever) == "Forever")
     }
 }

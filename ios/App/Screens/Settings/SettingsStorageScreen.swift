@@ -4,23 +4,22 @@ import SwiftUI
 
 /// Settings · Storage.
 ///
-/// The questions a person brings here, in the order they are answered:
+/// The questions a person brings here, one section each, in the order they are asked:
 ///
-///  1. **How much room is this taking, and of what?** One number, one bar, a legend: the
-///     recordings next to the transcripts, the speech model and anything temporary, against
-///     what the phone has free. Because on 2026-10-12 the one number iOS showed for the app
-///     was 11.7 GB and the recordings were 2.1 GB of it.
-///  2. **Can I keep everything and still have room?** The iCloud rule: audio older than an age
-///     moves to iCloud Drive and comes back when played. The split bar shows what that means
-///     for THIS library before the switch is touched, and follows the age picker.
-///  3. **What gets deleted, and when?** Keep audio and the storage limit, in their own section,
-///     named "Deleting" so the two rules that destroy are never mistaken for the one that moves.
-///  4. Export and delete-all, where they always were.
+///  1. **How much room is this taking, and of what?** One number, one bar, a legend.
+///  2. **How long are recordings kept?** The two rules that delete, in one card, and under it
+///     one line for what they add up to. A choice that would delete something already here says
+///     how much, beside the choice, before it is tapped.
+///  3. **Can I keep everything and still have room?** One row: older audio moves to iCloud, after
+///     an age or not at all. The picker says what each age would move. The phone/iCloud split is
+///     drawn only once there is one.
+///  4. **Can I have the files?** Export, and what it would take.
 ///
-/// Privacy has its own screen now (`SettingsPrivacyScreen`): "where does my data go?" is a
-/// different question, and this one needs the whole screen.
+/// Delete All stays last, in its own card. Privacy has its own screen
+/// (`SettingsPrivacyScreen`): "where does my data go?" is a different question.
 struct SettingsStorageScreen: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var storage: StorageStatsSource { SettingsDataSources.current.storage }
 
@@ -29,81 +28,30 @@ struct SettingsStorageScreen: View {
     @State private var confirmDeleteAll = false
 
     var body: some View {
-        @Bindable var settings = settings
         SettingsScroll {
             overviewCard
 
             SettingsSectionHeader(title: Copy.Settings.Storage.recordingsSection)
+            recordingsCard
+            SettingsFooter(
+                text: Copy.Settings.Storage.deletingLine(
+                    keepDays: settings.retentionDays, limitBytes: settings.retentionMaxBytes,
+                    cloud: settings.coldStorageEnabled
+                        || (storage.overview?.audioInCloudBytes ?? 0) > 0))
+
+            SettingsSectionHeader(title: Copy.Settings.Storage.cloudSection)
             cloudCard
             SettingsFooter(text: Copy.Settings.Storage.cloudFooter)
 
-            SettingsSectionHeader(title: Copy.Settings.Storage.deletingSection)
-            ListCard {
-                SettingsPushRow(
-                    title: Copy.Settings.Storage.keepAudio,
-                    value: Copy.Settings.Storage.keepDays(settings.retentionDays)
-                ) {
-                    ChoiceScreen(
-                        title: Copy.Settings.Storage.keepAudio,
-                        options: AppSettings.retentionOptions.map {
-                            .init(value: $0, label: Copy.Settings.Storage.keepDays($0))
-                        },
-                        selection: $settings.retentionDays,
-                        footer: settings.coldStorageEnabled
-                            ? Copy.Settings.Storage.keepAudioCloudFooter : nil
-                    )
-                }
-                SettingsPushRow(
-                    title: Copy.Settings.Storage.storageLimit,
-                    value: AppSettings.retentionLimitLabel(settings.retentionMaxBytes)
-                ) {
-                    ChoiceScreen(
-                        title: Copy.Settings.Storage.storageLimit,
-                        options: AppSettings.retentionLimitOptions.map {
-                            .init(value: $0, label: AppSettings.retentionLimitLabel($0))
-                        },
-                        selection: $settings.retentionMaxBytes,
-                        footer: Copy.Settings.Storage.limitFooter
-                    )
-                }
-                // Only meaningful once a limit exists — with none set there is no proportion to
-                // report, and the bare size is already in the overview.
-                if settings.retentionMaxBytes > 0 {
-                    SettingsRow(
-                        title: Copy.Settings.Storage.usedOfLimit(
-                            used: Formatting.storageSize(storage.recordingsBytes),
-                            limit: AppSettings.retentionLimitLabel(settings.retentionMaxBytes)
-                        ),
-                        showsChevron: false
-                    )
-                }
-            }
-            SettingsFooter(text: Copy.Settings.Storage.limitFooter)
-
-            ListCard {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Copy.Settings.Storage.autoExport)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Tokens.label)
-                        Text(Copy.Settings.Storage.autoExportSub)
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
-                    }
-                    Spacer(minLength: 10)
-                    Toggle(Copy.Settings.Storage.autoExport, isOn: $settings.automaticWavExportEnabled)
-                        .labelsHidden()
-                }
-                TintActionRow(title: Copy.Settings.Storage.exportAll, action: exportAll) {
-                    exportAccessory
-                }
-            }
+            SettingsSectionHeader(title: Copy.Settings.Storage.exportSection)
+            exportCard
 
             ListCard {
                 DestructiveRow(title: Copy.Settings.Storage.deleteAll) {
                     confirmDeleteAll = true
                 }
             }
+            .padding(.top, Tokens.blockGap)
             .confirmationDialog(
                 Copy.Settings.Storage.deleteAllTitle,
                 isPresented: $confirmDeleteAll,
@@ -155,18 +103,17 @@ struct SettingsStorageScreen: View {
                         StorageLegendRow(
                             color: Tokens.quiet, title: Copy.Settings.Storage.legendModel,
                             value: Formatting.storageSize(overview.modelBytes))
-                        if overview.temporaryBytes >= Self.temporaryWorthNaming {
+                        if overview.exportBytes >= Self.worthNaming {
+                            StorageLegendRow(
+                                color: Tokens.captured, title: Copy.Settings.Storage.legendExports,
+                                value: Formatting.storageSize(overview.exportBytes))
+                        }
+                        if overview.temporaryBytes >= Self.worthNaming {
                             StorageLegendRow(
                                 color: Tokens.quiet, hatched: true,
                                 title: Copy.Settings.Storage.legendTemporary,
                                 value: Formatting.storageSize(overview.temporaryBytes),
                                 note: Copy.Settings.Storage.temporaryCleaned)
-                        }
-                        if overview.audioInCloudBytes > 0 {
-                            StorageLegendRow(
-                                color: Tokens.captured, title: Copy.Settings.Storage.legendCloud,
-                                value: Formatting.storageSize(overview.audioInCloudBytes),
-                                note: Copy.Settings.Storage.legendCloudNote(overview.audioInCloudCount))
                         }
                     }
                 }
@@ -181,15 +128,8 @@ struct SettingsStorageScreen: View {
         }
     }
 
-    /// The shortest Keep audio under which some offered move age can take effect (30 days).
-    private static let minimumKeepDaysForCloud: Int = {
-        let youngestAge = AppSettings.coldStorageAgeOptions.min() ?? 0
-        return AppSettings.retentionOptions.first { $0 > youngestAge } ?? youngestAge + 1
-    }()
-
-    /// Below this, temporary files are the ordinary few megabytes of scratch and not a story.
-    private static let temporaryWorthNaming: Int64 = 50 * 1024 * 1024
-
+    /// Below this, exports and temporary files are a few megabytes and not a story.
+    private static let worthNaming: Int64 = 50 * 1024 * 1024
 
     private func overviewParts(_ overview: StorageOverview) -> [StorageBar.Part] {
         var parts: [StorageBar.Part] = [
@@ -197,162 +137,221 @@ struct SettingsStorageScreen: View {
             .init(id: "text", bytes: overview.textBytes, color: Tokens.tintSoft),
             .init(id: "model", bytes: overview.modelBytes, color: Tokens.quiet),
         ]
-        if overview.temporaryBytes >= Self.temporaryWorthNaming {
+        if overview.exportBytes >= Self.worthNaming {
+            parts.append(.init(id: "exports", bytes: overview.exportBytes, color: Tokens.captured))
+        }
+        if overview.temporaryBytes >= Self.worthNaming {
             parts.append(.init(id: "tmp", bytes: overview.temporaryBytes, color: Tokens.quiet, hatched: true))
         }
         return parts
     }
 
+    // MARK: Recordings
+
+    private var recordingsCard: some View {
+        @Bindable var settings = settings
+        let limit = settings.retentionMaxBytes
+        return ListCard {
+            SettingsPushRow(
+                title: Copy.Settings.Storage.keep,
+                value: Copy.Settings.Storage.keepLabel(settings.retentionDays)
+            ) {
+                ChoiceScreen(
+                    title: Copy.Settings.Storage.keep,
+                    options: AppSettings.retentionOptions.map(keepOption),
+                    selection: $settings.retentionDays)
+            }
+            SettingsPushRow(
+                title: Copy.Settings.Storage.storageLimit,
+                value: AppSettings.retentionLimitLabel(limit)
+            ) {
+                ChoiceScreen(
+                    title: Copy.Settings.Storage.storageLimit,
+                    options: AppSettings.retentionLimitOptions.map(limitOption),
+                    selection: $settings.retentionMaxBytes)
+            }
+            // Only once a limit exists: without one there is no proportion to draw.
+            if limit > 0 {
+                VStack(alignment: .leading, spacing: 8) {
+                    StorageBar(
+                        parts: [
+                            .init(
+                                id: "used", bytes: min(storage.recordingsBytes, limit),
+                                color: Tokens.tint)
+                        ],
+                        total: limit, height: 8)
+                    Text(
+                        Copy.Settings.Storage.usedOfLimit(
+                            used: Formatting.storageSize(storage.recordingsBytes),
+                            limit: AppSettings.retentionLimitLabel(limit)))
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    /// Deleting starts on the next pass after the tap, so what a shorter choice would delete is
+    /// beside it, not on the far side of it.
+    private func keepOption(_ days: Int) -> ChoiceScreen<Int>.Option {
+        let count = days < settings.retentionDays ? storage.wouldDelete(olderThanDays: days) : 0
+        return .init(
+            value: days, label: Copy.Settings.Storage.keepLabel(days),
+            consequence: count > 0 ? Copy.Settings.Storage.deletesCount(count) : nil,
+            destroys: true)
+    }
+
+    private func limitOption(_ bytes: Int64) -> ChoiceScreen<Int64>.Option {
+        let over = bytes > 0 && bytes != settings.retentionMaxBytes
+            ? storage.recordingsBytes - bytes : 0
+        return .init(
+            value: bytes, label: AppSettings.retentionLimitLabel(bytes),
+            consequence: over > 0
+                ? Copy.Settings.Storage.deletesSize(Formatting.storageSize(over)) : nil,
+            destroys: true)
+    }
+
     // MARK: iCloud
 
-    /// The rule, its age, and the split it makes of the recordings — drawn before the switch is
-    /// on, so the switch is never a surprise. The split bar is the same component as the
-    /// overview's, over a different whole: all the audio there is.
+    /// The shortest Keep recordings under which some offered move age can take effect.
+    private static let minimumKeepDaysForCloud: Int = {
+        let youngestAge = AppSettings.coldStorageAgeOptions.min() ?? 0
+        return AppSettings.retentionOptions.first { $0 > youngestAge } ?? youngestAge + 1
+    }()
+
+    /// One row, "off" among its choices, and what has moved so far.
     ///
-    /// Everything here shows the EFFECTIVE age (`effectiveColdStorageMinAgeDays`): "Keep audio"
-    /// deletes recordings first, so a move age at or past it is a rule that never fires. Under
-    /// the defaults (move at 2 months, keep 30 days) the card used to show "2 months" and a
-    /// switch that, turned on, moved nothing, ever. Now it shows what will happen and says why.
+    /// The age shown is the EFFECTIVE one (`effectiveColdStorageMinAgeDays`): Keep recordings
+    /// deletes first, so a move age at or past it is a rule that never fires. Under the defaults
+    /// (move at 2 months, keep 1 month) the screen once showed "2 months" and a switch that,
+    /// turned on, moved nothing, ever.
     private var cloudCard: some View {
-        @Bindable var settings = settings
         let overview = storage.overview
         let available = overview?.cloudAvailable ?? false
         let effectiveAge = settings.effectiveColdStorageMinAgeDays
-        let preview = effectiveAge.map { storage.wouldMove(olderThanDays: $0) }
-            ?? StoragePreview(bytes: 0, count: 0, percent: 0)
+        let on = settings.coldStorageEnabled
+        // A rule that could move nothing is not offered, but one already on can be turned off.
+        let canChoose = (available && effectiveAge != nil) || on
+        let value = on ? effectiveAge.map(Copy.Settings.Storage.cloudAfter) : nil
         return ListCard {
-            HStack(spacing: 12) {
-                Text(Copy.Settings.Storage.cloudToggle)
-                    .font(AppFont.callout)
-                    .foregroundStyle(available && effectiveAge != nil ? Tokens.label : Tokens.meta)
-                Spacer(minLength: 10)
-                Toggle(Copy.Settings.Storage.cloudToggle, isOn: $settings.coldStorageEnabled)
-                    .labelsHidden()
-                    // A rule that could move nothing is not offered — but one already on stays
-                    // switchable, so it can be turned off.
-                    .disabled(!available || (effectiveAge == nil && !settings.coldStorageEnabled))
-            }
-            // Why the switch is off and cannot be turned on, directly under it.
-            if !available {
-                Text(Copy.Settings.Storage.cloudUnavailable)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.secondaryBody)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if effectiveAge == nil {
-                Text(
-                    Copy.Settings.Storage.cloudBlockedByKeepAudio(
-                        keepDays: settings.retentionDays,
-                        minimumKeepDays: Self.minimumKeepDaysForCloud))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.secondaryBody)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let effectiveAge {
+            if canChoose {
                 SettingsPushRow(
-                    title: Copy.Settings.Storage.cloudAge,
-                    value: Copy.Settings.Storage.ageLabel(effectiveAge)
+                    title: Copy.Settings.Storage.cloudMove,
+                    value: value ?? Copy.Settings.Storage.cloudOff,
+                    subtitle: cloudSubtitle
                 ) {
-                    ChoiceScreen(
-                        title: Copy.Settings.Storage.cloudAge,
-                        options: settings.coldStorageAgeChoices.map {
-                            .init(value: $0, label: Copy.Settings.Storage.ageLabel($0))
-                        },
-                        // Checks the age in force; a pick is stored as the new choice.
-                        selection: Binding(
-                            get: { settings.effectiveColdStorageMinAgeDays ?? settings.coldStorageMinAgeDays },
-                            set: { settings.coldStorageMinAgeDays = $0 }),
-                        footer: Copy.Settings.Storage.cloudAgeFooter(
-                            keepDays: settings.retentionDays,
-                            limited: settings.coldStorageAgeChoices.count
-                                < AppSettings.coldStorageAgeOptions.count)
-                    )
+                    cloudChoices
                 }
-                // The choice was older than Keep audio allows: say what happens instead, and why.
-                if effectiveAge != settings.coldStorageMinAgeDays {
-                    Text(
-                        Copy.Settings.Storage.cloudAgeShortened(
-                            effectiveDays: effectiveAge, chosenDays: settings.coldStorageMinAgeDays,
-                            keepDays: settings.retentionDays))
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.secondaryBody)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            } else {
+                SettingsRow(
+                    title: Copy.Settings.Storage.cloudMove, value: Copy.Settings.Storage.cloudOff,
+                    subtitle: available ? cloudSubtitle : nil, showsChevron: false)
             }
-            if let overview, effectiveAge != nil || overview.audioInCloudBytes > 0 {
-                splitRow(overview, preview: preview)
+            if overview != nil, !available {
+                note(Copy.Settings.Storage.cloudUnavailable)
+            }
+            if on, let effectiveAge, effectiveAge != settings.coldStorageMinAgeDays {
+                note(
+                    Copy.Settings.Storage.cloudAgeShortened(
+                        effectiveDays: effectiveAge, chosenDays: settings.coldStorageMinAgeDays,
+                        keepDays: settings.retentionDays))
+            }
+            if let overview, overview.audioInCloudBytes + overview.uploadingBytes > 0 {
+                splitRow(overview)
             }
             if let error = overview?.cloudError, available {
-                Text(Copy.Settings.Storage.cloudError(error))
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.secondaryBody)
-                    .fixedSize(horizontal: false, vertical: true)
+                note(Copy.Settings.Storage.cloudError(error))
             }
-            if let overview, available, !settings.coldStorageEnabled, overview.audioInCloudBytes > 0 {
+            if let overview, available, !on, overview.audioInCloudBytes > 0 {
                 bringBackRow(overview)
             }
         }
     }
 
-    /// The recordings as a whole, split between the phone and iCloud. Off: the part that WOULD
-    /// move is hatched, so it reads as "spoken for" rather than gone. On: what has moved is
-    /// solid, what is uploading is hatched.
-    @ViewBuilder
-    private func splitRow(_ overview: StorageOverview, preview: StoragePreview) -> some View {
-        let on = settings.coldStorageEnabled
-        let staying = max(overview.audioOnPhoneBytes - (on ? overview.uploadingBytes : preview.bytes), 0)
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(AppFont.footnote)
+            .foregroundStyle(Tokens.secondaryBody)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var cloudSubtitle: String? {
+        guard settings.effectiveColdStorageMinAgeDays != nil else {
+            return Copy.Settings.Storage.cloudNeedsLongerKeep(
+                minimumKeepDays: Self.minimumKeepDaysForCloud)
+        }
+        guard !settings.coldStorageEnabled, let youngest = settings.coldStorageAgeChoices.min()
+        else { return nil }
+        let bytes = storage.wouldMove(olderThanDays: youngest).bytes
+        return bytes > 0
+            ? Copy.Settings.Storage.cloudCouldFree(Formatting.storageSize(bytes)) : nil
+    }
+
+    /// 0 is "Off". A pick of an age turns the rule on at it.
+    private var cloudChoices: some View {
+        let ages = settings.coldStorageAgeChoices
+        return ChoiceScreen(
+            title: Copy.Settings.Storage.cloudMove,
+            options: [.init(value: 0, label: Copy.Settings.Storage.cloudOff)]
+                + ages.map { days in
+                    let bytes = storage.wouldMove(olderThanDays: days).bytes
+                    return .init(
+                        value: days, label: Copy.Settings.Storage.cloudAfter(days),
+                        consequence: bytes > 0
+                            ? Copy.Settings.Storage.moves(Formatting.storageSize(bytes)) : nil)
+                },
+            selection: Binding(
+                get: {
+                    settings.coldStorageEnabled ? settings.effectiveColdStorageMinAgeDays ?? 0 : 0
+                },
+                set: { days in
+                    if days > 0 { settings.coldStorageMinAgeDays = days }
+                    settings.coldStorageEnabled = days > 0
+                }),
+            footer: ages.count < AppSettings.coldStorageAgeOptions.count
+                ? Copy.Settings.Storage.cloudAgesLimited(keepDays: settings.retentionDays) : nil)
+    }
+
+    /// Every recording's audio, divided between this phone and iCloud. What is uploading is
+    /// still on the phone, hatched.
+    private func splitRow(_ overview: StorageOverview) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             StorageBar(
                 parts: [
-                    .init(id: "phone", bytes: staying, color: Tokens.tint),
                     .init(
-                        id: "moving", bytes: on ? overview.uploadingBytes : preview.bytes,
-                        color: Tokens.captured, hatched: true),
+                        id: "phone", bytes: overview.audioOnPhoneBytes - overview.uploadingBytes,
+                        color: Tokens.tint),
+                    .init(
+                        id: "moving", bytes: overview.uploadingBytes, color: Tokens.captured,
+                        hatched: true),
                     .init(id: "cloud", bytes: overview.audioInCloudBytes, color: Tokens.captured),
                 ],
                 total: max(overview.audioBytes, 1),
                 height: 8)
             // Two legends side by side, each on its own half, so neither can push the card
             // past the screen margin whatever the numbers are.
-            HStack(spacing: 12) {
+            let legends = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 12))
+            legends {
                 StorageLegendRow(
                     color: Tokens.tint, title: Copy.Settings.Storage.barOnPhone,
-                    value: Formatting.storageSize(staying))
+                    value: Formatting.storageSize(overview.audioOnPhoneBytes))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 StorageLegendRow(
                     color: Tokens.captured, title: Copy.Settings.Storage.barCloud,
-                    value: Formatting.storageSize(
-                        overview.audioInCloudBytes + (on ? overview.uploadingBytes : preview.bytes)))
+                    value: Formatting.storageSize(overview.audioInCloudBytes))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(splitLine(overview, preview: preview))
-                .font(AppFont.footnote)
-                .foregroundStyle(Tokens.meta)
-                .fixedSize(horizontal: false, vertical: true)
+            if overview.uploadingBytes > 0 {
+                Text(Copy.Settings.Storage.uploading(Formatting.storageSize(overview.uploadingBytes)))
+                    .font(AppFont.footnote)
+                    .foregroundStyle(Tokens.meta)
+            }
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-    }
-
-    private func splitLine(_ overview: StorageOverview, preview: StoragePreview) -> String {
-        if settings.coldStorageEnabled {
-            if overview.audioInCloudBytes == 0, overview.uploadingBytes == 0 {
-                return preview.bytes > 0
-                    ? Copy.Settings.Storage.wouldMove(
-                        size: Formatting.storageSize(preview.bytes), percent: preview.percent)
-                    : Copy.Settings.Storage.inCloudNothingYet
-            }
-            return Copy.Settings.Storage.inCloud(
-                size: Formatting.storageSize(overview.audioInCloudBytes),
-                uploading: overview.uploadingBytes > 0
-                    ? Formatting.storageSize(overview.uploadingBytes) : nil)
-        }
-        if overview.audioInCloudBytes > 0 {
-            return Copy.Settings.Storage.stillInCloud(Formatting.storageSize(overview.audioInCloudBytes))
-        }
-        return preview.bytes > 0
-            ? Copy.Settings.Storage.wouldMove(
-                size: Formatting.storageSize(preview.bytes), percent: preview.percent)
-            : Copy.Settings.Storage.wouldMoveNothing
     }
 
     @ViewBuilder
@@ -377,6 +376,48 @@ struct SettingsStorageScreen: View {
     }
 
     // MARK: Export
+
+    /// A WAV is about 16 times the stored recording, so what it would take is said before it is
+    /// started, and one the phone has no room for is not started: filling the phone pauses
+    /// recording.
+    private var exportCard: some View {
+        @Bindable var settings = settings
+        let overview = storage.overview
+        let fits = overview?.exportFits ?? true
+        return ListCard {
+            TintActionRow(
+                title: Copy.Settings.Storage.exportAll,
+                subtitle: overview.map { exportSubtitle($0, fits: fits) },
+                action: exportAll
+            ) {
+                exportAccessory
+            }
+            .disabled(!fits)
+            .opacity(fits ? 1 : 0.5)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Copy.Settings.Storage.autoExport)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                    Text(Copy.Settings.Storage.autoExportSub)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 10)
+                Toggle(Copy.Settings.Storage.autoExport, isOn: $settings.automaticWavExportEnabled)
+                    .labelsHidden()
+                    .tint(Tokens.good)
+                    .disabled(!fits && !settings.automaticWavExportEnabled)
+            }
+        }
+    }
+
+    private func exportSubtitle(_ overview: StorageOverview, fits: Bool) -> String {
+        let size = Formatting.storageSize(overview.exportAllBytes)
+        return fits
+            ? Copy.Settings.Storage.exportAllSub(size) : Copy.Settings.Storage.exportNeeds(size)
+    }
 
     @ViewBuilder
     private var exportAccessory: some View {

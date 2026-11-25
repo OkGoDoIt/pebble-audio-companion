@@ -370,8 +370,8 @@ struct ComponentGallery: View {
                     value: Copy.Settings.TranscriptionAI.cloudFirst
                 ) {}
                 SettingsRow(
-                    title: Copy.Settings.Storage.keepAudio,
-                    value: Copy.Settings.Storage.keepDays(30)
+                    title: Copy.Settings.Storage.keep,
+                    value: Copy.Settings.Storage.keepLabel(30)
                 ) {}
                 SettingsRow(
                     title: Copy.Settings.Watch.watchReports,

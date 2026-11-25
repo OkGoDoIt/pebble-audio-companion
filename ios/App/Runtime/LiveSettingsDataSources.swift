@@ -4,6 +4,7 @@ import Contacts
 import EventKit
 import Foundation
 import Intelligence
+import LiveAudio
 import Observation
 import Receiver
 import SegmentStore
@@ -475,6 +476,7 @@ final class LiveStorageStatsSource: StorageStatsSource {
                             for: .cachesDirectory, in: .userDomainMask
                         ).first,
                         temporaryDirectory: FileManager.default.temporaryDirectory,
+                        exportsDirectory: AudioExportManager.defaultExportRoot(),
                         volume: root)
                 }.value
                 await MainActor.run {
@@ -508,6 +510,11 @@ final class LiveStorageStatsSource: StorageStatsSource {
         StoragePlanner.wouldMove(
             metas: metas, olderThanDays: olderThanDays, nowMs: composition.clock.nowMs,
             audioBytes: overview?.audioBytes ?? 0)
+    }
+
+    func wouldDelete(olderThanDays: Int) -> Int {
+        StoragePlanner.wouldDelete(
+            metas: metas, olderThanDays: olderThanDays, nowMs: composition.clock.nowMs)
     }
 
     func bringEverythingBack() {

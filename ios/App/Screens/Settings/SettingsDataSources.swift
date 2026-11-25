@@ -105,6 +105,10 @@ struct StorageOverview: Equatable {
     /// Downloaded weights plus the compiled cache.
     var modelBytes: Int64
     var temporaryBytes: Int64
+    /// WAV copies in the exports folder.
+    var exportBytes: Int64 = 0
+    /// What "Export All Audio" writes: 16-bit WAVs of every recording whose audio is here.
+    var exportAllBytes: Int64 = 0
     var freeBytes: Int64
     var capacityBytes: Int64
     /// iCloud Drive is reachable for this app right now.
@@ -113,7 +117,15 @@ struct StorageOverview: Equatable {
     var cloudError: String?
 
     /// Everything of ours that is on the phone.
-    var onPhoneBytes: Int64 { audioOnPhoneBytes + textBytes + modelBytes + temporaryBytes }
+    var onPhoneBytes: Int64 {
+        audioOnPhoneBytes + textBytes + modelBytes + exportBytes + temporaryBytes
+    }
+    /// Whether exporting everything leaves the phone above the free space at which recording
+    /// starts to warn. Files already exported are written over, so they cost nothing again.
+    var exportFits: Bool {
+        freeBytes - max(exportAllBytes - exportBytes, 0)
+            >= RetentionConfig.defaultLowStorageFloorBytes
+    }
     /// Every recording's audio, wherever it is.
     var audioBytes: Int64 { audioOnPhoneBytes + audioInCloudBytes }
 }
@@ -146,8 +158,12 @@ enum StoragePlanner {
         var uploading: Int64 = 0
         var uploadingCount = 0
         var count = 0
+        var exportAll: Int64 = 0
         for meta in metas where !meta.isOpen {
             count += 1
+            if meta.coldStorage?.isEvicted != true {
+                exportAll += meta.frameCount * Int64(meta.frameSamples) * 2
+            }
             if let coldStorage = meta.coldStorage {
                 if coldStorage.isEvicted {
                     inCloud += coldStorage.bytes
@@ -174,6 +190,8 @@ enum StoragePlanner {
             textBytes: text,
             modelBytes: footprint.map { $0.modelBytes + $0.cacheBytes } ?? 0,
             temporaryBytes: footprint?.temporaryBytes ?? 0,
+            exportBytes: footprint?.exportBytes ?? 0,
+            exportAllBytes: exportAll,
             freeBytes: footprint?.freeBytes ?? 0,
             capacityBytes: footprint?.capacityBytes ?? 0,
             cloudAvailable: cold?.available ?? false,
@@ -196,6 +214,15 @@ enum StoragePlanner {
         let percent = audioBytes > 0 ? Int((Double(bytes) / Double(audioBytes) * 100).rounded()) : 0
         return StoragePreview(bytes: bytes, count: count, percent: min(max(percent, 0), 100))
     }
+
+    /// How many recordings a "Keep recordings" choice would delete from what is here now, by the
+    /// rule `RetentionManager` enforces: age from arrival, and never recovered audio.
+    static func wouldDelete(metas: [SegmentMeta], olderThanDays: Int, nowMs: Int64) -> Int {
+        let maxAgeMs = RuntimeSettingsDefaults.maxAgeMs(retentionDays: olderThanDays)
+        return metas.count {
+            !$0.isOpen && !$0.isRecovered && nowMs - $0.receivedAtMs > maxAgeMs
+        }
+    }
 }
 
 @MainActor
@@ -211,6 +238,8 @@ protocol StorageStatsSource: AnyObject {
     /// What the age picker's current value would move. Synchronous over the cached sidecars,
     /// so the preview follows the picker without a round trip.
     func wouldMove(olderThanDays: Int) -> StoragePreview
+    /// How many recordings keeping them only this long would delete.
+    func wouldDelete(olderThanDays: Int) -> Int
     /// Starts bringing every recording in iCloud back to the phone.
     func bringEverythingBack()
     /// The byte sweep runs only while the Storage screen is visible; see `LiveStorageStatsSource`.
@@ -225,7 +254,7 @@ protocol StorageStatsSource: AnyObject {
 final class MockStorageStatsSource: StorageStatsSource {
     var recordingCount = 383
     var recordingsSize = "2.1 GB"
-    var recordingsBytes: Int64 = 2_254_857_830
+    var recordingsBytes: Int64 { overview?.audioOnPhoneBytes ?? 0 }
 
     /// The artboard case: the phone on 2026-10-12, with a season of audio already in iCloud.
     var overview: StorageOverview? = StorageOverview(
@@ -238,6 +267,7 @@ final class MockStorageStatsSource: StorageStatsSource {
         textBytes: 347_078_656,
         modelBytes: 2_533_359_616,
         temporaryBytes: 0,
+        exportAllBytes: 13_200_000_000,
         freeBytes: 20_500_000_000,
         capacityBytes: 512_000_000_000,
         cloudAvailable: true,
@@ -265,6 +295,10 @@ final class MockStorageStatsSource: StorageStatsSource {
             percent: Int((Double(bytes) / Double(max(overview.audioBytes, 1)) * 100).rounded()))
     }
 
+    func wouldDelete(olderThanDays: Int) -> Int {
+        Int(Double(recordingCount) * max(0, 1 - Double(olderThanDays) / 240))
+    }
+
     func bringEverythingBack() {
         overview?.restoring = .init(done: 12, total: 241)
     }
@@ -274,7 +308,6 @@ final class MockStorageStatsSource: StorageStatsSource {
     func deleteAllRecordings() {
         recordingCount = 0
         recordingsSize = "0 KB"
-        recordingsBytes = 0
         overview?.recordingCount = 0
         overview?.audioOnPhoneBytes = 0
         overview?.audioInCloudBytes = 0
