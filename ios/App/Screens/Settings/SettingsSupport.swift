@@ -56,11 +56,12 @@ struct SettingsFooter: View {
 struct SettingsNavRow: View {
     let title: String
     var value: String? = nil
+    var valueColor: Color = Tokens.meta
     let route: Route
 
     var body: some View {
         NavigationLink(value: route) {
-            SettingsRow(title: title, value: value)
+            SettingsRow(title: title, value: value, valueColor: valueColor)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

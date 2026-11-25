@@ -46,6 +46,11 @@ public protocol RuntimeSettings: Sendable {
     /// Which remote model the AI router's remote slot is (OpenAI with the user's key, or Apple's
     /// Private Cloud Compute). Defaulted so callers that do not care need not declare it.
     var remoteAiProvider: RemoteAiProvider { get }
+    /// What transcribes while the selected cloud account is refused. Defaulted so callers that
+    /// do not care need not declare it. See `TranscriptionBackup`.
+    var transcriptionBackup: TranscriptionBackup { get }
+    /// The same for AI. See `AiBackup`.
+    var aiBackup: AiBackup { get }
     /// How much of each recording the OS search index may see. Defaulted so callers that do not
     /// care need not declare it. See `SystemSearchVisibility`.
     var systemSearchVisibility: SystemSearchVisibility { get }
@@ -79,6 +84,8 @@ extension RuntimeSettings {
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
     public var remoteAiProvider: RemoteAiProvider { .default }
+    public var transcriptionBackup: TranscriptionBackup { .none }
+    public var aiBackup: AiBackup { .none }
     public var systemSearchVisibility: SystemSearchVisibility { .default }
     public var archiveSync: ArchiveSyncSettings { ArchiveSyncSettings() }
 
@@ -104,13 +111,15 @@ extension RuntimeSettings {
             transcriptionMode: transcriptionMode,
             localTranscriptionModelId: localTranscriptionModelId,
             cloudTranscriptionProvider: cloudTranscriptionProvider,
-            cloudUploadNetwork: cloudUploadNetwork
+            cloudUploadNetwork: cloudUploadNetwork,
+            transcriptionBackup: transcriptionBackup
         )
     }
 
     /// The settings whose change could rescue an AI job that failed — see `AiRecoveryKey`.
     public var aiRecoveryKey: AiRecoveryKey {
-        AiRecoveryKey(aiMode: aiMode, remoteAiProvider: remoteAiProvider, aiModel: aiModel)
+        AiRecoveryKey(
+            aiMode: aiMode, remoteAiProvider: remoteAiProvider, aiModel: aiModel, aiBackup: aiBackup)
     }
 
     /// The retention policy this settings state implies.
@@ -138,6 +147,7 @@ public struct TranscriptionRecoveryKey: Equatable, Sendable {
     public var localTranscriptionModelId: String
     public var cloudTranscriptionProvider: CloudProvider
     public var cloudUploadNetwork: CloudUploadNetwork
+    public var transcriptionBackup: TranscriptionBackup = .none
 }
 
 /// The settings a failed AI job can be rescued by changing: the mode (which provider runs
@@ -152,6 +162,7 @@ public struct AiRecoveryKey: Equatable, Sendable {
     public var aiMode: AiProcessingMode
     public var remoteAiProvider: RemoteAiProvider
     public var aiModel: String
+    public var aiBackup: AiBackup = .none
 }
 
 public enum RuntimeSettingsDefaults {
@@ -271,6 +282,8 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     public var backgroundCatchUp: BackgroundCatchUp { value.backgroundCatchUp }
     public var cloudUploadNetwork: CloudUploadNetwork { value.cloudUploadNetwork }
     public var remoteAiProvider: RemoteAiProvider { value.remoteAiProvider }
+    public var transcriptionBackup: TranscriptionBackup { value.transcriptionBackup }
+    public var aiBackup: AiBackup { value.aiBackup }
     public var systemSearchVisibility: SystemSearchVisibility { value.systemSearchVisibility }
     public var archiveSync: ArchiveSyncSettings { value.archiveSync }
 }
@@ -293,6 +306,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var backgroundCatchUp: BackgroundCatchUp
     public var cloudUploadNetwork: CloudUploadNetwork
     public var remoteAiProvider: RemoteAiProvider
+    public var transcriptionBackup: TranscriptionBackup
+    public var aiBackup: AiBackup
     public var systemSearchVisibility: SystemSearchVisibility
     public var archiveSync: ArchiveSyncSettings
 
@@ -313,6 +328,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         backgroundCatchUp: BackgroundCatchUp = .whileCharging,
         cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default,
         remoteAiProvider: RemoteAiProvider = .default,
+        transcriptionBackup: TranscriptionBackup = .none,
+        aiBackup: AiBackup = .none,
         systemSearchVisibility: SystemSearchVisibility = .default,
         archiveSync: ArchiveSyncSettings = ArchiveSyncSettings()
     ) {
@@ -332,6 +349,8 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.backgroundCatchUp = backgroundCatchUp
         self.cloudUploadNetwork = cloudUploadNetwork
         self.remoteAiProvider = remoteAiProvider
+        self.transcriptionBackup = transcriptionBackup
+        self.aiBackup = aiBackup
         self.systemSearchVisibility = systemSearchVisibility
         self.archiveSync = archiveSync
     }

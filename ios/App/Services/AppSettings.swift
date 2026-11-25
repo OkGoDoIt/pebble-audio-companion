@@ -110,6 +110,8 @@ final class AppSettings {
                 backgroundCatchUp: backgroundCatchUp,
                 cloudUploadNetwork: cloudUploadNetwork,
                 remoteAiProvider: remoteAiProvider,
+                transcriptionBackup: transcriptionBackup,
+                aiBackup: aiBackup,
                 systemSearchVisibility: systemSearchVisibility,
                 archiveSync: archiveSync
             )
@@ -219,6 +221,22 @@ final class AppSettings {
     var remoteAiProvider: RemoteAiProvider {
         didSet {
             defaults.set(remoteAiProvider.rawValue, forKey: Keys.remoteAiProvider)
+            mirrorToRuntime()
+        }
+    }
+
+    /// What transcribes while the cloud provider's account is refused, and what writes while
+    /// OpenAI's is. Absent key => nothing named, which is the behaviour every install had.
+    var transcriptionBackup: TranscriptionBackup {
+        didSet {
+            defaults.set(transcriptionBackup.rawValue, forKey: Keys.transcriptionBackup)
+            mirrorToRuntime()
+        }
+    }
+
+    var aiBackup: AiBackup {
+        didSet {
+            defaults.set(aiBackup.rawValue, forKey: Keys.aiBackup)
             mirrorToRuntime()
         }
     }
@@ -573,6 +591,10 @@ final class AppSettings {
         remoteAiProvider =
             defaults.string(forKey: Keys.remoteAiProvider).flatMap(RemoteAiProvider.init)
             ?? .default
+        transcriptionBackup =
+            defaults.string(forKey: Keys.transcriptionBackup).flatMap(TranscriptionBackup.init)
+            ?? .none
+        aiBackup = defaults.string(forKey: Keys.aiBackup).flatMap(AiBackup.init) ?? .none
         systemSearchVisibility =
             defaults.string(forKey: Keys.systemSearchVisibility)
             .flatMap(SystemSearchVisibility.init) ?? .default
@@ -663,6 +685,14 @@ final class AppSettings {
         {
             remoteAiProvider = stored
         }
+        if let stored = defaults.string(forKey: Keys.transcriptionBackup)
+            .flatMap(TranscriptionBackup.init)
+        {
+            transcriptionBackup = stored
+        }
+        if let stored = defaults.string(forKey: Keys.aiBackup).flatMap(AiBackup.init) {
+            aiBackup = stored
+        }
         if let stored = defaults.string(forKey: Keys.systemSearchVisibility)
             .flatMap(SystemSearchVisibility.init)
         {
@@ -721,6 +751,8 @@ final class AppSettings {
         static let transcriptsConfigured = "transcripts_configured"
         static let lossAlerts = "loss_alerts_enabled"
         static let remoteAiProvider = "remote_ai_provider"
+        static let transcriptionBackup = "transcription_backup"
+        static let aiBackup = "ai_backup"
         static let systemSearchVisibility = "system_search_visibility"
         static let askSemanticRecall = "ask_semantic_recall"
         static let coldStorageEnabled = "cold_storage_enabled"
@@ -752,6 +784,22 @@ extension AppSettings {
         modes.cloudTranscriptionEnabled ? cloudTranscriptionProvider.displayName : nil
     }
 
+    /// Who transcribes while that provider's account is refused, when a service was named. A
+    /// destination in its own right: it is sent to without asking again.
+    var transcriptionBackupDestination: String? {
+        guard modes.cloudTranscriptionEnabled, let backup = transcriptionBackup.provider,
+            backup != cloudTranscriptionProvider
+        else { return nil }
+        return backup.displayName
+    }
+
+    /// Who writes while OpenAI's account is refused, when a service was named.
+    var aiBackupDestination: String? {
+        guard modes.remoteAiEnabled, remoteAiProvider == .openAi, aiBackup == .applePrivateCloud
+        else { return nil }
+        return Copy.Privacy.remoteAiName(for: .applePrivateCloud)
+    }
+
     /// The provider transcripts (and the About You context) reach on remote AI runs, or nil in
     /// AI "Local only" — same gate as `OpenAiChatAiProvider`'s consent closure. WHICH provider
     /// is `remoteAiProvider`: OpenAI, or (iOS 27) Apple Private Cloud Compute — named in full,
@@ -763,7 +811,10 @@ extension AppSettings {
     /// e.g. "Soniox and OpenAI" — every destination this configuration sends to, or nil when
     /// everything stays on the phone.
     var cloudDestinations: String? {
-        Copy.Privacy.destinations([cloudTranscriptionDestination, remoteAiDestination])
+        Copy.Privacy.destinations([
+            cloudTranscriptionDestination, transcriptionBackupDestination, remoteAiDestination,
+            aiBackupDestination,
+        ])
     }
 }
 

@@ -254,6 +254,8 @@ extension PrivacyModel {
             transcriptionFallbackOnly: settings.transcriptionMode == .localFirst,
             aiDestination: settings.remoteAiDestination,
             aiFallbackOnly: settings.aiMode == .localFirst,
+            transcriptionBackup: settings.transcriptionBackupDestination,
+            aiBackup: settings.aiBackupDestination,
             iCloudAgeDays: settings.coldStorageEnabled ? settings.effectiveColdStorageMinAgeDays : nil,
             systemSearch: settings.systemSearchVisibility,
             server: SettingsDataSources.current.assistants.privacyServer,

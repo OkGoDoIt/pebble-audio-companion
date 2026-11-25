@@ -217,7 +217,9 @@ public final class SelectableCloudTranscriptionProvider: TranscriptionProvider, 
 /// Real-time streaming provider that delegates to the user-selected cloud backend, so the live
 /// transcriber stays provider-agnostic (mirrors `SelectableCloudTranscriptionProvider` for the
 /// batch path). The active backend is resolved per call from `selected`.
-public final class SelectableStreamingTranscriptionProvider: StreamingTranscriptionProvider {
+public final class SelectableStreamingTranscriptionProvider: StreamingTranscriptionProvider,
+    @unchecked Sendable
+{
     private let selected: @Sendable () -> CloudProvider
     private let openAi: any StreamingTranscriptionProvider
     private let soniox: any StreamingTranscriptionProvider
@@ -225,6 +227,11 @@ public final class SelectableStreamingTranscriptionProvider: StreamingTranscript
     /// audio sent for nothing, reconnected into again on every open of the app.
     private let hold: CloudAccountHold?
     private let uploadAllowedNow: @Sendable () -> Bool
+    private let lock = NSLock()
+    /// The provider the latest session was opened with: whose account a failure is about. Not
+    /// `selected()`, which moves to the backup the moment the main account is held, and would
+    /// put the BACKUP on hold for the main one's refusal.
+    private var sessionProvider: CloudProvider?
 
     public init(
         selected: @escaping @Sendable () -> CloudProvider,
@@ -253,18 +260,22 @@ public final class SelectableStreamingTranscriptionProvider: StreamingTranscript
 
     /// A live session failed for an account reason: put the provider on hold for every path.
     public func noteFailureKind(_ kind: TranscriptionFailureKind) {
-        hold?.trip(kind, provider: selected())
+        hold?.trip(kind, provider: lock.withLock { sessionProvider } ?? selected())
     }
 
     public func transcribeStream(
         pcm: AsyncThrowingStream<Data, Error>,
         sampleRateHz: Int
     ) -> AsyncThrowingStream<StreamingTranscriptUpdate, Error> {
-        active().transcribeStream(pcm: pcm, sampleRateHz: sampleRateHz)
+        let provider = selected()
+        lock.withLock { sessionProvider = provider }
+        return backend(provider).transcribeStream(pcm: pcm, sampleRateHz: sampleRateHz)
     }
 
-    private func active() -> any StreamingTranscriptionProvider {
-        switch selected() {
+    private func active() -> any StreamingTranscriptionProvider { backend(selected()) }
+
+    private func backend(_ provider: CloudProvider) -> any StreamingTranscriptionProvider {
+        switch provider {
         case .openAi: return openAi
         case .soniox: return soniox
         }

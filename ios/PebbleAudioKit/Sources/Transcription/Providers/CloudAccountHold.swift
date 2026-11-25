@@ -77,6 +77,7 @@ public final class CloudAccountHold: @unchecked Sendable {
     private let lock = NSLock()
     private var holds: [CloudProvider: Hold]
     private var lifted: (@Sendable (CloudProvider) -> Void)?
+    private var changed: (@Sendable () -> Void)?
 
     /// - Parameters:
     ///   - fileURL: where the holds persist; nil keeps them in memory (tests).
@@ -101,6 +102,17 @@ public final class CloudAccountHold: @unchecked Sendable {
         lock.withLock { lifted = handler }
     }
 
+    /// Called (outside the lock) whenever what is held, or why, changed: an account was refused,
+    /// the reason changed, or a hold ended for any reason. Never for a probe that only moved the
+    /// schedule, so an observer is told only when there is something to say.
+    public func onChanged(_ handler: @escaping @Sendable () -> Void) {
+        lock.withLock { changed = handler }
+    }
+
+    private func notifyChanged() {
+        lock.withLock { changed }?()
+    }
+
     /// The hold in force for `provider` and its current key, or nil.
     public func active(for provider: CloudProvider) -> Hold? {
         guard let hold = lock.withLock({ holds[provider] }) else { return nil }
@@ -115,6 +127,7 @@ public final class CloudAccountHold: @unchecked Sendable {
             }
             if dropped {
                 log("cloud: \(provider.rawValue) hold released — the API key it was for has changed")
+                notifyChanged()
             }
             return nil
         }
@@ -137,14 +150,13 @@ public final class CloudAccountHold: @unchecked Sendable {
         }
         let fingerprint = Self.fingerprint(key)
         let now = nowMs()
-        let began: Bool = lock.withLock {
+        let (began, changedKind): (Bool, Bool) = lock.withLock {
             if var existing = holds[provider], existing.keyFingerprint == fingerprint {
-                if existing.kind != kind {
-                    existing.kind = kind
-                    holds[provider] = existing
-                    persistLocked()
-                }
-                return false
+                guard existing.kind != kind else { return (false, false) }
+                existing.kind = kind
+                holds[provider] = existing
+                persistLocked()
+                return (false, true)
             }
             holds[provider] = Hold(
                 provider: provider, keyFingerprint: fingerprint, kind: kind, sinceMs: now,
@@ -152,7 +164,7 @@ public final class CloudAccountHold: @unchecked Sendable {
                 nextProbeAtMs: now + Self.probeDelayMs(afterRefusedProbes: 0)
             )
             persistLocked()
-            return true
+            return (true, false)
         }
         if began {
             log(
@@ -161,6 +173,7 @@ public final class CloudAccountHold: @unchecked Sendable {
                     + "\(Self.firstProbeDelayMs / 60_000) min), the key changes, or Test Connection"
             )
         }
+        if began || changedKind { notifyChanged() }
         return began
     }
 
@@ -178,6 +191,7 @@ public final class CloudAccountHold: @unchecked Sendable {
             "cloud: \(provider.rawValue) is accepting work again (held \(heldFor) min for "
                 + "\(removed.kind.rawValue)); uploads resume"
         )
+        notifyChanged()
         handler?(provider)
         return true
     }
@@ -194,12 +208,29 @@ public final class CloudAccountHold: @unchecked Sendable {
     /// A probe came back refused for the same account reason: back off further.
     public func recordRefusedProbe(provider: CloudProvider, kind: TranscriptionFailureKind) {
         let now = nowMs()
-        lock.withLock {
-            guard var hold = holds[provider] else { return }
+        let changedKind: Bool = lock.withLock {
+            guard var hold = holds[provider] else { return false }
+            let before = hold.kind
             hold.refusedProbes += 1
             hold.kind = Self.holdingKinds.contains(kind) ? kind : hold.kind
             hold.lastProbeMs = now
             hold.nextProbeAtMs = now + Self.probeDelayMs(afterRefusedProbes: hold.refusedProbes)
+            holds[provider] = hold
+            persistLocked()
+            return hold.kind != before
+        }
+        if changedKind { notifyChanged() }
+    }
+
+    /// The person has just gone to fix the account, so the backoff starts over: a payment can
+    /// take a few minutes to show, and an account held for days would otherwise not be asked
+    /// again for six hours.
+    public func restartBackoff(provider: CloudProvider) {
+        let now = nowMs()
+        lock.withLock {
+            guard var hold = holds[provider] else { return }
+            hold.refusedProbes = 0
+            hold.nextProbeAtMs = now
             holds[provider] = hold
             persistLocked()
         }

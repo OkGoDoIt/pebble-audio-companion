@@ -734,6 +734,13 @@ public actor CompanionRuntime {
         await environment.transcription.testCloudConnection()
     }
 
+    /// Checks a refused transcription account now. See `TranscriptionService`.
+    public func recheckHeldCloudAccount(
+        _ provider: CloudProvider
+    ) async -> CloudAccountProbeOutcome? {
+        await environment.transcription.recheckHeldCloudAccount(provider)
+    }
+
     public func supportReport() async -> SupportReport {
         let diagnostics = await environment.diagnostics.refresh()
         return SupportReport(

@@ -16,6 +16,7 @@ struct AskScreen: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            CloudAccountCards(aiOnly: true)
             content
 
             Spacer(minLength: 0)

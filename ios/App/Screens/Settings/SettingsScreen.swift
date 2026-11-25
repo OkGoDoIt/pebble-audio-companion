@@ -248,7 +248,8 @@ struct SettingsScreen: View {
         ListCard {
             SettingsNavRow(
                 title: Copy.Settings.Root.transcriptionAI,
-                value: transcriptionPreview,
+                value: accountIssue.map(Copy.CloudAccount.settingsValue) ?? transcriptionPreview,
+                valueColor: accountIssue == nil ? Tokens.meta : Tokens.attention,
                 route: .settings(.transcription)
             )
             SettingsNavRow(title: Copy.Voices.title, route: .settings(.voices))
@@ -275,6 +276,10 @@ struct SettingsScreen: View {
             SettingsNavRow(title: Copy.Settings.Root.diagnostics, route: .settings(.diagnostics))
         }
     }
+
+    /// A refused account takes the row's value: which service is named there matters less than
+    /// that it has stopped.
+    private var accountIssue: CloudAccountIssue? { CloudAccountAlerts.shared.issues.first }
 
     /// e.g. "Soniox · GPT-5.6", or just "Local only" when neither half uses a service.
     ///

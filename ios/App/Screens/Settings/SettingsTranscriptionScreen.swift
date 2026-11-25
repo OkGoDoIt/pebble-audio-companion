@@ -29,7 +29,8 @@ struct SettingsTranscriptionScreen: View {
             aiMode: settings.aiMode,
             cloudTranscriptionProvider: settings.cloudTranscriptionProvider,
             remoteAiProvider: settings.remoteAiProvider,
-            applePrivateCloudOffered: Self.applePrivateCloudOffered
+            applePrivateCloudOffered: Self.applePrivateCloudOffered,
+            transcriptionBackup: settings.transcriptionBackup
         )
     }
 
@@ -82,6 +83,7 @@ struct SettingsTranscriptionScreen: View {
         let cloudQuota = rows.showsApplePrivateCloud ? ApplePrivateCloudReadiness.quota : .unknown
 
         SettingsScroll {
+            CloudAccountCards()
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.transcriptionSection)
             ListCard {
                 SettingsPushRow(
@@ -123,6 +125,19 @@ struct SettingsTranscriptionScreen: View {
                     }
                 }
                 if let provider = rows.transcriptionKey {
+                    keyRow(for: provider)
+                }
+                if rows.showsCloudProvider {
+                    SettingsPushRow(
+                        title: Copy.CloudAccount.backupRow(
+                            settings.cloudTranscriptionProvider.displayName),
+                        value: transcriptionBackupValue
+                    ) {
+                        CloudAccountBackupScreen(
+                            provider: settings.cloudTranscriptionProvider, showsTranscription: true)
+                    }
+                }
+                if let provider = rows.backupKey {
                     keyRow(for: provider)
                 }
                 // Where the backlog gets cleared. Phrased around what the person gets and what it
@@ -255,6 +270,14 @@ struct SettingsTranscriptionScreen: View {
                 if let provider = rows.aiKey {
                     keyRow(for: provider)
                 }
+                if rows.showsCloudModel {
+                    SettingsPushRow(
+                        title: Copy.CloudAccount.backupRow(CloudProvider.openAi.displayName),
+                        value: aiBackupValue
+                    ) {
+                        CloudAccountBackupScreen(provider: .openAi, showsAi: true)
+                    }
+                }
             }
             if let note = Copy.Settings.TranscriptionAI.onDeviceAiNote(
                 mode: settings.aiMode, readiness: aiReadiness,
@@ -305,6 +328,28 @@ struct SettingsTranscriptionScreen: View {
         .task {
             model.refresh()
             await checkKeysIfNeeded()
+        }
+    }
+
+    // MARK: Backup rows
+
+    private var transcriptionBackupValue: String {
+        let main = settings.cloudTranscriptionProvider
+        switch CloudAccountBackupOptions.shown(
+            settings.transcriptionBackup, main: main, mode: settings.transcriptionMode)
+        {
+        case .none: return Copy.CloudAccount.waitFor(main.displayName)
+        case .onDevice: return Copy.CloudAccount.thisIPhone
+        case .openAi: return CloudProvider.openAi.displayName
+        case .soniox: return CloudProvider.soniox.displayName
+        }
+    }
+
+    private var aiBackupValue: String {
+        switch CloudAccountBackupOptions.shown(settings.aiBackup, mode: settings.aiMode) {
+        case .none: return Copy.CloudAccount.waitFor(CloudProvider.openAi.displayName)
+        case .onDevice: return Copy.CloudAccount.thisIPhone
+        case .applePrivateCloud: return Copy.Privacy.remoteAiName(for: .applePrivateCloud)
         }
     }
 

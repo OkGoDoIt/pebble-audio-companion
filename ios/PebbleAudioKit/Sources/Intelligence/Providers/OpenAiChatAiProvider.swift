@@ -120,7 +120,7 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
     /// allowed the Responses API. Honouring it here stopped every AI job for a key that could
     /// run them, and the first AI success then lifted it — so transcription paid a refused
     /// upload to put it back, once per AI call, every 45 s while the live refresh ran.
-    static let aiHoldingKinds: Set<TranscriptionFailureKind> = [
+    public static let aiHoldingKinds: Set<TranscriptionFailureKind> = [
         .accountOutOfFunds, .spendingLimitReached, .keyRejected,
     ]
 
@@ -389,6 +389,18 @@ public final class OpenAiChatAiProvider: AiProvider, AiUnavailabilityExplaining,
         guard remoteConsent(), let hold = accountHold, honouredHold() != nil,
             hold.isProbeDue(provider: .openAi, foreground: foreground)
         else { return nil }
+        return await probeHeldAccount(hold)
+    }
+
+    /// The same check now, whatever the schedule says: the person has just been to the billing
+    /// page, so the backoff starts over too. Nil when the account is not held.
+    public func recheckHeldAccount() async -> CloudAccountProbeOutcome? {
+        guard remoteConsent(), let hold = accountHold, honouredHold() != nil else { return nil }
+        hold.restartBackoff(provider: .openAi)
+        return await probeHeldAccount(hold)
+    }
+
+    private func probeHeldAccount(_ hold: CloudAccountHold) async -> CloudAccountProbeOutcome? {
         let claimed: Bool = lock.withLock {
             if probing { return false }
             probing = true

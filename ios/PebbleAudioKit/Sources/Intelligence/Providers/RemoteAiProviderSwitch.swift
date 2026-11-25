@@ -18,18 +18,24 @@ public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting,
     AiUnavailabilityExplaining, AiAccountProbing, @unchecked Sendable
 {
     private let selected: @Sendable () -> RemoteAiProvider
+    private let chosen: @Sendable () -> RemoteAiProvider
     private let openAi: AiProvider
     private let applePrivateCloud: AiProvider?
 
     /// - Parameters:
-    ///   - selected: the setting, read per call.
+    ///   - selected: where requests go, read per call: the setting, or its backup while the
+    ///     setting's account is held.
+    ///   - chosen: the setting itself. Its account is the one worth probing, including while the
+    ///     backup is carrying the work: the probe is what ends the backup.
     ///   - applePrivateCloud: nil where the OS has no such model (iOS 26).
     public init(
         selected: @escaping @Sendable () -> RemoteAiProvider,
+        chosen: (@Sendable () -> RemoteAiProvider)? = nil,
         openAi: AiProvider,
         applePrivateCloud: AiProvider?
     ) {
         self.selected = selected
+        self.chosen = chosen ?? selected
         self.openAi = openAi
         self.applePrivateCloud = applePrivateCloud
     }
@@ -45,8 +51,10 @@ public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting,
     }
 
     /// The provider the setting names, or nil when it names one this OS does not have.
-    private var current: AiProvider? {
-        switch selected() {
+    private var current: AiProvider? { provider(selected()) }
+
+    private func provider(_ which: RemoteAiProvider) -> AiProvider? {
+        switch which {
         case .openAi: return openAi
         case .applePrivateCloud: return applePrivateCloud
         }
@@ -83,11 +91,11 @@ public final class RemoteAiProviderSwitch: AiProvider, AiInputWindowReporting,
         return await explaining.unavailabilityReason()
     }
 
-    /// Probes the selected provider's held account, if it has one. An OpenAI hold is not probed
-    /// while Private Cloud Compute is the remote: nothing would be sent to OpenAI anyway, and a
-    /// probe is a request.
+    /// Probes the CHOSEN provider's held account, if it has one. An OpenAI hold is not probed
+    /// while Private Cloud Compute is the choice (nothing would be sent to OpenAI anyway, and a
+    /// probe is a request), but is while it is only standing in.
     public func probeHeldAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
-        guard let probing = current as? AiAccountProbing else { return nil }
+        guard let probing = provider(chosen()) as? AiAccountProbing else { return nil }
         return await probing.probeHeldAccountIfDue(foreground: foreground)
     }
 }

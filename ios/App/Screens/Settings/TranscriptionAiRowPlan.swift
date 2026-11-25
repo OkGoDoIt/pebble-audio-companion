@@ -77,6 +77,8 @@ struct TranscriptionAiRowPlan: Equatable {
     /// Whether this OS offers Private Cloud Compute at all (`#available(iOS 27)`). Decides
     /// whether the choice is drawn, never what the setting is.
     var applePrivateCloudOffered: Bool = false
+    /// What transcribes while the cloud provider's account is refused.
+    var transcriptionBackup: TranscriptionBackup = .none
 
     // ── Transcription card ───────────────────────────────────────────────────
 
@@ -137,6 +139,15 @@ struct TranscriptionAiRowPlan: Equatable {
         return .openAi
     }
 
+    /// The backup service's key, when neither half is already showing that key. Without a row a
+    /// saved backup key could not be changed or removed.
+    var backupKey: CloudProvider? {
+        guard transcriptionMode.usesCloudProvider, let backup = transcriptionBackup.provider,
+            backup != transcriptionKey, backup != aiKey
+        else { return nil }
+        return backup
+    }
+
     // ── Screen ───────────────────────────────────────────────────────────────
 
     /// Every provider this configuration will authenticate against, whether or not a row is
@@ -146,6 +157,7 @@ struct TranscriptionAiRowPlan: Equatable {
         var used: Set<CloudProvider> = []
         if let transcriptionKey { used.insert(transcriptionKey) }
         if aiMode.usesCloudProvider, remoteAiProvider == .openAi { used.insert(.openAi) }
+        if let backupKey { used.insert(backupKey) }
         return used
     }
 

@@ -301,7 +301,11 @@ public actor BackgroundCloudUploadCoordinator {
         // An account that has refused (402/401/403) gets nothing new — every segment sent to it
         // would be encoded and uploaded in full only to be refused. See `CloudAccountHold`.
         guard !cloudProvider.isSendingHeld else { return }
-        guard let capable = cloudProvider.activeUploadCapable else { return }
+        // Read once: the selection can move to the backup part-way through this loop (an upload
+        // already in flight is refused and holds the account), and a body built for one provider
+        // must never be filed as the other's.
+        let provider = cloudProvider.selectedProvider()
+        guard let capable = cloudProvider.capable(provider) else { return }
         guard await cloudProvider.isAvailableForBackgroundUpload() else { return }
         var budget = max(0, maxConcurrentUploads - (await queue.uploadingSegmentIds()).count)
         if budget == 0 { return }
@@ -368,7 +372,8 @@ public actor BackgroundCloudUploadCoordinator {
                 )
                 continue
             }
-            try await enqueueUpload(segmentId: segmentId, plan: plan, format: body.format)
+            try await enqueueUpload(
+                segmentId: segmentId, plan: plan, format: body.format, provider: provider)
             budget -= 1
         }
     }
@@ -410,7 +415,7 @@ public actor BackgroundCloudUploadCoordinator {
     }
 
     private func enqueueUpload(
-        segmentId: String, plan: CloudUploadPlan, format: CloudAudioFormat
+        segmentId: String, plan: CloudUploadPlan, format: CloudAudioFormat, provider: CloudProvider
     ) async throws {
         try FileManager.default.createDirectory(at: bodyDir, withIntermediateDirectories: true)
         let bodyURL = bodyDir.appendingPathComponent("\(segmentId).body")
@@ -423,7 +428,7 @@ public actor BackgroundCloudUploadCoordinator {
         jobStore.save(
             CloudUploadJob(
                 jobId: segmentId,
-                provider: cloudProvider.selectedProvider(),
+                provider: provider,
                 phase: .uploading,
                 bodyFilePath: bodyURL.path,
                 createdAtMs: nowMs(),

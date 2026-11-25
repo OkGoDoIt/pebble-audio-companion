@@ -93,6 +93,8 @@ final class AppComposition {
     /// The cloud account hold (see `CloudAccountHold`), held for the lift handler wired once the
     /// runtime exists.
     let cloudHold: CloudAccountHold
+    /// The OpenAI side of the AI router, held so a refused account can be asked again on demand.
+    let openAiChat: OpenAiChatAiProvider
     let localModel: LocalModelManager
     let aiRouter: AiModeRouter
     /// The DURABLE transcription router (not the live-preview one). Held so Settings can read
@@ -462,8 +464,36 @@ final class AppComposition {
             log: { AppRuntimeLog.shared.record($0) }
         )
         self.cloudHold = cloudHold
+        // Where work goes right now: the choice, or its backup while the chosen account is held.
+        // One set of closures for every path, so no path can disagree about where audio goes.
+        let accountHeld: @Sendable (CloudProvider) -> Bool = { cloudHold.active(for: $0) != nil }
+        let routedCloudProvider: @Sendable () -> CloudProvider = {
+            TranscriptionRouting.provider(
+                selected: settingsBox.cloudTranscriptionProvider,
+                backup: settingsBox.transcriptionBackup, isHeld: accountHeld,
+                hasKey: { keychain.string(for: $0.keychainKey)?.isEmpty == false })
+        }
+        let routedTranscriptionMode: @Sendable () -> TranscriptionMode = {
+            TranscriptionRouting.mode(
+                settingsBox.transcriptionMode, selected: settingsBox.cloudTranscriptionProvider,
+                backup: settingsBox.transcriptionBackup, isHeld: accountHeld)
+        }
+        let routedRemoteAi: @Sendable () -> RemoteAiProvider = {
+            let chosen = settingsBox.remoteAiProvider
+            guard settingsBox.aiBackup != .none else { return chosen }
+            return AiRouting.provider(
+                selected: chosen, backup: settingsBox.aiBackup,
+                openAiHeld: AiRouting.openAiHold(in: cloudHold) != nil)
+        }
+        let routedAiMode: @Sendable () -> AiProcessingMode = {
+            let chosen = settingsBox.aiMode
+            guard settingsBox.aiBackup != .none else { return chosen }
+            return AiRouting.mode(
+                chosen, selected: settingsBox.remoteAiProvider, backup: settingsBox.aiBackup,
+                openAiHeld: AiRouting.openAiHold(in: cloudHold) != nil)
+        }
         let batchCloud = SelectableCloudTranscriptionProvider(
-            selected: { settingsBox.cloudTranscriptionProvider },
+            selected: routedCloudProvider,
             openAi: OpenAiTranscriptionProvider(
                 transport: transport,
                 apiKey: openAiKey,
@@ -514,7 +544,7 @@ final class AppComposition {
             local: localBatch,
             remote: batchCloud,
             onRemoteOutcome: classifiedCloudOutcomeSink(cloudHealth),
-            mode: { settingsBox.transcriptionMode },
+            mode: routedTranscriptionMode,
             // The durable router only: a fallback on a live 5 s chunk is too weak a signal to
             // put on the record, and the durable path reports the same engine anyway.
             log: { AppRuntimeLog.shared.record($0) }
@@ -597,7 +627,7 @@ final class AppComposition {
         self.openSegment = openSegment
 
         let streamingCloud = SelectableStreamingTranscriptionProvider(
-            selected: { settingsBox.cloudTranscriptionProvider },
+            selected: routedCloudProvider,
             openAi: OpenAiRealtimeProvider(apiKey: openAiKey, cloudConsent: cloudConsent),
             soniox: SonioxRealtimeProvider(
                 apiKey: sonioxKey,
@@ -621,7 +651,7 @@ final class AppComposition {
         let liveRouter = TranscriptionModeRouter(
             local: localBatch,
             remote: batchCloud,
-            mode: { settingsBox.transcriptionMode }
+            mode: routedTranscriptionMode
         )
         let localLive = LiveTranscriber(
             openSegmentId: { openSegment.value },
@@ -708,30 +738,33 @@ final class AppComposition {
         let onDeviceAi = OnDeviceAiProvider(
             model: FoundationModelsLanguageModel(), grounding: aiGrounding
         )
+        let openAiChat = OpenAiChatAiProvider(
+            // Its own session: `URLSession.shared`'s 60 s idle timer killed every
+            // non-streaming call that thought longer than a minute (a long Ask, a
+            // reasoning model). The transcription uploads keep theirs.
+            transport: AiHttpTransport.make(),
+            apiKey: openAiKey,
+            remoteConsent: { settingsBox.remoteAiEnabled },
+            model: { settingsBox.aiModel },
+            grounding: aiGrounding,
+            // The SAME hold the transcription side uses: one OpenAI account, one key. A
+            // 402 or a rejected key from either side stops both, and the AI stage's
+            // probe or a transcription success lifts it for both.
+            accountHold: cloudHold,
+            nowMs: nowMs,
+            log: { AppRuntimeLog.shared.record($0) }
+        )
+        self.openAiChat = openAiChat
         let remoteAi = RemoteAiProviderSwitch(
-            selected: { settingsBox.remoteAiProvider },
-            openAi: OpenAiChatAiProvider(
-                // Its own session: `URLSession.shared`'s 60 s idle timer killed every
-                // non-streaming call that thought longer than a minute (a long Ask, a
-                // reasoning model). The transcription uploads keep theirs.
-                transport: AiHttpTransport.make(),
-                apiKey: openAiKey,
-                remoteConsent: { settingsBox.remoteAiEnabled },
-                model: { settingsBox.aiModel },
-                grounding: aiGrounding,
-                // The SAME hold the transcription side uses: one OpenAI account, one key. A
-                // 402 or a rejected key from either side stops both, and the AI stage's
-                // probe or a transcription success lifts it for both.
-                accountHold: cloudHold,
-                nowMs: nowMs,
-                log: { AppRuntimeLog.shared.record($0) }
-            ),
+            selected: routedRemoteAi,
+            chosen: { settingsBox.remoteAiProvider },
+            openAi: openAiChat,
             applePrivateCloud: applePrivateCloud
         )
         let aiRouter = AiModeRouter(
             local: onDeviceAi,
             remote: remoteAi,
-            mode: { settingsBox.aiMode },
+            mode: routedAiMode,
             // AI failures had no home. The device's `diagnostics/companion.log` carried link,
             // session, heartbeat and cloud *transcription* lines and not one AI or note-job
             // line, so "my Extended summary keeps failing" could not be taken any further than
@@ -1410,6 +1443,7 @@ final class AppComposition {
                 return last != now
             }
             runtime.notifyConfigChanged(reviveFailures: changed)
+            Task { @MainActor in await CloudAccountAlerts.shared.refresh() }
             let aiNow = settingsMirror.aiRecoveryKey
             let aiChanged = lastAiRecoveryKey.withLock { last -> Bool in
                 defer { last = aiNow }
@@ -1421,6 +1455,7 @@ final class AppComposition {
             runtime.notifyConfigChanged(reviveFailures: true)
             // The OpenAI key is the AI side's key too.
             runtime.notifyAiConfigurationChanged()
+            Task { @MainActor in await CloudAccountAlerts.shared.refresh() }
         }
         // A cloud account that takes work again un-parks what its hold parked, now — the
         // transcription queue AND the AI jobs its hold had been backing off.
@@ -1428,6 +1463,10 @@ final class AppComposition {
             runtime.notifyConfigChanged(reviveFailures: true)
             runtime.notifyAiConfigurationChanged()
         }
+
+        // An account refused, or working again, is news (`CloudAccountAlerts`) and, with a backup
+        // named, work that can move now: the pass is woken so what the refusal parked goes to it.
+        if !Self.usesDemoData { installCloudAccountAlerts() }
 
         // The screens' data-source holders, flipped from mocks to the live graph. Onboarding is
         // one of them: without this it would pair against `MockWatchPairingSource` and the first
@@ -1462,6 +1501,9 @@ final class AppComposition {
             settings.onboardingComplete = true
             // `-assistantsDemo <state>`: the AI Assistants and Privacy review states.
             AssistantsDemo.apply(to: settings)
+            #if DEBUG
+            CloudAccountDemo.apply(to: settings)
+            #endif
         }
 
         registerBackgroundTask()

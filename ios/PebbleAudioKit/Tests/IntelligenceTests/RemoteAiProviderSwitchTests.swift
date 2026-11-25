@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Transcription
 
 @testable import Intelligence
 
@@ -136,6 +137,56 @@ struct RemoteAiProviderSwitchTests {
         let empty = AiModeRouter(local: nil, remote: nil, mode: { .localFirst })
         #expect(await empty.localInputChars() == nil)
         #expect(await empty.remoteContextTokens() == nil)
+    }
+
+    /// While Private Cloud Compute is only standing in for a refused OpenAI account, requests go
+    /// to it and the account that is asked again is still OpenAI's: that check is what ends it.
+    @Test func aStandInTakesTheWorkAndTheChosenAccountIsStillAsked() async throws {
+        final class Probing: AiProvider, AiAccountProbing, @unchecked Sendable {
+            let id = "openai"
+            var asked = 0
+            func isAvailable() async -> Bool { false }
+            func run(_ request: AiRunRequest) async throws -> AiProviderResult {
+                throw AiError.providerUnavailable(providerId: id)
+            }
+            func probeHeldAccountIfDue(foreground: Bool) async -> CloudAccountProbeOutcome? {
+                asked += 1
+                return .refused(.accountOutOfFunds)
+            }
+        }
+        let openAi = Probing()
+        let apple = CountingProvider("apple-pcc")
+        let slot = RemoteAiProviderSwitch(
+            selected: {
+                AiRouting.provider(
+                    selected: .openAi, backup: .applePrivateCloud, openAiHeld: true)
+            },
+            chosen: { .openAi }, openAi: openAi, applePrivateCloud: apple)
+        #expect(await slot.isAvailable())
+        _ = try await slot.run(request)
+        #expect(apple.runs == 1)
+        _ = await slot.probeHeldAccountIfDue(foreground: true)
+        #expect(openAi.asked == 1)
+    }
+
+    @Test func onlyCloudOnlyWithThePhoneNamedChangesMode() {
+        for mode in AiProcessingMode.allCases {
+            for backup in AiBackup.allCases {
+                for held in [true, false] {
+                    let routed = AiRouting.mode(
+                        mode, selected: .openAi, backup: backup, openAiHeld: held)
+                    let moves = mode == .remoteOnly && backup == .onDevice && held
+                    #expect(routed == (moves ? .remoteFirst : mode))
+                }
+            }
+        }
+        #expect(
+            AiRouting.provider(
+                selected: .applePrivateCloud, backup: .applePrivateCloud, openAiHeld: true)
+                == .applePrivateCloud)
+        #expect(
+            AiRouting.provider(selected: .openAi, backup: .applePrivateCloud, openAiHeld: false)
+                == .openAi)
     }
 }
 

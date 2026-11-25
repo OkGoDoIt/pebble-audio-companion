@@ -372,7 +372,11 @@ public actor TranscriptionService {
     public func testCloudConnection() async {
         guard let connectivityCheck, let cloudHealth else { return }
         cloudHealth.reportChecking()
-        let keyCheck = await connectivityCheck.checkConnectivity()
+        // The MAIN provider, always: while its backup is standing in, `connectivityCheck` answers
+        // for the backup, and this button is how a topped-up account is picked back up.
+        let main = cloudAccounts?.backend(settings.cloudTranscriptionProvider)
+        let keyCheck = await ((main as? any CloudConnectivityCheck) ?? connectivityCheck)
+            .checkConnectivity()
         guard case .ok = keyCheck, let cloudAccounts else {
             cloudHealth.reportImmediate(keyCheck)
             return
@@ -415,6 +419,21 @@ public actor TranscriptionService {
         case .inconclusive(let why):
             log.write("cloud: \(provider.rawValue) account check inconclusive: \(why)")
         }
+    }
+
+    /// Checks `provider`'s held account now, whatever its schedule says, and starts its backoff
+    /// over: the person has just been to its billing page. Nil when it is not held.
+    public func recheckHeldCloudAccount(
+        _ provider: CloudProvider
+    ) async -> CloudAccountProbeOutcome? {
+        guard let cloudAccounts, let hold = cloudAccounts.hold, hold.active(for: provider) != nil
+        else { return nil }
+        hold.restartBackoff(provider: provider)
+        let outcome = await cloudAccounts.probeAccount(provider)
+        if case .accepted = outcome, provider == settings.cloudTranscriptionProvider {
+            cloudHealth?.reportImmediate(.ok(detail: nil))
+        }
+        return outcome
     }
 
     /// The hold in force for the selected provider, if any.

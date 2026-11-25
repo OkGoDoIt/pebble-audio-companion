@@ -28,6 +28,10 @@ struct PrivacyInputs: Equatable {
     var aiDestination: String?
     /// D2 in Local first.
     var aiFallbackOnly = false
+    /// Who transcribes while D1's account is refused; nil when no service was named for it.
+    var transcriptionBackup: String?
+    /// Who writes while D2's account is refused; nil when no service was named for it.
+    var aiBackup: String?
     /// D3: audio older than this many days moves to the person's iCloud Drive; nil when off.
     var iCloudAgeDays: Int?
     /// D4: what the on-device search index may see. Nothing leaves.
@@ -303,11 +307,30 @@ enum PrivacyModel {
                         mark: BrandMark.forProvider(named: stt), control: .transcription))
             }
             if let ai {
+                // One place, with both chips, when the backup for one job already does the other.
+                let alsoStandsIn = stt != nil && inputs.transcriptionBackup == ai
                 out.append(
                     PrivacyDestination(
-                        kind: .ai, name: ai, why: writes, chips: [.init(icon: .text, label: "Text")],
+                        kind: .ai, name: ai,
+                        why: alsoStandsIn ? "\(writes), and transcribes if \(stt ?? "") stops" : writes,
+                        chips: (alsoStandsIn ? [.init(icon: .audio, label: "Audio")] : [])
+                            + [.init(icon: .text, label: "Text")],
                         mark: BrandMark.forProvider(named: ai), control: .transcription))
             }
+        }
+        if let stt, let backup = inputs.transcriptionBackup, backup != ai, backup != stt {
+            out.append(
+                PrivacyDestination(
+                    kind: .transcription, name: backup, why: "Transcribes if \(stt) stops",
+                    chips: [.init(icon: .audio, label: "Audio")],
+                    mark: BrandMark.forProvider(named: backup), control: .transcription))
+        }
+        if let ai, let backup = inputs.aiBackup, backup != ai {
+            out.append(
+                PrivacyDestination(
+                    kind: .ai, name: backup, why: "Writes summaries if \(ai) stops",
+                    chips: [.init(icon: .text, label: "Text")],
+                    mark: BrandMark.forProvider(named: backup), control: .transcription))
         }
         if let days = inputs.iCloudAgeDays {
             out.append(
@@ -473,6 +496,7 @@ enum PrivacyModel {
         var names: [String] = []
         if let stt = inputs.transcriptionDestination { names.append(stt) }
         if let ai = inputs.aiDestination { names.append(ai) }
+        for backup in [inputs.transcriptionBackup, inputs.aiBackup] { if let backup { names.append(backup) } }
         for assistant in inputs.server?.assistants ?? [] {
             names.append(BrandMark.vendorName(ofAssistant: assistant.name))
         }

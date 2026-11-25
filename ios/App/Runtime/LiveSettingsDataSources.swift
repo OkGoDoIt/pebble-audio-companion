@@ -616,6 +616,13 @@ final class LiveLocalModelManager: LocalModelManaging {
         }
     }
 
+    /// `refresh`, waited for: the states are right when it returns. A background launch that has
+    /// to say what is doing the work cannot answer from states nobody has read yet.
+    func refreshNow() async {
+        states[LocalModelCatalog.appleSpeechId] = Self.map(await composition.localModel.refresh())
+        apply(await parakeet.refresh())
+    }
+
     func download(_ modelId: String) {
         guard ParakeetModelCatalog.isParakeetId(modelId) else {
             downloadAppleSpeech(modelId)

@@ -24,6 +24,7 @@ struct TodayScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.blockGap) {
                 statusCard
+                CloudAccountCards()
                 MarkedMomentsEntry()
 
                 if let line = viewModel.emptyLine {
