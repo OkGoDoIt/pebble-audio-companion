@@ -42,6 +42,8 @@ struct RealContainerRecoveryTests {
     @Test("a warm second recovery of an untouched library is cheap")
     func secondRecoveryIsCheap() async throws {
         let root = try copiedRoot()
+        // A copy left behind keeps a whole backup's blocks on disk after the backup is deleted.
+        defer { try? FileManager.default.removeItem(at: root) }
         let lines = LogBox()
         let log: @Sendable (String) -> Void = { [lines] in lines.lines.append($0) }
         let store = SegmentStore(root: root, nowMs: { Int64(Date().timeIntervalSince1970 * 1000) }, log: log)
