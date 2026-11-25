@@ -125,16 +125,21 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
 
         // Size cap: delete oldest fully-transcribed first, then oldest untranscribed, and
         // recovered audio last of all; the open segment is never deleted.
+        //
+        // The cap is on what this phone holds, so a recording whose audio has moved to iCloud is
+        // not a candidate: deleting it frees nothing here. They used to be, and being the oldest
+        // transcribed audio they went first, every one of them, without the total moving.
         segments = await store.listSegments()
-        var total: Int64 = 0
+        var localBytes: [String: Int64] = [:]
         for meta in segments {
-            total += await store.logSizeBytes(meta.segmentId)
+            localBytes[meta.segmentId] = await store.logSizeBytes(meta.segmentId)
         }
+        var total = localBytes.values.reduce(0, +)
         if total <= config.maxTotalBytes { return deleted }
         let overCapBy = total - config.maxTotalBytes
         let candidates = segments
             .enumerated()
-            .filter { $0.element.segmentId != openId }
+            .filter { $0.element.segmentId != openId && localBytes[$0.element.segmentId, default: 0] > 0 }
             .sorted { a, b in
                 // Recovered audio is evicted LAST. The age cap already exempts it (see above);
                 // letting the size cap take it first would undo a migration recovery the user
@@ -157,7 +162,7 @@ public final class RetentionManager: ReceiverPolicy, Sendable {
         let beforeSizeCap = deleted.count
         for meta in candidates {
             if total <= config.maxTotalBytes || deleted.count >= limit { break }
-            total -= await store.logSizeBytes(meta.segmentId)
+            total -= localBytes[meta.segmentId, default: 0]
             try await store.deleteSegment(meta.segmentId)
             deleted.append(meta.segmentId)
         }

@@ -920,42 +920,34 @@ enum Copy {
 
         enum Storage {
             static let title = "Storage"
-            static let recordings = "Recordings"
-            static let freeSpace = "Free space"
 
-            // ── The overview ───────────────────────────────────────────────────────────
+            // ── On this phone ──────────────────────────────────────────────────────────
             /// e.g. "4.6 GB on this phone".
             static func onThisPhone(_ size: String) -> String { "\(size) on this phone" }
             /// e.g. "14.4 GB free of 512 GB".
             static func freeOfCapacity(free: String, capacity: String) -> String {
                 "\(free) free of \(capacity)"
             }
+            /// After the free space, once it is low: the app's own floors, said before they act.
+            static func lowSpace(pauseFloor: String) -> String {
+                "Recording pauses below \(pauseFloor)."
+            }
+            static func pausedForSpace(pauseFloor: String) -> String {
+                "Recording is paused until \(pauseFloor) is free."
+            }
             static let measuring = "Measuring…"
             static let legendAudio = "Recordings"
             static let legendText = "Transcripts & index"
             static let legendModel = "Speech model & cache"
+            static let legendExports = "Exported files"
             static let legendTemporary = "Temporary files"
-            static let legendCloud = "In iCloud"
-            /// Beside the iCloud legend row: e.g. "241 recordings".
-            static func legendCloudNote(_ count: Int) -> String {
-                count == 1 ? "1 recording" : "\(count.formatted()) recordings"
-            }
             /// Beside the temporary-files legend row once it is worth saying.
             static let temporaryCleaned = "cleaned at next launch"
 
-            // ── The iCloud rule ────────────────────────────────────────────────────────
-            //
-            // Nothing here deletes: audio MOVES, and the transcript stays. Where the word
-            // "deletes" appears it names the OTHER rule, Keep audio — which deletes from iCloud
-            // too, and therefore bounds how late audio can move. The one number the rule turns
-            // on — how much would move — is shown before the switch is touched, so the switch is
-            // never a surprise.
-            static let recordingsSection = "Recordings"
-            static let cloudToggle = "Keep older audio in iCloud"
-            static let cloudAge = "Move audio older than"
-            /// "2 weeks" · "1 month" · "2 months" · "3 months" · "6 months" · "1 year".
+            /// An age the way people say it: "1 week" · "2 weeks" · "1 month" … "1 year".
             static func ageLabel(_ days: Int) -> String {
                 switch days {
+                case 7: return "1 week"
                 case 14: return "2 weeks"
                 case 30: return "1 month"
                 case 365: return "1 year"
@@ -963,72 +955,93 @@ enum Copy {
                 default: return "\(days) days"
                 }
             }
-            static let barOnPhone = "Phone"
-            static let barCloud = "iCloud"
-            /// The preview while the rule is off: e.g. "1.3 GB (62%) would move to iCloud."
-            static func wouldMove(size: String, percent: Int) -> String {
-                "\(size) (\(percent)%) would move to iCloud."
+
+            // ── As recordings get older ────────────────────────────────────────────────
+            //
+            // One path: this phone, iCloud, deleted. Deleting takes the whole recording,
+            // transcript included, so the copy says recordings there; only audio moves.
+            static let pathSection = "As recordings get older"
+            static let phoneStop = "This phone"
+            static let cloudStop = "iCloud"
+            static let deletedStop = "Deleted"
+            static let everyNewRecording = "Every new recording"
+            /// Under This phone with a limit, e.g. "Up to 5 GB".
+            static func upTo(_ limit: String) -> String { "Up to \(limit)" }
+            static let never = "Never"
+            /// Audio the rule covers that is not there yet, e.g. "0.2 GB on its way".
+            static func onItsWay(_ size: String) -> String { "\(size) on its way" }
+            static func bringingBack(done: Int, total: Int) -> String {
+                "Bringing back \(done.formatted()) of \(total.formatted())…"
             }
-            static let wouldMoveNothing = "Nothing is older than this yet."
-            /// While on: e.g. "1.3 GB in iCloud · 0.2 GB uploading".
-            static func inCloud(size: String, uploading: String?) -> String {
-                guard let uploading else { return "\(size) in iCloud" }
-                return "\(size) in iCloud · \(uploading) uploading"
-            }
-            static let inCloudNothingYet = "Audio moves as it passes the age."
-            static let cloudUnavailable =
-                "iCloud Drive isn’t available to Pebble Audio on this phone. Turn it on in "
-                + "iOS Settings › your name › iCloud › Saved to iCloud."
-            static func cloudError(_ message: String) -> String { "iCloud reported a problem: \(message)" }
+            static let cloudOffMovesNothing = "iCloud Drive is off, so nothing is moving"
+            static let cloudOffCannotPlay = "iCloud Drive is off, so this audio can’t play"
+            static let cloudOffOnThisPhone = "iCloud Drive is off on this phone"
+            static let cloudFull = "iCloud is full, so audio is staying here"
+            static let cloudRefused = "iCloud hasn’t taken some audio yet"
+            static let deletingFooter = "Deleting a recording deletes its transcript too."
             static let cloudFooter =
-                "Fully transcribed audio older than this moves to your iCloud Drive and is fetched "
-                + "when you play it. Transcripts, summaries, and notes stay on this phone. Moving "
-                + "deletes nothing. Keep audio still deletes, from iCloud too, so audio has to move "
-                + "before that age."
-            /// The age picker's footer. `limited` when Keep audio hides some of the ages.
-            static func cloudAgeFooter(keepDays: Int, limited: Bool) -> String {
-                guard limited else { return cloudFooter }
-                return cloudFooter + " Keep audio is \(keepDays) days, so only younger ages are "
-                    + "offered; keep audio longer for the others."
+                "Transcripts stay on this phone, and audio in iCloud downloads when you play it."
+            static let keptFooter = "Everything is kept on this phone."
+
+            // ── A stop's own screen ────────────────────────────────────────────────────
+            static let moveTitle = "Move to iCloud"
+            static let deleteTitle = "Delete"
+            static let byAge = "By age"
+            static let byRoom = "Or when this phone holds more than"
+            // ("No limit" comes from `AppSettings.retentionLimitLabel`, which is what the
+            // picker actually reads.)
+            /// Beside a choice that would move audio already here, e.g. "moves 1.3 GB".
+            static func moves(_ size: String) -> String { "moves \(size)" }
+            /// Beside a choice that would delete something already here.
+            static func deletesCount(_ count: Int) -> String {
+                "deletes \(Copy.count(count, "recording"))"
             }
-            /// Under the age row when the chosen age is at or past Keep audio, e.g. "Moves at
-            /// 2 weeks: Keep audio deletes recordings after 30 days, before they reach 2 months.
-            /// Keep audio longer to move it later."
-            static func cloudAgeShortened(effectiveDays: Int, chosenDays: Int, keepDays: Int) -> String {
-                "Moves at \(ageLabel(effectiveDays)): Keep audio deletes recordings after "
-                    + "\(keepDays) days, before they reach \(ageLabel(chosenDays)). Keep audio longer "
-                    + "to move it later."
+            static func deletesSize(_ size: String) -> String { "deletes \(size)" }
+            /// The question before a choice that deletes something already here.
+            static func deleteTitle(count: Int) -> String {
+                "Delete \(Copy.count(count, "recording"))?"
             }
-            /// Under the switch when Keep audio is too short for any age, e.g. "Keep audio deletes
-            /// recordings after 14 days, before any is old enough to move. Keep audio for 30 days
-            /// or more to use iCloud."
-            static func cloudBlockedByKeepAudio(keepDays: Int, minimumKeepDays: Int) -> String {
-                "Keep audio deletes recordings after \(keepDays) days, before any is old enough "
-                    + "to move. Keep audio for \(minimumKeepDays) days or more to use iCloud."
+            static func deleteTitle(size: String) -> String { "Delete \(size) of recordings?" }
+            static func deleteConfirm(count: Int) -> String {
+                "Delete \(Copy.count(count, "Recording"))"
             }
+            static func deleteConfirm(size: String) -> String { "Delete \(size)" }
+            static func deleteAgeMessage(age: String, cloud: Bool) -> String {
+                "Everything older than \(age) is deleted\(cloud ? ", from iCloud too" : ""), with its "
+                    + "transcript. This can’t be undone."
+            }
+            static let deleteLimitMessage =
+                "The oldest recordings are deleted with their transcripts. This can’t be undone."
+            static let moveFooter =
+                "The oldest audio moves first. Transcripts stay on this phone."
+            static let deleteFooter = "The oldest recordings are deleted first, with their transcripts."
+            static let deleteCloudFooter =
+                "Recordings are deleted from iCloud too, with their transcripts."
+            static let cloudUnavailable =
+                "Turn on iCloud Drive for Pebble Audio in iOS Settings › your name › iCloud › "
+                + "Saved to iCloud."
             /// e.g. "Bring 1.3 GB Back to This Phone".
             static func bringBack(_ size: String) -> String { "Bring \(size) Back to This Phone" }
-            static func bringingBack(done: Int, total: Int) -> String {
-                "Bringing back \(done) of \(total)…"
-            }
-            /// Under the toggle once it is off while audio is still in iCloud.
-            static func stillInCloud(_ size: String) -> String {
-                "\(size) is still in iCloud and plays on demand."
+            static func bringBackNoRoom(_ free: String) -> String {
+                "This phone has only \(free) free"
             }
 
-            // ── Deleting ───────────────────────────────────────────────────────────────
-            static let deletingSection = "Deleting"
-            static let keepAudio = "Keep audio"
-            /// Keep-audio options: 7 · 14 · 30 · 90 · 180 · 365 days (6.7).
-            static func keepDays(_ days: Int) -> String { "\(days) days" }
-            /// The Keep audio picker's footer while the iCloud rule is on: the two rules are
-            /// linked, and changing this one can move audio sooner.
-            static let keepAudioCloudFooter =
-                "Recordings older than this are deleted, from iCloud too. Audio moves to iCloud "
-                + "before then, so a shorter Keep audio can make it move sooner."
-            static let autoExport = "Auto-export WAV files"
-            static let autoExportSub = "Plain audio copies in the export folder"
+            // ── Export ─────────────────────────────────────────────────────────────────
+            static let exportSection = "Export"
             static let exportAll = "Export All Audio"
+            /// Its title while some audio is in iCloud, which exporting does not fetch.
+            static let exportOnPhone = "Export Audio on This Phone"
+            /// e.g. "About 13 GB of WAV files, in the Files app".
+            static func exportAllSub(_ size: String) -> String {
+                "About \(size) of WAV files, in the Files app"
+            }
+            static let nothingToExport = "No recordings on this phone"
+            /// In its place when the files would not fit, e.g. "Needs about 90 GB".
+            static func exportNeeds(_ size: String) -> String {
+                "Needs about \(size), more than this phone has free"
+            }
+            static let autoExport = "Export automatically"
+            static let autoExportSub = "Keeps a WAV copy of every recording"
             /// Inline completion line for [Export All Audio] and the conversation's Export
             /// Audio… (B10). A single-segment conversation is one file, so it must not read
             /// "Exported 1 files".
@@ -1037,22 +1050,6 @@ enum Copy {
             }
             static let deleteAll = "Delete All Recordings…"
             static let footer = "You are responsible for following local recording laws."
-
-            // Storage limit. Off by default: an invisible size cap used to delete recordings
-            // before "Keep audio" ever did, which made the visible rule a lie. The rule is
-            // stated whether or not a limit is set, so nothing disappears unexplained.
-            static let storageLimit = "Storage limit"
-            // (`noLimit` was here; the "No limit" option's label comes from
-            // `AppSettings.retentionLimitLabel`, which is what the picker actually reads.)
-            static func usedOfLimit(used: String, limit: String) -> String {
-                "\(used) of \(limit) used"
-            }
-            /// Both rules, and nothing about the order the retention pass walks its candidates
-            /// in — "recovered audio last" was a fact about `RetentionManager`, not one anybody
-            /// can act on.
-            static let limitFooter =
-                "Recordings are deleted once they pass Keep audio — from iCloud too. A storage "
-                + "limit deletes the oldest first."
         }
 
         enum Privacy {

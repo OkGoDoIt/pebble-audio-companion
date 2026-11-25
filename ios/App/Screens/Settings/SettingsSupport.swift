@@ -163,20 +163,7 @@ struct ChoiceScreen<Value: Hashable>: View {
                         selection = option.value
                         dismiss()
                     } label: {
-                        HStack(spacing: 10) {
-                            Text(option.label)
-                                .font(AppFont.callout)
-                                .foregroundStyle(Tokens.label)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 10)
-                            if option.value == selection {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(Tokens.tint)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+                        ChoiceRowLabel(label: option.label, isSelected: option.value == selection)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(option.value == selection ? .isSelected : [])
@@ -188,5 +175,46 @@ struct ChoiceScreen<Value: Hashable>: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// One choice in a list of them: its name, what choosing it would do to what is already here,
+/// and a checkmark on the one in force.
+struct ChoiceRowLabel: View {
+    let label: String
+    var consequence: String? = nil
+    /// The consequence loses something.
+    var destroys = false
+    let isSelected: Bool
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        HStack(spacing: 10) {
+            let layout = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                : AnyLayout(HStackLayout(spacing: 10))
+            layout {
+                Text(label)
+                    .font(AppFont.callout)
+                    .foregroundStyle(Tokens.label)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let consequence {
+                    if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                    Text(consequence)
+                        .font(AppFont.subBody.monospacedDigit())
+                        .foregroundStyle(destroys ? Tokens.destructive : Tokens.meta)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Tokens.tint)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }

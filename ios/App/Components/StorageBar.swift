@@ -77,6 +77,16 @@ struct StorageLegendRow: View {
     let value: String
     var note: String? = nil
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// At accessibility sizes the name takes its own line: beside the number it truncated to
+    /// "Transcript…", which is the half of the row that says what the number is.
+    private var layout: AnyLayout {
+        typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(spacing: 8))
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
@@ -89,24 +99,27 @@ struct StorageLegendRow: View {
             }
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
-            Text(title)
-                .font(AppFont.subBody)
-                .foregroundStyle(Tokens.label)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-            if let note {
-                Text(note)
-                    .font(AppFont.footnote)
-                    .foregroundStyle(Tokens.meta)
+            layout {
+                Text(title)
+                    .font(AppFont.subBody)
+                    .foregroundStyle(Tokens.label)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(0.85)
+                if let note {
+                    Text(note)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(Tokens.meta)
+                        .lineLimit(1)
+                }
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                Text(value)
+                    .font(AppFont.subBody.monospacedDigit())
+                    .foregroundStyle(Tokens.secondaryBody)
                     .lineLimit(1)
+                    // The number is the point of the row: it never truncates, the title does.
+                    .layoutPriority(1)
             }
-            Spacer(minLength: 8)
-            Text(value)
-                .font(AppFont.subBody.monospacedDigit())
-                .foregroundStyle(Tokens.secondaryBody)
-                .lineLimit(1)
-                // The number is the point of the row: it never truncates, the title does.
-                .layoutPriority(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .combine)
     }

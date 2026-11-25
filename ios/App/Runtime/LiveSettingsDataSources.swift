@@ -4,6 +4,7 @@ import Contacts
 import EventKit
 import Foundation
 import Intelligence
+import LiveAudio
 import Observation
 import Receiver
 import SegmentStore
@@ -406,7 +407,11 @@ final class LiveStorageStatsSource: StorageStatsSource {
     /// tick whether or not anyone could see the number: measured 2026-09-11 at 1.3 CPU-s per
     /// 90 s, backgrounded, on a charger, sizing every file for a screen that was not open. An
     /// off-screen source records that it is stale and does nothing; appearing refreshes once.
-    @ObservationIgnored private var isVisible = false
+    ///
+    /// A count, because a stop's screen is pushed over Storage and SwiftUI tells the new screen
+    /// it appeared before it tells the old one it left: a flag ended up false with a screen up.
+    @ObservationIgnored private var viewers = 0
+    private var isVisible: Bool { viewers > 0 }
     @ObservationIgnored private var staleWhileHidden = true
 
     init(composition: AppComposition) {
@@ -416,7 +421,7 @@ final class LiveStorageStatsSource: StorageStatsSource {
     }
 
     func setVisible(_ visible: Bool) {
-        isVisible = visible
+        viewers = max(viewers + (visible ? 1 : -1), 0)
         guard visible, staleWhileHidden else { return }
         refresh()
     }
@@ -475,6 +480,7 @@ final class LiveStorageStatsSource: StorageStatsSource {
                             for: .cachesDirectory, in: .userDomainMask
                         ).first,
                         temporaryDirectory: FileManager.default.temporaryDirectory,
+                        exportsDirectory: AudioExportManager.defaultExportRoot(),
                         volume: root)
                 }.value
                 await MainActor.run {
@@ -502,12 +508,21 @@ final class LiveStorageStatsSource: StorageStatsSource {
         if recordingsBytes != bytes { recordingsBytes = bytes }
         if freeSpace != free { freeSpace = free }
         if self.overview != overview { self.overview = overview }
+        // The privacy surfaces name iCloud for as long as it holds audio, rule on or off.
+        let holds = overview.audioInCloudBytes + overview.uploadingBytes > 0
+        if composition.settings.cloudHoldsAudio != holds {
+            composition.settings.cloudHoldsAudio = holds
+        }
     }
 
-    func wouldMove(olderThanDays: Int) -> StoragePreview {
+    func wouldMove(ageDays: Int?, maxBytes: Int64) -> StoragePreview {
         StoragePlanner.wouldMove(
-            metas: metas, olderThanDays: olderThanDays, nowMs: composition.clock.nowMs,
-            audioBytes: overview?.audioBytes ?? 0)
+            metas: metas, ageDays: ageDays, maxBytes: maxBytes, nowMs: composition.clock.nowMs)
+    }
+
+    func wouldDelete(olderThanDays: Int) -> Int {
+        StoragePlanner.wouldDelete(
+            metas: metas, olderThanDays: olderThanDays, nowMs: composition.clock.nowMs)
     }
 
     func bringEverythingBack() {

@@ -43,6 +43,21 @@ import Transcription
         #expect(RuntimeSettingsSnapshot(retentionDays: 0).retentionConfig.maxAgeMs > 0)
     }
 
+    /// "Forever" is no age cap, all the way to the policy retention enforces: not an overflow,
+    /// and not a day.
+    @Test func keepForeverIsNoAgeCapAtAll() {
+        let forever = RuntimeSettingsSnapshot(
+            retentionDays: RuntimeSettingsDefaults.keepForever, coldStorageEnabled: true,
+            coldStorageMinAgeDays: 365)
+        #expect(forever.retentionConfig.maxAgeMs == .max)
+        #expect(retentionConfig(for: forever).maxAgeMs == .max)
+        #expect(forever.retentionConfig.maxTotalBytes == .max)
+        // Nothing is deleted by age, so every move age can happen.
+        #expect(forever.effectiveColdStorageMinAgeDays == 365)
+        #expect(forever.coldStoragePolicy.enabled)
+        #expect(RuntimeSettingsDefaults.retentionDaysOptions.last == RuntimeSettingsDefaults.keepForever)
+    }
+
     // MARK: - The iCloud move age against Keep audio
 
     /// The 2026-10-20 defect: move at 60 days, delete at 30, so the switch moved nothing, ever.
@@ -74,7 +89,7 @@ import Transcription
         #expect(D.effectiveColdStorageMinAgeDays(chosen: 365, retentionDays: 365) == 180)
         #expect(D.effectiveColdStorageMinAgeDays(chosen: 14, retentionDays: 30) == 14)
         // Every pairing the two pickers can store ends younger than Keep audio, or nil.
-        for keep in [7, 14, 30, 90, 180, 365] {
+        for keep in D.retentionDaysOptions {
             for age in D.coldStorageMinAgeOptions {
                 if let effective = D.effectiveColdStorageMinAgeDays(chosen: age, retentionDays: keep) {
                     #expect(effective < keep)
@@ -92,6 +107,28 @@ import Transcription
             #expect(settings.effectiveColdStorageMinAgeDays == nil)
             #expect(!settings.coldStoragePolicy.enabled)
         }
+    }
+
+    /// Moving by room alone needs no age, works under a Keep too short for any, and turns the
+    /// deleting limit off: a full phone sends audio on, and iCloud is where it goes.
+    @Test func theICloudRuleCanBeRoomAlone() {
+        for keep in [7, 30, RuntimeSettingsDefaults.keepForever] {
+            let settings = RuntimeSettingsSnapshot(
+                retentionDays: keep, retentionMaxBytes: 2 << 30, coldStorageEnabled: true,
+                coldStorageMinAgeDays: RuntimeSettingsDefaults.neverByAge, coldStorageMaxBytes: 5 << 30)
+            #expect(settings.effectiveColdStorageMinAgeDays == nil)
+            #expect(
+                settings.coldStoragePolicy
+                    == ColdStoragePolicy(enabled: true, minAgeMs: .max, maxPhoneBytes: 5 << 30))
+            #expect(settings.retentionConfig.maxTotalBytes == .max)
+        }
+        let neither = RuntimeSettingsSnapshot(
+            coldStorageEnabled: true, coldStorageMinAgeDays: RuntimeSettingsDefaults.neverByAge)
+        #expect(!neither.coldStoragePolicy.enabled)
+        // Off: the deleting limit is in force again.
+        let off = RuntimeSettingsSnapshot(retentionMaxBytes: 2 << 30, coldStorageMaxBytes: 5 << 30)
+        #expect(!off.coldStoragePolicy.enabled)
+        #expect(off.retentionConfig.maxTotalBytes == 2 << 30)
     }
 
     @Test func retentionMaxBytesDefaultsWithoutTheAppDeclaringIt() {

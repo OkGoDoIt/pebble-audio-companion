@@ -219,7 +219,7 @@ enum AssistantsDemo {
                 dataSources: [.conversations: .allowed, .health: .allowed, .calendar: .ask])
         case "09e":
             inputs.aiDestination = "OpenAI"
-            inputs.iCloudAgeDays = 60
+            inputs.iCloudRule = CloudAudioRule(ageDays: 60, maxBytes: 0)
             inputs.server = .init(
                 host: host, paused: true, scope: .lastDays(90), clipsAllowed: false,
                 editsAllowed: false, assistants: assistants([gpt, claude]))

@@ -10,6 +10,10 @@ enum Tokens {
     static let tintPressed = Color(light: 0x4A4AC4, dark: 0x6B6BDA)
     /// Captured / awaiting transcription (light violet).
     static let captured = Color(light: 0xB9B9EE, dark: 0x55558A)
+    /// A glyph on a `captured` fill.
+    static let capturedInk = Color(light: 0x2B2B7A, dark: 0xE0E0FF)
+    /// A glyph on a `destructiveFill`.
+    static let destructiveInk = Color(light: 0xD70015, dark: 0xFF6961)
     static let tintOnDark = Color(hex: 0x9F9FF0)
     /// Foreground on a filled-tint surface (filled buttons, selected chips, play button).
     static let onTint = Color(hex: 0xFFFFFF)
@@ -34,6 +38,7 @@ enum Tokens {
     /// Attention states (paused, reconnecting, stock firmware, transcription failed).
     static let attention = Color(light: 0xFF9F0A, dark: 0xFFB340)
     static let destructive = Color(light: 0xFF3B30, dark: 0xFF453A)
+    static let destructiveFill = Tokens.destructive.adaptiveOpacity(light: 0.12, dark: 0.24)
     static let neutralDot = Color(light: 0x8A8A8E, dark: 0x98989D)
 
     // ── Four-state audio taxonomy (canonical) ───────────────────────────────

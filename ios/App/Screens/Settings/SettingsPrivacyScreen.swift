@@ -256,7 +256,8 @@ extension PrivacyModel {
             aiFallbackOnly: settings.aiMode == .localFirst,
             transcriptionBackup: settings.transcriptionBackupDestination,
             aiBackup: settings.aiBackupDestination,
-            iCloudAgeDays: settings.coldStorageEnabled ? settings.effectiveColdStorageMinAgeDays : nil,
+            iCloudRule: settings.cloudRule,
+            iCloudHoldsAudio: settings.cloudHoldsAudio,
             systemSearch: settings.systemSearchVisibility,
             server: SettingsDataSources.current.assistants.privacyServer,
             museState: PrivacyHooks.museState())

@@ -106,6 +106,7 @@ final class AppSettings {
                 retentionMaxBytes: retentionMaxBytes,
                 coldStorageEnabled: coldStorageEnabled,
                 coldStorageMinAgeDays: coldStorageMinAgeDays,
+                coldStorageMaxBytes: coldStorageMaxBytes,
                 transcriptsConfigured: transcriptsConfigured,
                 backgroundCatchUp: backgroundCatchUp,
                 cloudUploadNetwork: cloudUploadNetwork,
@@ -347,11 +348,30 @@ final class AppSettings {
     }
 
     /// REAL (Q7 — the old app's was placebo). Days of audio kept; enforced by retention.
+    /// `AppSettings.keepForever` deletes nothing by age.
     var retentionDays: Int {
         didSet {
-            defaults.set(retentionDays, forKey: Keys.retentionDays)
+            storeRetentionDays()
             mirrorToRuntime()
         }
+    }
+
+    nonisolated static let keepForever = RuntimeSettingsDefaults.keepForever
+
+    /// Forever is its own key, beside a day count every build understands. A build from before
+    /// Forever reads an unknown day count as the 30-day default and deletes everything older on
+    /// its first pass, and an older build can be back on the phone at any time (a branch, a
+    /// rollback). It finds one year instead.
+    private func storeRetentionDays() {
+        let forever = retentionDays == AppSettings.keepForever
+        defaults.set(forever, forKey: Keys.retentionForever)
+        defaults.set(forever ? 365 : retentionDays, forKey: Keys.retentionDays)
+    }
+
+    private static func storedRetentionDays(_ defaults: UserDefaults) -> Int? {
+        if defaults.bool(forKey: Keys.retentionForever) { return keepForever }
+        let days = defaults.integer(forKey: Keys.retentionDays)
+        return retentionOptions.contains(days) ? days : nil
     }
 
     /// Total on-disk limit for stored audio, in bytes. **0 = no limit, and that is the default.**
@@ -389,6 +409,77 @@ final class AppSettings {
             defaults.set(coldStorageMinAgeDays, forKey: Keys.coldStorageMinAgeDays)
             mirrorToRuntime()
         }
+    }
+
+    /// How much audio this phone holds before its oldest moves to iCloud. 0 = no limit. Its own
+    /// key, never `retention_max_bytes`: a build from before this reads that one as how much to
+    /// keep before DELETING.
+    private(set) var coldStorageMaxBytes: Int64 {
+        didSet {
+            defaults.set(coldStorageMaxBytes, forKey: Keys.coldStorageMaxBytes)
+            mirrorToRuntime()
+        }
+    }
+
+    /// Some audio is in iCloud Drive (or on its way) whatever the rule says now: turning the
+    /// rule off brings nothing back by itself, so the privacy surfaces still have to name it.
+    /// Written by the storage stats as they change.
+    var cloudHoldsAudio: Bool {
+        didSet { defaults.set(cloudHoldsAudio, forKey: Keys.coldStorageHoldsAudio) }
+    }
+
+    /// What moves audio to iCloud Drive as things stand; nil when nothing does.
+    var cloudRule: CloudAudioRule? {
+        guard coldStorageEnabled else { return nil }
+        return CloudAudioRule(
+            ageDays: effectiveColdStorageMinAgeDays, maxBytes: coldStorageMaxBytes)
+    }
+
+    /// Sets the iCloud stop: an age, how much this phone holds, both, or neither, which is off.
+    ///
+    /// A limit belongs to whichever stop comes next, so it changes hands with this one. Turning
+    /// iCloud on takes over a deleting limit (a full phone now moves audio instead of deleting
+    /// it). Turning it off drops the limit rather than handing it back: "stop using iCloud" must
+    /// never be the tap that starts deleting. The order of the writes keeps every state in
+    /// between safe too, since each one wakes the runtime.
+    func setCloudRule(ageDays: Int?, maxBytes: Int64) {
+        guard ageDays != nil || maxBytes > 0 else {
+            coldStorageEnabled = false
+            coldStorageMaxBytes = 0
+            return
+        }
+        let takenOver = !coldStorageEnabled && maxBytes == 0 ? retentionMaxBytes : 0
+        coldStorageMaxBytes = max(maxBytes, takenOver)
+        coldStorageMinAgeDays = ageDays ?? RuntimeSettingsDefaults.neverByAge
+        coldStorageEnabled = true
+        retentionMaxBytes = 0
+    }
+
+    /// Sets how much this phone holds before the oldest recordings are deleted. Only offered while
+    /// nothing reaches iCloud; a rule that is on but can never act gives way to it.
+    func setDeleteLimit(_ bytes: Int64) {
+        if cloudRule == nil { coldStorageEnabled = false }
+        retentionMaxBytes = bytes
+    }
+
+    /// Both limits set (chosen when the limit always deleted): iCloud takes it, as above.
+    private func handLimitToCloud() {
+        guard coldStorageEnabled, retentionMaxBytes > 0 else { return }
+        if coldStorageMaxBytes == 0 { coldStorageMaxBytes = retentionMaxBytes }
+        retentionMaxBytes = 0
+        defaults.set(coldStorageMaxBytes, forKey: Keys.coldStorageMaxBytes)
+        defaults.set(retentionMaxBytes, forKey: Keys.retentionMaxBytes)
+    }
+
+    private static func storedCloudAge(_ defaults: UserDefaults) -> Int? {
+        let days = defaults.integer(forKey: Keys.coldStorageMinAgeDays)
+        return coldStorageAgeOptions.contains(days) || days == RuntimeSettingsDefaults.neverByAge
+            ? days : nil
+    }
+
+    private static func storedLimit(_ defaults: UserDefaults, _ key: String) -> Int64? {
+        let bytes = Int64(defaults.integer(forKey: key))
+        return retentionLimitOptions.contains(bytes) ? bytes : nil
     }
 
     /// The age audio really moves at: the choice when it is younger than "Keep audio", else the
@@ -498,8 +589,8 @@ final class AppSettings {
         defaults.set(previous.settingValue, forKey: Keys.captureIntent)
     }
 
-    /// The approved "Keep audio" options (6.7).
-    static let retentionOptions = [7, 14, 30, 90, 180, 365]
+    /// The "Keep recordings" options. Sourced from the kit, like the limit below.
+    static let retentionOptions = RuntimeSettingsDefaults.retentionDaysOptions
 
     /// The "Storage limit" options, in bytes; `0` is "No limit" and the default. Sourced from the
     /// kit so the picker can only ever store a value retention understands.
@@ -510,7 +601,7 @@ final class AppSettings {
     /// Row value for a storage limit — "No limit" or e.g. "5 GB". The options are exact
     /// gibibytes, so they are named as round numbers rather than run through a measured-size
     /// formatter that would render the chosen "2 GB" back as "2.0 GB".
-    static func retentionLimitLabel(_ bytes: Int64) -> String {
+    nonisolated static func retentionLimitLabel(_ bytes: Int64) -> String {
         bytes <= 0 ? "No limit" : "\(bytes / (1 << 30)) GB"
     }
 
@@ -634,31 +725,30 @@ final class AppSettings {
             (defaults.object(forKey: Keys.askSemanticRecall) as? Bool) ?? true
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
         onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
-        let storedRetention = defaults.integer(forKey: Keys.retentionDays)
-        retentionDays = AppSettings.retentionOptions.contains(storedRetention)
-            ? storedRetention : 30
+        let storedRetention = AppSettings.storedRetentionDays(defaults)
+        retentionDays = storedRetention ?? RuntimeSettingsDefaults.retentionDays
         // Absent key => 0 => no limit. Nobody has ever been offered this choice, so nobody's
         // audio may be evicted by it until they make one.
-        let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
-        retentionMaxBytes = AppSettings.retentionLimitOptions.contains(storedLimit) ? storedLimit : 0
+        retentionMaxBytes = AppSettings.storedLimit(defaults, Keys.retentionMaxBytes) ?? 0
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
         coldStorageEnabled = defaults.bool(forKey: Keys.coldStorageEnabled)
-        let storedColdAge = defaults.integer(forKey: Keys.coldStorageMinAgeDays)
-        coldStorageMinAgeDays = AppSettings.coldStorageAgeOptions.contains(storedColdAge)
-            ? storedColdAge : RuntimeSettingsDefaults.coldStorageMinAgeDays
+        coldStorageMinAgeDays = AppSettings.storedCloudAge(defaults)
+            ?? RuntimeSettingsDefaults.coldStorageMinAgeDays
+        coldStorageMaxBytes = AppSettings.storedLimit(defaults, Keys.coldStorageMaxBytes) ?? 0
+        cloudHoldsAudio = defaults.bool(forKey: Keys.coldStorageHoldsAudio)
 
         #if DEBUG
         // Simulator-automation staging: relaunching with these args re-enters/skips the
         // onboarding gate without a reinstall. DEBUG builds only.
         let args = ProcessInfo.processInfo.arguments
         // `-storage.seed` (see `StorageSeed`) fills eight months of recordings; the default
-        // "Keep audio · 30 days" would sweep most of them on the first pass. Read here, before
-        // the composition runs that pass.
-        if args.contains("-storage.seed") {
+        // "Keep recordings · 1 month" would sweep most of them on the first pass. Read here,
+        // before the composition runs that pass; a choice made since is left alone.
+        if args.contains("-storage.seed"), storedRetention == nil {
             retentionDays = 365
-            defaults.set(365, forKey: Keys.retentionDays)
+            storeRetentionDays()
         }
         if args.contains("-onboarding.reset") {
             onboardingComplete = false
@@ -672,6 +762,8 @@ final class AppSettings {
         // A "Connect Watch" that no completed onboarding ever ratified does not get to leave the
         // microphone on. Must precede `mirrorToRuntime()` — the runtime reads the mirror.
         restoreCaptureIfOnboardingWasAbandoned()
+
+        handLimitToCloud()
 
         // Property observers do not fire during initialization, so seed the mirror here.
         mirrorToRuntime()
@@ -734,18 +826,20 @@ final class AppSettings {
             askSemanticRecallEnabled = stored
         }
         automaticWavExportEnabled = defaults.bool(forKey: Keys.wavExport)
-        let storedRetention = defaults.integer(forKey: Keys.retentionDays)
-        if AppSettings.retentionOptions.contains(storedRetention) { retentionDays = storedRetention }
-        let storedLimit = Int64(defaults.integer(forKey: Keys.retentionMaxBytes))
-        if AppSettings.retentionLimitOptions.contains(storedLimit) { retentionMaxBytes = storedLimit }
+        if let stored = AppSettings.storedRetentionDays(defaults) { retentionDays = stored }
+        if let stored = AppSettings.storedLimit(defaults, Keys.retentionMaxBytes) {
+            retentionMaxBytes = stored
+        }
         transcriptsConfigured = defaults.bool(forKey: Keys.transcriptsConfigured)
         // Absent key => false: the loss alert is opt-in, so a fresh install is silent.
         lossAlertsEnabled = defaults.bool(forKey: Keys.lossAlerts)
         coldStorageEnabled = defaults.bool(forKey: Keys.coldStorageEnabled)
-        let storedColdAge = defaults.integer(forKey: Keys.coldStorageMinAgeDays)
-        if AppSettings.coldStorageAgeOptions.contains(storedColdAge) {
-            coldStorageMinAgeDays = storedColdAge
+        if let stored = AppSettings.storedCloudAge(defaults) { coldStorageMinAgeDays = stored }
+        if let stored = AppSettings.storedLimit(defaults, Keys.coldStorageMaxBytes) {
+            coldStorageMaxBytes = stored
         }
+        cloudHoldsAudio = defaults.bool(forKey: Keys.coldStorageHoldsAudio)
+        handLimitToCloud()
         // Onboarding LAST: it is the one key that changes what the user sees immediately, and a
         // migrated "yes" must never be undone by a half-applied reload.
         if defaults.bool(forKey: Keys.onboardingComplete) { onboardingComplete = true }
@@ -780,6 +874,7 @@ final class AppSettings {
         static let wavExport = "automatic_wav_export"
         static let onboardingComplete = "onboarding_complete"
         static let retentionDays = "retention_days"
+        static let retentionForever = "retention_forever"
         static let retentionMaxBytes = "retention_max_bytes"
         static let transcriptsConfigured = "transcripts_configured"
         static let lossAlerts = "loss_alerts_enabled"
@@ -790,6 +885,8 @@ final class AppSettings {
         static let askSemanticRecall = "ask_semantic_recall"
         static let coldStorageEnabled = "cold_storage_enabled"
         static let coldStorageMinAgeDays = "cold_storage_min_age_days"
+        static let coldStorageMaxBytes = "cold_storage_max_bytes"
+        static let coldStorageHoldsAudio = "cold_storage_holds_audio"
         static let archiveSyncOrigin = "archive_sync_origin"
         static let archiveSyncDeviceId = "archive_sync_device_id"
         static let archiveSyncEnabled = "archive_sync_enabled"

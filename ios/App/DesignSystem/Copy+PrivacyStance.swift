@@ -37,24 +37,30 @@ extension Copy.Privacy {
         var cloudTranscriptionDestination: String?
         /// `AppSettings.remoteAiDestination` — nil in AI Local only.
         var remoteAiDestination: String?
-        /// The iCloud rule's age in days when it is on, nil when off. Audio in iCloud Drive is
-        /// a place data goes, so the stance names it — in the person's own account, not a
-        /// service of this app's.
-        var coldStorageAgeDays: Int?
+        /// The iCloud rule when it is on, nil when off. Audio in iCloud Drive is a place data
+        /// goes, so the stance names it — in the person's own account, not a service of this
+        /// app's.
+        var cloudRule: CloudAudioRule?
+        /// iCloud Drive holds audio, whatever the rule says now.
+        var cloudHoldsAudio: Bool
 
         init(
             transcriptionMode: TranscriptionMode,
             aiMode: AiProcessingMode,
             cloudTranscriptionDestination: String?,
             remoteAiDestination: String?,
-            coldStorageAgeDays: Int? = nil
+            cloudRule: CloudAudioRule? = nil,
+            cloudHoldsAudio: Bool = false
         ) {
             self.transcriptionMode = transcriptionMode
             self.aiMode = aiMode
             self.cloudTranscriptionDestination = cloudTranscriptionDestination
             self.remoteAiDestination = remoteAiDestination
-            self.coldStorageAgeDays = coldStorageAgeDays
+            self.cloudRule = cloudRule
+            self.cloudHoldsAudio = cloudHoldsAudio
         }
+
+        var usesICloud: Bool { cloudRule != nil || cloudHoldsAudio }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -91,12 +97,13 @@ extension Copy.Privacy {
         let summary: String
 
         switch (stt, ai) {
-        case (nil, nil) where inputs.coldStorageAgeDays != nil:
+        case (nil, nil) where inputs.usesICloud:
             // Not "everything stays on this phone": older audio moves to the person's iCloud
             // Drive, which the Privacy screen counts as a place (`PrivacyModel`, D3). Their own
             // account, not a service this app sends to, so the summary says what does not go,
             // and the iCloud line below says what does.
-            headline = "Older audio goes to your iCloud Drive"
+            headline = inputs.cloudRule != nil
+                ? "Older audio goes to your iCloud Drive" : "Some audio is in your iCloud Drive"
             summary =
                 "Transcription and AI both run on this iPhone, so no recording, transcript, or "
                 + "note is sent to a transcription or AI service."
@@ -145,16 +152,20 @@ extension Copy.Privacy {
         if let ai, let line = aiQualifier(inputs.aiMode, destination: ai) {
             qualifiers.append(line)
         }
-        if let age = inputs.coldStorageAgeDays {
+        if let rule = inputs.cloudRule {
             qualifiers.append(
-                "Audio older than \(Copy.Settings.Storage.ageLabel(age)) is kept in your own "
-                    + "iCloud Drive and fetched when you play it. Transcripts stay on this iPhone.")
+                "\(rule.audio) is kept in your own iCloud Drive and fetched when you play it. "
+                    + "Transcripts stay on this iPhone.")
+        } else if inputs.cloudHoldsAudio {
+            qualifiers.append(
+                "Some older audio is still in your own iCloud Drive and fetched when you play it. "
+                    + "Transcripts stay on this iPhone.")
         }
 
         // Nothing leaves the phone at all: no provider, and no audio moving to iCloud Drive. The
         // same count of places the Privacy screen makes, so the two never disagree about a
         // green dot; its commitments follow the same split (`PrivacyModel.commitments`).
-        let isFullyLocal = stt == nil && ai == nil && inputs.coldStorageAgeDays == nil
+        let isFullyLocal = stt == nil && ai == nil && !inputs.usesICloud
         return Stance(
             headline: headline,
             isFullyLocal: isFullyLocal,
@@ -236,7 +247,7 @@ extension Copy.Privacy {
     ///    container is in the person's own iCloud account, not a server of this app's; only the
     ///    cold tier touches it (`ColdAudioTier`, and the store reading through
     ///    `ColdAudioLocator`), audio moves into it only while "Keep older audio in iCloud" is
-    ///    on, and the stance names it then (`StanceInputs.coldStorageAgeDays`). There is no
+    ///    on, and the stance names it then (`StanceInputs.cloudRule`). There is no
     ///    first-party endpoint anywhere in the tree. `DiagnosticsService` records in its own
     ///    header that report content "is never included".
     /// 2. Verified: the complete outbound host list from source is the two transcription
@@ -315,9 +326,10 @@ extension AppSettings {
                 aiMode: aiMode,
                 cloudTranscriptionDestination: cloudTranscriptionDestination,
                 remoteAiDestination: remoteAiDestination,
-                // The age that takes effect, not the raw choice: under a short "Keep audio" the
-                // two differ, and nil (nothing can move) leaves the iCloud line out entirely.
-                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
+                // What takes effect, not the raw choice: under a short Keep recordings the two
+                // differ, and nil (nothing can move) leaves the rule out entirely.
+                cloudRule: cloudRule,
+                cloudHoldsAudio: cloudHoldsAudio
             )
         )
     }

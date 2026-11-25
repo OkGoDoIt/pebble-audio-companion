@@ -206,7 +206,8 @@ extension AppSettings {
                     ? Copy.Privacy.remoteAiName(for: remote) : nil,
                 // Not chosen in onboarding, but on for someone redoing it with older audio in
                 // iCloud Drive: without it step 3 said "Everything stays on this phone".
-                coldStorageAgeDays: coldStorageEnabled ? effectiveColdStorageMinAgeDays : nil
+                cloudRule: cloudRule,
+                cloudHoldsAudio: cloudHoldsAudio
             )
         )
     }

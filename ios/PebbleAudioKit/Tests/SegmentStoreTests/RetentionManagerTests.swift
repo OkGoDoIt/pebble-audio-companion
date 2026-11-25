@@ -115,6 +115,39 @@ import WireProtocol
         #expect(await store.listSegments().map(\.segmentId) == [recent])
     }
 
+    @Test func ageCap_keepForeverDeletesNothingHoweverOld() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let ancient = try await makeSegment(store, id: 1, transcribed: true)
+        clock.now += 20 * 365 * 24 * 60 * 60 * 1000
+
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: .max, maxAgeMs: .max))
+        #expect(try await manager.enforce().isEmpty)
+        #expect(await store.listSegments().map(\.segmentId) == [ancient])
+    }
+
+    /// The limit is on what the phone holds. Audio that has moved to iCloud takes no room here,
+    /// so deleting it frees nothing, and it must not be what the limit reaches for.
+    @Test func sizeCap_neverDeletesAudioThatMovedToICloud() async throws {
+        let root = try tempRoot()
+        let store = makeStore(root)
+        let moved = try await makeSegment(store, id: 1, transcribed: true)
+        let oldest = try await makeSegment(store, id: 2, transcribed: true)
+        let newest = try await makeSegment(store, id: 3, transcribed: true)
+        try await store.setColdStorage(
+            moved, ColdStorageMeta(movedAtMs: clock.now, bytes: 390, state: ColdStorageMeta.stateEvicted))
+        try FileManager.default.removeItem(at: store.localLogURL(moved))
+
+        // Two 390-byte segments on the phone; the cap fits one.
+        let manager = RetentionManager(
+            store: store, freeSpace: freeSpace, nowMs: { [clock] in clock.now },
+            config: RetentionConfig(maxTotalBytes: 500))
+        #expect(try await manager.enforce() == [oldest])
+        #expect(await store.listSegments().map(\.segmentId) == [moved, newest])
+    }
+
     /// Audio the migration recovered from `quarantine/` is older than the retention window by
     /// definition — being orphaned long enough to outlive its sidecar is what made it orphaned —
     /// so an age sweep would delete it again on the first pass after the user recovered it. Now

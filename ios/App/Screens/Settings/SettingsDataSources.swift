@@ -105,15 +105,36 @@ struct StorageOverview: Equatable {
     /// Downloaded weights plus the compiled cache.
     var modelBytes: Int64
     var temporaryBytes: Int64
+    /// WAV copies in the exports folder.
+    var exportBytes: Int64 = 0
+    /// What "Export All Audio" writes: 16-bit WAVs of every recording whose audio is here.
+    var exportAllBytes: Int64 = 0
     var freeBytes: Int64
     var capacityBytes: Int64
     /// iCloud Drive is reachable for this app right now.
     var cloudAvailable: Bool
     var restoring: ColdAudioTier.Summary.Restore?
     var cloudError: String?
+    /// The person's iCloud storage is full.
+    var cloudIsFull = false
+
+    /// The files have been measured: until then everything but the recordings reads as nothing.
+    var isMeasured: Bool { capacityBytes > 0 }
 
     /// Everything of ours that is on the phone.
-    var onPhoneBytes: Int64 { audioOnPhoneBytes + textBytes + modelBytes + temporaryBytes }
+    var onPhoneBytes: Int64 {
+        audioOnPhoneBytes + textBytes + modelBytes + exportBytes + temporaryBytes
+    }
+    /// Whether exporting everything leaves the phone above the free space at which recording
+    /// starts to warn. Files already exported are written over, so they cost nothing again.
+    var exportFits: Bool {
+        !isMeasured || freeBytes - max(exportAllBytes - exportBytes, 0)
+            >= RetentionConfig.defaultLowStorageFloorBytes
+    }
+    /// Whether what is in iCloud fits on this phone, on the same terms.
+    var bringBackFits: Bool {
+        !isMeasured || freeBytes - audioInCloudBytes >= RetentionConfig.defaultLowStorageFloorBytes
+    }
     /// Every recording's audio, wherever it is.
     var audioBytes: Int64 { audioOnPhoneBytes + audioInCloudBytes }
 }
@@ -127,12 +148,10 @@ enum StorageCapacity {
     }
 }
 
-/// What a rule would move: the preview beside the age picker.
+/// What a rule would move: the preview beside a choice.
 struct StoragePreview: Equatable {
     var bytes: Int64
     var count: Int
-    /// Of all audio (phone and iCloud together), 0…100.
-    var percent: Int
 }
 
 /// The Storage screen's arithmetic, pure over the sidecars.
@@ -146,8 +165,12 @@ enum StoragePlanner {
         var uploading: Int64 = 0
         var uploadingCount = 0
         var count = 0
+        var exportAll: Int64 = 0
         for meta in metas where !meta.isOpen {
             count += 1
+            if meta.coldStorage?.isEvicted != true {
+                exportAll += meta.frameCount * Int64(meta.frameSamples) * 2
+            }
             if let coldStorage = meta.coldStorage {
                 if coldStorage.isEvicted {
                     inCloud += coldStorage.bytes
@@ -174,27 +197,36 @@ enum StoragePlanner {
             textBytes: text,
             modelBytes: footprint.map { $0.modelBytes + $0.cacheBytes } ?? 0,
             temporaryBytes: footprint?.temporaryBytes ?? 0,
+            exportBytes: footprint?.exportBytes ?? 0,
+            exportAllBytes: exportAll,
             freeBytes: footprint?.freeBytes ?? 0,
             capacityBytes: footprint?.capacityBytes ?? 0,
             cloudAvailable: cold?.available ?? false,
             restoring: cold?.restoring,
-            cloudError: cold?.lastError)
+            cloudError: cold?.lastError,
+            cloudIsFull: cold?.isFull ?? false)
     }
 
-    /// What `olderThanDays` would move right now, out of everything (so the share is of all
-    /// audio and does not jump as audio moves).
+    /// What a move rule would move right now: by age, by what this phone holds, or both. The
+    /// tier's own selection, so the number beside a choice is what the choice does.
     static func wouldMove(
-        metas: [SegmentMeta], olderThanDays: Int, nowMs: Int64, audioBytes: Int64
+        metas: [SegmentMeta], ageDays: Int?, maxBytes: Int64, nowMs: Int64
     ) -> StoragePreview {
-        let minAgeMs = Int64(max(1, olderThanDays)) * 86_400_000
-        var bytes: Int64 = 0
-        var count = 0
-        for meta in metas where ColdAudioTier.isEligible(meta, minAgeMs: minAgeMs, now: nowMs) {
-            bytes += meta.logBytes
-            count += 1
+        let policy = ColdStoragePolicy(
+            enabled: true,
+            minAgeMs: ageDays.map(RuntimeSettingsDefaults.maxAgeMs(retentionDays:)) ?? .max,
+            maxPhoneBytes: maxBytes > 0 ? maxBytes : .max)
+        let moved = ColdAudioTier.movable(metas, policy: policy, now: nowMs)
+        return StoragePreview(bytes: moved.reduce(0) { $0 + $1.logBytes }, count: moved.count)
+    }
+
+    /// How many recordings a deleting age would delete from what is here now, by the
+    /// rule `RetentionManager` enforces: age from arrival, and never recovered audio.
+    static func wouldDelete(metas: [SegmentMeta], olderThanDays: Int, nowMs: Int64) -> Int {
+        let maxAgeMs = RuntimeSettingsDefaults.maxAgeMs(retentionDays: olderThanDays)
+        return metas.count {
+            !$0.isOpen && !$0.isRecovered && nowMs - $0.receivedAtMs > maxAgeMs
         }
-        let percent = audioBytes > 0 ? Int((Double(bytes) / Double(audioBytes) * 100).rounded()) : 0
-        return StoragePreview(bytes: bytes, count: count, percent: min(max(percent, 0), 100))
     }
 }
 
@@ -208,9 +240,11 @@ protocol StorageStatsSource: AnyObject {
     var freeSpace: String { get }
     /// The overview, once the sidecars have been read; nil until then.
     var overview: StorageOverview? { get }
-    /// What the age picker's current value would move. Synchronous over the cached sidecars,
-    /// so the preview follows the picker without a round trip.
-    func wouldMove(olderThanDays: Int) -> StoragePreview
+    /// What a move rule would move right now. Synchronous over the cached sidecars, so a
+    /// preview needs no round trip.
+    func wouldMove(ageDays: Int?, maxBytes: Int64) -> StoragePreview
+    /// How many recordings keeping them only this long would delete.
+    func wouldDelete(olderThanDays: Int) -> Int
     /// Starts bringing every recording in iCloud back to the phone.
     func bringEverythingBack()
     /// The byte sweep runs only while the Storage screen is visible; see `LiveStorageStatsSource`.
@@ -225,7 +259,7 @@ protocol StorageStatsSource: AnyObject {
 final class MockStorageStatsSource: StorageStatsSource {
     var recordingCount = 383
     var recordingsSize = "2.1 GB"
-    var recordingsBytes: Int64 = 2_254_857_830
+    var recordingsBytes: Int64 { overview?.audioOnPhoneBytes ?? 0 }
 
     /// The artboard case: the phone on 2026-10-12, with a season of audio already in iCloud.
     var overview: StorageOverview? = StorageOverview(
@@ -238,11 +272,47 @@ final class MockStorageStatsSource: StorageStatsSource {
         textBytes: 347_078_656,
         modelBytes: 2_533_359_616,
         temporaryBytes: 0,
+        exportAllBytes: 13_200_000_000,
         freeBytes: 20_500_000_000,
         capacityBytes: 512_000_000_000,
         cloudAvailable: true,
         restoring: nil,
         cloudError: nil)
+
+    #if DEBUG
+    /// `-demo.storage <state>` stages one state of the Storage screen for a screenshot.
+    init() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-demo.storage"), index + 1 < args.count else { return }
+        overview?.audioOnPhoneBytes = 5_900_000_000
+        overview?.audioInCloudBytes = 0
+        overview?.audioInCloudCount = 0
+        overview?.textBytes = 1_070_000_000
+        overview?.modelBytes = 266_000_000
+        overview?.exportAllBytes = 96_000_000_000
+        overview?.freeBytes = 188_000_000_000
+        for state in args[index + 1].split(separator: "+") {
+            switch state {
+            case "measuring": overview = nil
+            case "unavailable": overview?.cloudAvailable = false
+            case "inCloud":
+                overview?.audioOnPhoneBytes = 2_500_000_000
+                overview?.audioInCloudBytes = 3_400_000_000
+                overview?.audioInCloudCount = 988
+            case "uploading": overview?.uploadingBytes = 260_000_000
+            case "cloudFull":
+                overview?.cloudError = "upload seg: quota"
+                overview?.cloudIsFull = true
+            case "cloudError": overview?.cloudError = "upload seg: failed"
+            case "restoring": overview?.restoring = .init(done: 12, total: 988)
+            case "noRoom": overview?.freeBytes = 1_600_000_000
+            case "paused": overview?.freeBytes = 700_000_000
+            case "exports": overview?.exportBytes = 4_100_000_000
+            default: break
+            }
+        }
+    }
+    #endif
 
     /// Real free space — an honest stat surface even in the mock stage.
     var freeSpace: String {
@@ -256,13 +326,18 @@ final class MockStorageStatsSource: StorageStatsSource {
     }
 
     /// Roughly: the share of the mock library older than the age, on a 240-day history.
-    func wouldMove(olderThanDays: Int) -> StoragePreview {
-        guard let overview else { return StoragePreview(bytes: 0, count: 0, percent: 0) }
-        let share = max(0, min(1, 1 - Double(olderThanDays) / 240))
-        let bytes = Int64(Double(overview.audioOnPhoneBytes) * share)
-        return StoragePreview(
-            bytes: bytes, count: Int(Double(overview.recordingCount) * share),
-            percent: Int((Double(bytes) / Double(max(overview.audioBytes, 1)) * 100).rounded()))
+    func wouldMove(ageDays: Int?, maxBytes: Int64) -> StoragePreview {
+        guard let overview else { return StoragePreview(bytes: 0, count: 0) }
+        let share = ageDays.map { max(0, min(1, 1 - Double($0) / 240)) } ?? 0
+        let total = overview.audioBytes
+        let target = max(
+            Int64(Double(total) * share), maxBytes > 0 ? max(total - maxBytes, 0) : 0)
+        let bytes = max(target - overview.audioInCloudBytes, 0)
+        return StoragePreview(bytes: bytes, count: bytes > 0 ? 1 : 0)
+    }
+
+    func wouldDelete(olderThanDays: Int) -> Int {
+        Int(Double(recordingCount) * max(0, 1 - Double(olderThanDays) / 240))
     }
 
     func bringEverythingBack() {
@@ -274,7 +349,6 @@ final class MockStorageStatsSource: StorageStatsSource {
     func deleteAllRecordings() {
         recordingCount = 0
         recordingsSize = "0 KB"
-        recordingsBytes = 0
         overview?.recordingCount = 0
         overview?.audioOnPhoneBytes = 0
         overview?.audioInCloudBytes = 0

@@ -32,8 +32,11 @@ struct PrivacyInputs: Equatable {
     var transcriptionBackup: String?
     /// Who writes while D2's account is refused; nil when no service was named for it.
     var aiBackup: String?
-    /// D3: audio older than this many days moves to the person's iCloud Drive; nil when off.
-    var iCloudAgeDays: Int?
+    /// D3: what moves audio to the person's iCloud Drive; nil when off.
+    var iCloudRule: CloudAudioRule?
+    /// D3, with the rule off: audio moved earlier is still there.
+    var iCloudHoldsAudio = false
+    var usesICloud: Bool { iCloudRule != nil || iCloudHoldsAudio }
     /// D4: what the on-device search index may see. Nothing leaves.
     var systemSearch: SystemSearchVisibility = .summaries
     /// D5: nil only when no server is linked and set up (paused is a state, not nil).
@@ -332,11 +335,12 @@ enum PrivacyModel {
                     chips: [.init(icon: .text, label: "Text")],
                     mark: BrandMark.forProvider(named: backup), control: .transcription))
         }
-        if let days = inputs.iCloudAgeDays {
+        if inputs.usesICloud {
             out.append(
                 PrivacyDestination(
                     kind: .iCloud, name: iCloudName,
-                    why: "Keeps audio older than \(Copy.count(days, "day"))",
+                    why: inputs.iCloudRule.map { "Keeps \($0.audioInSentence)" }
+                        ?? "Still holds older audio",
                     chips: [.init(icon: .audio, label: "Older audio")], mark: .icloud,
                     control: .storage))
         }
@@ -464,9 +468,12 @@ enum PrivacyModel {
             )
         case .iCloud:
             return (
-                .neutral, "Older audio goes to iCloud Drive",
-                "Audio older than \(Copy.count(inputs.iCloudAgeDays ?? 0, "day")) moves to your own "
-                    + "iCloud Drive. Transcripts stay on this phone."
+                .neutral,
+                inputs.iCloudRule != nil
+                    ? "Older audio goes to iCloud Drive" : "Some audio is in iCloud Drive",
+                (inputs.iCloudRule.map { "\($0.audio) moves to your own iCloud Drive." }
+                    ?? "Audio moved earlier is still in your own iCloud Drive.")
+                    + " Transcripts stay on this phone."
             )
         case .server:
             let server = inputs.server
@@ -565,7 +572,12 @@ enum PrivacyModel {
                     ? "Your server keeps a copy of their text."
                     : "Conversation text syncs to your server.")
         }
-        if inputs.iCloudAgeDays != nil { parts.append("Older audio moves to your iCloud Drive.") }
+        if inputs.usesICloud {
+            parts.append(
+                inputs.iCloudRule != nil
+                    ? "Older audio moves to your iCloud Drive."
+                    : "Some audio is in your iCloud Drive.")
+        }
         if parts.isEmpty { return Copy.Privacy.dataFlow(transcription: nil, ai: nil) }
         if parts.count == 1, inputs.server != nil, inputs.transcriptionDestination == nil,
             inputs.aiDestination == nil

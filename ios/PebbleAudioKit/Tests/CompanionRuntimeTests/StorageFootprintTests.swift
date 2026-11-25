@@ -14,6 +14,7 @@ import Testing
         let models = base.appendingPathComponent("models", isDirectory: true)
         let caches = base.appendingPathComponent("Caches", isDirectory: true)
         let tmp = base.appendingPathComponent("tmp", isDirectory: true)
+        let exports = base.appendingPathComponent("PebbleAudioExports", isDirectory: true)
 
         func put(_ path: String, _ bytes: Int, under: URL = root) throws {
             let url = under.appendingPathComponent(path)
@@ -37,10 +38,11 @@ import Testing
         try put("coreai-cache/program.bin", 8_000, under: caches)
         try put("com.apple.MetalPerformanceShadersGraph/mpsgraph-1/main.bc.mlir", 7_000, under: tmp)
         try put("pebble-audio-companion.log", 30, under: tmp)
+        try put("2026-10-01.wav", 600, under: exports)
 
         let footprint = StorageFootprint.measure(
             appRoot: root, modelsDirectory: models, cachesDirectory: caches,
-            temporaryDirectory: tmp, volume: base)
+            temporaryDirectory: tmp, exportsDirectory: exports, volume: base)
 
         #expect(footprint.audioBytes == 3_000)
         #expect(footprint.audioFiles == 2)
@@ -52,8 +54,9 @@ import Testing
         #expect(footprint.modelBytes == 9_000)
         #expect(footprint.cacheBytes == 8_000)
         #expect(footprint.temporaryBytes == 7_030)
-        #expect(footprint.totalFiles == 17)
-        #expect(footprint.totalBytes == 33_580)
+        #expect(footprint.exportBytes == 600)
+        #expect(footprint.totalFiles == 18)
+        #expect(footprint.totalBytes == 34_180)
         #expect(footprint.capacityBytes > 0)
         #expect(footprint.freeBytes > 0)
     }

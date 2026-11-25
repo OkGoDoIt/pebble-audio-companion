@@ -46,6 +46,7 @@ import Testing
         footprint.modelBytes = 700
         footprint.cacheBytes = 300
         footprint.temporaryBytes = 50
+        footprint.exportBytes = 60
         footprint.freeBytes = 9_000
         footprint.capacityBytes = 100_000
         var cold = ColdAudioTier.Summary(available: true)
@@ -64,7 +65,8 @@ import Testing
         #expect(overview.textBytes == 130)
         #expect(overview.modelBytes == 1_000)
         #expect(overview.temporaryBytes == 50)
-        #expect(overview.onPhoneBytes == 14_000 + 130 + 1_000 + 50)
+        #expect(overview.exportBytes == 60)
+        #expect(overview.onPhoneBytes == 14_000 + 130 + 1_000 + 60 + 50)
         #expect(overview.cloudAvailable)
         #expect(overview.cloudError == "quota")
     }
@@ -77,21 +79,86 @@ import Testing
         #expect(overview.freeBytes == 0)
     }
 
-    /// The preview counts only what the rule WOULD move: closed, transcribed, old enough, and
-    /// not already in iCloud. The share is of all audio, so it does not jump as audio moves.
-    @Test func thePreviewFollowsTheAgeAndSkipsWhatCannotMove() {
-        let audio: Int64 = 15_000
-        let twoMonths = StoragePlanner.wouldMove(metas: library, olderThanDays: 60, nowMs: now, audioBytes: audio)
-        #expect(twoMonths.bytes == 3_000, "c only: d is untranscribed, a and b already moved")
-        #expect(twoMonths.count == 1)
-        #expect(twoMonths.percent == 20)
+    /// The previews count only what a rule WOULD move: closed, transcribed, old enough or over
+    /// the limit, and not already in iCloud.
+    @Test func thePreviewsFollowTheRuleAndSkipWhatCannotMove() {
+        func move(age: Int? = nil, limit: Int64 = 0) -> StoragePreview {
+            StoragePlanner.wouldMove(metas: library, ageDays: age, maxBytes: limit, nowMs: now)
+        }
+        #expect(move(age: 60) == StoragePreview(bytes: 3_000, count: 1), "c only: d is untranscribed, a and b already moved")
+        #expect(move(age: 14) == StoragePreview(bytes: 8_000, count: 2), "c and e; f is still open")
+        #expect(move(age: 365) == StoragePreview(bytes: 0, count: 0))
+        // 18,000 bytes here that have not moved (c, d, e and the open f).
+        #expect(move(limit: 18_000).bytes == 0)
+        #expect(move(limit: 16_000).bytes == 3_000, "the oldest that can go")
+        #expect(move(limit: 14_000).bytes == 8_000)
+        #expect(move(limit: 1).bytes == 8_000, "untranscribed and open audio stays whatever the limit")
+        #expect(move(age: 60, limit: 14_000).bytes == 8_000)
+        #expect(move().bytes == 0)
+    }
 
-        let twoWeeks = StoragePlanner.wouldMove(metas: library, olderThanDays: 14, nowMs: now, audioBytes: audio)
-        #expect(twoWeeks.bytes == 8_000, "c and e; f is still open")
-        #expect(twoWeeks.percent == 53)
+    /// What the Delete screen says a choice would delete is what retention would delete:
+    /// closed recordings past the age, and nothing at all under Forever.
+    @Test func thePickerCountsWhatAShorterKeepWouldDelete() {
+        func count(_ days: Int) -> Int {
+            StoragePlanner.wouldDelete(metas: library, olderThanDays: days, nowMs: now)
+        }
+        #expect(count(7) == 5, "everything but the open one, iCloud's included")
+        #expect(count(90) == 2, "a and b; c is exactly 90 days old")
+        #expect(count(365) == 0)
+        #expect(count(AppSettings.keepForever) == 0)
 
-        let year = StoragePlanner.wouldMove(metas: library, olderThanDays: 365, nowMs: now, audioBytes: audio)
-        #expect(year == StoragePreview(bytes: 0, count: 0, percent: 0))
+        var recovered = segment("r", ageDays: 400, bytes: 1_000)
+        recovered.recoveredAtMs = now
+        #expect(StoragePlanner.wouldDelete(metas: [recovered], olderThanDays: 7, nowMs: now) == 0)
+    }
+
+    /// Export says what it would write, and is not offered when the phone has no room for it.
+    @Test func exportIsMeasuredAgainstTheRoomThereIs() {
+        var overview = StoragePlanner.overview(metas: library, footprint: nil, cold: nil)
+        // Every closed recording whose audio is here (b, c, d, e), at 640 bytes a frame.
+        #expect(overview.exportAllBytes == [2_000, 3_000, 4_000, 5_000].reduce(0) { $0 + $1 / 39 } * 640)
+
+        #expect(overview.exportFits, "not measured yet is not full")
+        overview.capacityBytes = 512 << 30
+        overview.exportAllBytes = 90 << 30
+        overview.freeBytes = 91 << 30
+        #expect(!overview.exportFits, "filling the phone pauses recording")
+        overview.freeBytes = 92 << 30
+        #expect(overview.exportFits)
+        overview.freeBytes = 12 << 30
+        overview.exportBytes = 80 << 30
+        #expect(overview.exportFits, "files already exported are written over")
+
+        // Bringing audio back is measured the same way.
+        overview.audioInCloudBytes = 11 << 30
+        #expect(!overview.bringBackFits)
+        overview.freeBytes = 13 << 30
+        #expect(overview.bringBackFits)
+    }
+
+    /// Forever survives a relaunch, and leaves a build that has never heard of it a year rather
+    /// than a number it would read as 30 days.
+    @MainActor
+    @Test func foreverIsStoredSoThatNoBuildDeletesForIt() {
+        let suite = "keep-forever-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func launch() -> AppSettings {
+            AppSettings(defaults: defaults, keychain: KeychainStore(service: "tests.unused"))
+        }
+        #expect(launch().retentionDays == 30, "nothing stored yet")
+
+        launch().retentionDays = AppSettings.keepForever
+        #expect(defaults.integer(forKey: "retention_days") == 365)
+        let relaunched = launch()
+        #expect(relaunched.retentionDays == AppSettings.keepForever)
+        #expect(relaunched.runtimeSettings.retentionConfig.maxAgeMs == .max)
+        relaunched.reloadFromDefaults()
+        #expect(relaunched.retentionDays == AppSettings.keepForever)
+
+        relaunched.retentionDays = 90
+        #expect(launch().retentionDays == 90)
     }
 
     @Test func theBarNeverOverflowsAndNeverHidesASmallPart() {
@@ -103,6 +170,7 @@ import Testing
     }
 
     @Test func ageLabelsReadTheWayPeopleSayThem() {
+        #expect(Copy.Settings.Storage.ageLabel(7) == "1 week")
         #expect(Copy.Settings.Storage.ageLabel(14) == "2 weeks")
         #expect(Copy.Settings.Storage.ageLabel(30) == "1 month")
         #expect(Copy.Settings.Storage.ageLabel(60) == "2 months")

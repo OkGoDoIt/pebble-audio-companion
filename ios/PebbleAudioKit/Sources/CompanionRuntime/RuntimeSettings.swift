@@ -24,6 +24,7 @@ public protocol RuntimeSettings: Sendable {
     var automaticWavExportEnabled: Bool { get }
     var onboardingComplete: Bool { get }
     /// REAL (the KMP one was placebo): days of audio kept, wired into `RetentionManager`.
+    /// `RuntimeSettingsDefaults.keepForever` deletes nothing by age.
     var retentionDays: Int { get }
     /// Total on-disk cap for stored audio, wired into `RetentionManager`. **`0` means no limit.**
     /// Defaulted so callers that only expose "Keep audio for N days" need not declare it.
@@ -32,9 +33,12 @@ public protocol RuntimeSettings: Sendable {
     /// the app's iCloud Drive container (`ColdAudioTier`). Defaulted off: nothing leaves the
     /// phone until the person turns it on and sees the rule.
     var coldStorageEnabled: Bool { get }
-    /// How old audio must be before it is moved. Defaulted so callers that do not care need
-    /// not declare it.
+    /// How old audio must be before it is moved, or `RuntimeSettingsDefaults.neverByAge`.
+    /// Defaulted so callers that do not care need not declare it.
     var coldStorageMinAgeDays: Int { get }
+    /// How much audio the phone holds before its oldest is moved. **`0` means no limit.**
+    /// Defaulted so callers that do not care need not declare it.
+    var coldStorageMaxBytes: Int64 { get }
     /// False until the user picks a transcription mode ("Later" in onboarding leaves it false).
     var transcriptsConfigured: Bool { get }
     /// When expensive catch-up (local transcription, AI) may run while the app is not on screen.
@@ -64,6 +68,7 @@ extension RuntimeSettings {
     public var retentionMaxBytes: Int64 { RuntimeSettingsDefaults.retentionMaxBytes }
     public var coldStorageEnabled: Bool { RuntimeSettingsDefaults.coldStorageEnabled }
     public var coldStorageMinAgeDays: Int { RuntimeSettingsDefaults.coldStorageMinAgeDays }
+    public var coldStorageMaxBytes: Int64 { RuntimeSettingsDefaults.coldStorageMaxBytes }
 
     /// The age audio actually moves to iCloud at, given "Keep audio"; nil when Keep audio is too
     /// short for any offered age. See `RuntimeSettingsDefaults.effectiveColdStorageMinAgeDays`.
@@ -78,8 +83,9 @@ extension RuntimeSettings {
     public var coldStoragePolicy: ColdStoragePolicy {
         let days = effectiveColdStorageMinAgeDays
         return ColdStoragePolicy(
-            enabled: coldStorageEnabled && days != nil,
-            minAgeMs: Int64(max(1, days ?? coldStorageMinAgeDays)) * 24 * 60 * 60 * 1000)
+            enabled: coldStorageEnabled && (days != nil || coldStorageMaxBytes > 0),
+            minAgeMs: days.map(RuntimeSettingsDefaults.maxAgeMs(retentionDays:)) ?? .max,
+            maxPhoneBytes: coldStorageMaxBytes > 0 ? coldStorageMaxBytes : .max)
     }
     public var backgroundCatchUp: BackgroundCatchUp { .whileCharging }
     public var cloudUploadNetwork: CloudUploadNetwork { CloudUploadNetworkPolicy.default }
@@ -125,10 +131,13 @@ extension RuntimeSettings {
     /// The retention policy this settings state implies.
     public var retentionConfig: RetentionConfigInputs {
         RetentionConfigInputs(
-            maxAgeMs: Int64(max(1, retentionDays)) * 24 * 60 * 60 * 1000,
+            maxAgeMs: RuntimeSettingsDefaults.maxAgeMs(retentionDays: retentionDays),
             // 0 (and anything below it) is "no size limit", not "delete everything on the next
             // sweep" — which is what a literal 0 would have meant to `RetentionManager`.
-            maxTotalBytes: retentionMaxBytes > 0 ? retentionMaxBytes : .max
+            //
+            // A full phone sends its oldest audio on to the next stop. While iCloud is that stop
+            // (`coldStoragePolicy.maxPhoneBytes`), running out of room deletes nothing.
+            maxTotalBytes: retentionMaxBytes > 0 && !coldStorageEnabled ? retentionMaxBytes : .max
         )
     }
 }
@@ -196,11 +205,32 @@ public enum RuntimeSettingsDefaults {
 
     public static let retentionDays = 30
 
+    /// "Keep recordings · Forever": no recording is ever old enough to delete. The largest value
+    /// on purpose, so every comparison against an age ("is the move age younger than this?")
+    /// is right without knowing about it, and any code that forgets it errs toward keeping.
+    public static let keepForever = Int.max
+
+    /// The "Keep recordings" choices, in days, shortest first.
+    public static let retentionDaysOptions = [7, 14, 30, 90, 180, 365, keepForever]
+
+    /// `retentionDays` as the age cap retention enforces. Zero and below are clamped to a day
+    /// rather than read as "delete everything"; anything too large to express in milliseconds,
+    /// which `keepForever` is, is no cap at all.
+    public static func maxAgeMs(retentionDays: Int) -> Int64 {
+        let (ms, overflow) = Int64(max(1, retentionDays))
+            .multipliedReportingOverflow(by: 24 * 60 * 60 * 1000)
+        return overflow ? .max : ms
+    }
+
     /// Off until chosen: audio leaving the phone is a rule the person has to have seen.
     public static let coldStorageEnabled = false
     /// Two months. Old enough that the audio has been transcribed, read and forgotten; young
     /// enough that the phone never holds more than a season of recordings.
     public static let coldStorageMinAgeDays = 60
+    /// No limit on what the phone holds before audio moves.
+    public static let coldStorageMaxBytes: Int64 = 0
+    /// A move age that never comes: audio moves by how much the phone holds, or not at all.
+    public static let neverByAge = Int.max
     /// The ages the Storage screen offers, in days. Lives here so the kit and the app cannot
     /// drift on what the picker may store.
     public static let coldStorageMinAgeOptions = [14, 30, 60, 90, 180, 365]
@@ -218,6 +248,7 @@ public enum RuntimeSettingsDefaults {
     /// nil when no offered age is (Keep audio at 14 days or less), and the Storage screen says
     /// why. The choice itself is not overwritten, so raising Keep audio again restores it.
     public static func effectiveColdStorageMinAgeDays(chosen: Int, retentionDays: Int) -> Int? {
+        if chosen == neverByAge { return nil }
         if chosen < retentionDays { return chosen }
         return coldStorageMinAgeOptions.filter { $0 < retentionDays }.max()
     }
@@ -271,6 +302,7 @@ public final class RuntimeSettingsBox: RuntimeSettings, @unchecked Sendable {
     public var retentionMaxBytes: Int64 { value.retentionMaxBytes }
     public var coldStorageEnabled: Bool { value.coldStorageEnabled }
     public var coldStorageMinAgeDays: Int { value.coldStorageMinAgeDays }
+    public var coldStorageMaxBytes: Int64 { value.coldStorageMaxBytes }
     public var transcriptsConfigured: Bool { value.transcriptsConfigured }
     // These two forwards are not optional, even though the protocol extension supplies a default
     // for both: WITHOUT them the box silently answers with the default and ignores the snapshot
@@ -302,6 +334,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
     public var retentionMaxBytes: Int64
     public var coldStorageEnabled: Bool
     public var coldStorageMinAgeDays: Int
+    public var coldStorageMaxBytes: Int64
     public var transcriptsConfigured: Bool
     public var backgroundCatchUp: BackgroundCatchUp
     public var cloudUploadNetwork: CloudUploadNetwork
@@ -324,6 +357,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         retentionMaxBytes: Int64 = RuntimeSettingsDefaults.retentionMaxBytes,
         coldStorageEnabled: Bool = RuntimeSettingsDefaults.coldStorageEnabled,
         coldStorageMinAgeDays: Int = RuntimeSettingsDefaults.coldStorageMinAgeDays,
+        coldStorageMaxBytes: Int64 = RuntimeSettingsDefaults.coldStorageMaxBytes,
         transcriptsConfigured: Bool = false,
         backgroundCatchUp: BackgroundCatchUp = .whileCharging,
         cloudUploadNetwork: CloudUploadNetwork = CloudUploadNetworkPolicy.default,
@@ -345,6 +379,7 @@ public struct RuntimeSettingsSnapshot: RuntimeSettings, Equatable, Sendable {
         self.retentionMaxBytes = retentionMaxBytes
         self.coldStorageEnabled = coldStorageEnabled
         self.coldStorageMinAgeDays = coldStorageMinAgeDays
+        self.coldStorageMaxBytes = coldStorageMaxBytes
         self.transcriptsConfigured = transcriptsConfigured
         self.backgroundCatchUp = backgroundCatchUp
         self.cloudUploadNetwork = cloudUploadNetwork

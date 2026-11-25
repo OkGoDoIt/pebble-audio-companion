@@ -31,6 +31,9 @@ public struct StorageFootprint: Equatable, Sendable {
     public var cacheBytes: Int64 = 0
     /// `tmp/` — scratch files and whatever a system framework left behind.
     public var temporaryBytes: Int64 = 0
+    /// WAV copies in the exports folder. A WAV is about 16 times the stored recording, so with
+    /// automatic export on this is soon the largest thing here.
+    public var exportBytes: Int64 = 0
     /// Every regular file counted above.
     public var totalFiles: Int = 0
     /// What the volume will let an app use ("important usage": purgeable space counts as free).
@@ -42,7 +45,7 @@ public struct StorageFootprint: Equatable, Sendable {
     /// Everything counted, which is what MetricKit's `totalFileSizeMetric` roughly answers.
     public var totalBytes: Int64 {
         audioBytes + sidecarBytes + transcriptBytes + databaseBytes + diagnosticsBytes
-            + otherBytes + modelBytes + cacheBytes + temporaryBytes
+            + otherBytes + modelBytes + cacheBytes + temporaryBytes + exportBytes
     }
 
     /// Folder names under the app root, by bucket. Anything not named here is `otherBytes`.
@@ -59,6 +62,7 @@ public struct StorageFootprint: Equatable, Sendable {
         modelsDirectory: URL?,
         cachesDirectory: URL?,
         temporaryDirectory: URL?,
+        exportsDirectory: URL? = nil,
         volume: URL
     ) -> StorageFootprint {
         var footprint = StorageFootprint()
@@ -106,6 +110,7 @@ public struct StorageFootprint: Equatable, Sendable {
             (modelsDirectory, \StorageFootprint.modelBytes),
             (cachesDirectory, \StorageFootprint.cacheBytes),
             (temporaryDirectory, \StorageFootprint.temporaryBytes),
+            (exportsDirectory, \StorageFootprint.exportBytes),
         ] {
             guard let directory else { continue }
             let (matched, _) = walk(directory) { _ in true }
