@@ -15,7 +15,7 @@ import Testing
             contextText: { "About me: Roger at Pebble" },
             contextTerms: { ["Pebble", "Sarah"] }
         )
-        let json = provider.configJson(key: "key", sampleRateHz: 16_000)
+        let json = provider.configJson(sampleRateHz: 16_000)
         #expect(json.contains(#""context""#))
         #expect(json.contains("About me: Roger at Pebble"))
         #expect(json.contains("Pebble"))

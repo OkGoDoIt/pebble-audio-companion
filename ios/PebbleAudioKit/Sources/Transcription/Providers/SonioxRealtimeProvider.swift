@@ -92,9 +92,10 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
                     guard let socketUrl = URL(string: self.url) else {
                         throw TranscriptionError.transcriptionFailed("invalid Soniox URL: \(self.url)")
                     }
-                    let socket = self.connector.connect(url: socketUrl, headers: [:])
+                    let socket = self.connector.connect(
+                        url: socketUrl, headers: Self.authHeaders(key: key))
                     connection = socket
-                    try await socket.send(text: self.configJson(key: key, sampleRateHz: sampleRateHz))
+                    try await socket.send(text: self.configJson(sampleRateHz: sampleRateHz))
 
                     // Stream audio in the background; signal end-of-audio with an empty text frame.
                     let activity = SonioxSendActivity()
@@ -161,10 +162,16 @@ public final class SonioxRealtimeProvider: StreamingTranscriptionProvider {
         }
     }
 
+    /// The key travels on the connection, not in the config frame: from 2027-01-15 Soniox answers
+    /// a connection without it with a 401 frame and closes it. A wrong key still arrives as an
+    /// error frame after the socket opens, never as a failed handshake.
+    static func authHeaders(key: String) -> [String: String] {
+        ["Authorization": "Bearer \(key)"]
+    }
+
     /// The one-shot start-of-stream config frame. Internal for the format regression tests.
-    func configJson(key: String, sampleRateHz: Int) -> String {
+    func configJson(sampleRateHz: Int) -> String {
         var config: [String: Any] = [
-            "api_key": key,
             "model": model(),
             "audio_format": Self.rawPcmFormat,
             "sample_rate": sampleRateHz,

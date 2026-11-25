@@ -2,6 +2,7 @@ package dev.audiocompanion.transcription
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.header
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
@@ -51,8 +52,14 @@ class SonioxRealtimeProvider(
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException.ProviderUnavailable(id)
 
-        client.webSocket(url) {
-            send(Frame.Text(configJson(key, sampleRateHz)))
+        // The key travels on the connection: from 2027-01-15 Soniox refuses one that does not.
+        client.webSocket(
+            urlString = url,
+            request = {
+                header("Authorization", "Bearer $key")
+            },
+        ) {
+            send(Frame.Text(configJson(sampleRateHz)))
             // Stream audio in the background; signal end-of-audio with an empty text frame.
             val sender = launch {
                 pcm.collect { chunk -> if (chunk.isNotEmpty()) send(Frame.Binary(true, chunk)) }
@@ -76,8 +83,7 @@ class SonioxRealtimeProvider(
         }
     }
 
-    internal fun configJson(key: String, sampleRateHz: Int): String = buildJsonObject {
-        put("api_key", key)
+    internal fun configJson(sampleRateHz: Int): String = buildJsonObject {
         put("model", model())
         // Soniox expects "s16le" for raw 16-bit little-endian PCM (NOT "pcm_s16le"); the wrong
         // value makes the server reject the stream and the live socket fail.

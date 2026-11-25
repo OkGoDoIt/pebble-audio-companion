@@ -36,7 +36,7 @@ class SonioxTranscriptionProviderTest {
             apiKey = { "test-key" },
             cloudConsent = { true },
         )
-        val config = provider.configJson("test-key", 16_000)
+        val config = provider.configJson(16_000)
         assertTrue(config.contains("\"audio_format\":\"s16le\""), "config was: $config")
         assertTrue(!config.contains("pcm_s16le"), "must not use the invalid pcm_s16le token")
         assertTrue(config.contains("\"sample_rate\":16000"))

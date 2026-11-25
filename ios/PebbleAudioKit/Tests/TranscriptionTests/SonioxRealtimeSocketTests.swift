@@ -38,17 +38,27 @@ final class SilentRecordingWebSocket: WebSocketConnection, @unchecked Sendable {
     func close() {}
 }
 
-struct FixedWebSocketConnector: WebSocketConnector {
+final class FixedWebSocketConnector: WebSocketConnector, @unchecked Sendable {
     let socket: SilentRecordingWebSocket
-    func connect(url: URL, headers: [String: String]) -> any WebSocketConnection { socket }
+    private let lock = NSLock()
+    private var _headers: [String: String] = [:]
+    var headers: [String: String] { lock.withLock { _headers } }
+
+    init(socket: SilentRecordingWebSocket) { self.socket = socket }
+
+    func connect(url: URL, headers: [String: String]) -> any WebSocketConnection {
+        lock.withLock { _headers = headers }
+        return socket
+    }
 }
 
 @Suite struct SonioxRealtimeSocketTests {
 
     @Test func keepaliveHoldsTheSocketOpenThroughSilence() async throws {
         let socket = SilentRecordingWebSocket()
+        let connector = FixedWebSocketConnector(socket: socket)
         let provider = SonioxRealtimeProvider(
-            connector: FixedWebSocketConnector(socket: socket),
+            connector: connector,
             apiKey: { "test-key" },
             cloudConsent: { true },
             keepaliveIntervalMs: 20
@@ -79,6 +89,9 @@ struct FixedWebSocketConnector: WebSocketConnector {
         // sent: the segment is open, we are merely quiet.
         #expect(duringSilence.first?.contains(#""audio_format":"s16le""#) == true)
         #expect(!duringSilence.contains(""))
+        // From 2027-01-15 Soniox refuses a connection that does not carry the key itself.
+        #expect(connector.headers == ["Authorization": "Bearer test-key"])
+        #expect(!duringSilence.contains { $0.contains("test-key") || $0.contains("api_key") })
     }
 
     @Test func keepaliveOnlyFiresWhenSilentAndNeverAfterEndOfAudio() {

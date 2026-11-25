@@ -20,7 +20,7 @@ class SonioxContextTest {
             contextText = { "About me: Roger at Pebble" },
             contextTerms = { listOf("Pebble", "Sarah") },
         )
-        val json = provider.configJson("key", 16000)
+        val json = provider.configJson(16000)
         assertTrue(json.contains("\"context\""))
         assertTrue(json.contains("About me: Roger at Pebble"))
         assertTrue(json.contains("Pebble"))

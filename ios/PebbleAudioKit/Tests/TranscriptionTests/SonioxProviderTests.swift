@@ -50,7 +50,7 @@ struct UnusedWebSocketConnector: WebSocketConnector {
             apiKey: { "test-key" },
             cloudConsent: { true }
         )
-        let config = provider.configJson(key: "test-key", sampleRateHz: 16_000)
+        let config = provider.configJson(sampleRateHz: 16_000)
         #expect(config.contains(#""audio_format":"s16le""#), "config was: \(config)")
         #expect(!config.contains("pcm_s16le"), "must not use the invalid pcm_s16le token")
         #expect(config.contains(#""sample_rate":16000"#))
