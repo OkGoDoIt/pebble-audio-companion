@@ -85,6 +85,22 @@ import Testing
             recommended: false,
             runtime: .coreAI
         ),
+        // Added 2026-11-25: the same checkpoint adapted to the watch's audio, on Core ML. Private,
+        // so it only ever arrives through `Documents/models-inbox`.
+        Row(
+            id: "parakeet-watch",
+            displayName: "Parakeet for Pebble",
+            shortLabel: "Best for the watch",
+            repository: "pebble-audio-companion/parakeet-watch-UNPUBLISHED",
+            revision: "v1",
+            archivePath: "parakeet-watch.zip",
+            installDirectoryName: "parakeet-watch",
+            modelName: "parakeet-watch",
+            modelVersion: "v1",
+            downloadBytes: 631_823_041,
+            recommended: false,
+            runtime: .coreML
+        ),
     ]
 
     @Test func catalogMatchesTheKotlinCatalogExactly() throws {
