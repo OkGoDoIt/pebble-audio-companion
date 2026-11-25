@@ -14,11 +14,14 @@ public struct AppleReminder: Equatable, Sendable {
     public var modifiedAtMs: Int64
     /// The link back to the app it carries (`ReminderLink`); nil for none.
     public var link: URL?
+    /// When it was made, epoch ms; 0 when Reminders doesn't say.
+    public var createdAtMs: Int64
 
     public init(
         id: String, listId: String, title: String, done: Bool, dueAtMs: Int64?, dueHasTime: Bool,
-        modifiedAtMs: Int64 = 0, link: URL? = nil
+        modifiedAtMs: Int64 = 0, link: URL? = nil, createdAtMs: Int64 = 0
     ) {
+        self.createdAtMs = createdAtMs
         self.modifiedAtMs = modifiedAtMs
         self.link = link
         self.id = id
@@ -94,6 +97,8 @@ public protocol AppleRemindersAccess: Sendable {
     func setLink(_ link: URL, on id: String) throws
     /// Every reminder carrying a link to one of these follow-ups, by follow-up id.
     func linked(to followUpIds: Set<String>) async -> [String: AppleReminder]
+    /// Every reminder carrying a link to any follow-up; nil when Reminders could not be read.
+    func allLinked() async -> [AppleReminder]?
     /// The reminders with these ids that still exist.
     func reminders(ids: [String]) -> [AppleReminder]
     /// Calls `onChange` whenever Reminders' data changes, here or anywhere.
@@ -204,6 +209,19 @@ public final class EventKitReminders: AppleRemindersAccess, @unchecked Sendable 
         }
     }
 
+    public func allLinked() async -> [AppleReminder]? {
+        guard authorized else { return nil }
+        let predicate = store.predicateForReminders(in: nil)
+        return await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: predicate) { reminders in
+                continuation.resume(
+                    returning: reminders?
+                        .filter { ReminderLink.followUpId(in: $0.url) != nil }
+                        .map(Self.snapshot))
+            }
+        }
+    }
+
     public func reminders(ids: [String]) -> [AppleReminder] {
         guard authorized else { return [] }
         return ids.compactMap { (store.calendarItem(withIdentifier: $0) as? EKReminder) }
@@ -285,7 +303,8 @@ public final class EventKitReminders: AppleRemindersAccess, @unchecked Sendable 
             dueHasTime: components?.hour != nil,
             modifiedAtMs: reminder.lastModifiedDate.map { Int64($0.timeIntervalSince1970 * 1000) }
                 ?? 0,
-            link: reminder.url)
+            link: reminder.url,
+            createdAtMs: reminder.creationDate.map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0)
     }
 
     static func hex(_ color: CGColor?) -> String {

@@ -174,6 +174,42 @@ public actor RemindersHome {
             for await _ in preferences.current.stream() { await home.scheduleSync() }
         }
         observers.append(TaskBox(preferencesTask))
+        Task { await self.removeExtraCopies() }
+    }
+
+    /// Once: takes away the copies a cancelled pass made of a reminder before 2026-11-26 (see
+    /// `sync`). A copy goes only when the one the app follows is there and was made after it, and
+    /// only when the copy is unfinished and has not been touched since it was made.
+    func removeExtraCopies() async {
+        guard !preferences.extraCopiesRemoved, preferences.current.value.home == .apple,
+            let linked = await apple.allLinked(),
+            let rows = try? await followUps.list(scope: .all)
+        else { return }
+        let byId = Dictionary(
+            apple.reminders(ids: rows.compactMap(\.appleId)).map { ($0.id, $0) },
+            uniquingKeysWith: { a, _ in a })
+        var followed: [String: AppleReminder] = [:]
+        for row in rows where row.stage == .reminder && row.archivedAtMs == nil {
+            if let id = row.appleId, let item = byId[id] { followed[row.id] = item }
+        }
+        let known = Set(rows.compactMap(\.appleId))
+        var removed = 0
+        var left = 0
+        for copy in linked where !known.contains(copy.id) {
+            guard let followUpId = ReminderLink.followUpId(in: copy.link),
+                let kept = followed[followUpId]
+            else { continue }
+            let untouched = copy.createdAtMs > 0 && copy.modifiedAtMs - copy.createdAtMs < 5_000
+            guard !copy.done, untouched, copy.createdAtMs <= kept.createdAtMs,
+                (try? apple.delete(id: copy.id)) != nil
+            else {
+                left += 1
+                continue
+            }
+            removed += 1
+        }
+        preferences.extraCopiesRemoved = true
+        log?("reminders: \(removed) extra copies removed, \(left) left alone, \(followed.count) followed")
     }
 
     /// Coalesces a burst of changes into one pass. Cancelling reaches only the wait, never a pass

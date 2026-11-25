@@ -61,6 +61,13 @@ public final class ReminderPreferencesStore: @unchecked Sendable {
         if let next { current.value = next }
     }
 
+    /// The extra copies of 2026-11-25 have been cleared from Apple Reminders
+    /// (`RemindersHome.removeExtraCopies`).
+    var extraCopiesRemoved: Bool {
+        get { defaults.bool(forKey: "reminders.extraCopiesRemoved") }
+        set { defaults.set(newValue, forKey: "reminders.extraCopiesRemoved") }
+    }
+
     private static func load(_ defaults: UserDefaults) -> ReminderPreferences {
         var value = ReminderPreferences()
         if let home = defaults.string(forKey: Key.home).flatMap(ReminderHome.init(rawValue:)) {

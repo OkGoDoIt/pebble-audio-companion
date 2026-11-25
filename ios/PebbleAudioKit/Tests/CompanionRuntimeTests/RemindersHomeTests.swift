@@ -38,7 +38,8 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             counter += 1
             let item = AppleReminder(
                 id: "apple-\(counter)", listId: listId, title: draft.title, done: draft.done,
-                dueAtMs: draft.dueAtMs, dueHasTime: false, modifiedAtMs: clock, link: draft.url)
+                dueAtMs: draft.dueAtMs, dueHasTime: false, modifiedAtMs: clock, link: draft.url,
+                createdAtMs: clock)
             _items[item.id] = item
             return item
         }
@@ -85,6 +86,9 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             }
             return found
         }
+    }
+    func allLinked() async -> [AppleReminder]? {
+        lock.withLock { _items.values.filter { ReminderLink.followUpId(in: $0.link) != nil } }
     }
     /// The same reminder under a new identifier, as a move to another account leaves it.
     func reidentify(_ id: String, as new: String, listId: String) {
@@ -224,6 +228,43 @@ private final class FakeAlerts: ReminderAlertScheduling, @unchecked Sendable {
         try await Task.sleep(for: .seconds(4))
         #expect(apple.items.count == 1)
         #expect(try await store.load(id: "a")?.appleId == apple.items.first?.id)
+    }
+
+    @Test func onlyUntouchedCopiesOfAFollowedReminderAreRemovedAndOnlyOnce() async throws {
+        try await put("a")
+        try await put("gone")
+        let home = home()
+        let link = { (id: String) in ReminderLink.url(followUpId: id) }
+        func copy(_ id: String, title: String = "task a", at ms: Int64) throws -> String {
+            apple.clock = ms
+            return try apple.create(AppleReminderDraft(title: title, url: link(id)), inList: "todo").id
+        }
+        let first = try copy("a", at: 1_000)
+        let old = try copy("a", at: 2_000)
+        apple.edit(old, at: 2_000) { $0.link = URL(string: "companion://followup?id=a") }
+        let finished = try copy("a", at: 3_000)
+        apple.edit(finished, at: 3_000) { $0.done = true }
+        let edited = try copy("a", at: 4_000)
+        apple.edit(edited, at: 90_000) { $0.title = "task a, in my words" }
+        // Nothing the app follows stands behind this one: it may be the only one there is.
+        let orphan = try copy("gone", at: 5_000)
+        apple.clock = 10_000
+        _ = try apple.create(AppleReminderDraft(title: "theirs"), inList: "todo")
+        try await home.switchToApple(.existing(id: "todo"))
+        let kept = try #require(try await store.load(id: "a")?.appleId)
+        let gone = try #require(try await store.load(id: "gone")?.appleId)
+        try apple.delete(id: gone)
+        // The person's own duplicate, made later.
+        let later = try copy("a", at: 20_000)
+
+        await home.removeExtraCopies()
+        #expect(apple.item(first) == nil && apple.item(old) == nil)
+        for id in [kept, finished, edited, orphan, later] { #expect(apple.item(id) != nil) }
+        #expect(apple.items.contains { $0.title == "theirs" })
+
+        let again = try copy("a", at: 500)
+        await home.removeExtraCopies()
+        #expect(apple.item(again) != nil)
     }
 
     @Test func aScreenThatGoesAwayMidMoveLeavesNoReminderTheAppLostTrackOf() async throws {
