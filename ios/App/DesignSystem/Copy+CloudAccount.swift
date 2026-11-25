@@ -47,7 +47,7 @@ extension Copy {
         static func line(_ issue: CloudAccountIssue) -> String {
             switch (issue.transcription, issue.ai) {
             case (.onDevice?, .onDevice?) where !issue.transcriptionIsFallbackOnly:
-                return "This iPhone is transcribing and writing summaries meanwhile."
+                return "This iPhone is transcribing and writing summaries."
             case (.waiting?, .waiting?) where !issue.transcriptionIsFallbackOnly:
                 return "New transcripts, summaries, and answers are waiting."
             default:

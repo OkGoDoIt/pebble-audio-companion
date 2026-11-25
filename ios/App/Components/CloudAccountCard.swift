@@ -8,7 +8,13 @@ struct CloudAccountCards: View {
     var aiOnly = false
 
     private var issues: [CloudAccountIssue] {
-        CloudAccountAlerts.shared.issues.filter { !aiOnly || $0.ai != nil }
+        guard aiOnly else { return CloudAccountAlerts.shared.issues }
+        // Only the half this screen is about: Ask has nothing to say about transcribing.
+        return CloudAccountAlerts.shared.issues.filter { $0.ai != nil }.map {
+            var issue = $0
+            issue.transcription = nil
+            return issue
+        }
     }
 
     var body: some View {
@@ -50,8 +56,14 @@ struct CloudAccountCard: View {
 
                 // Side by side while both labels fit on one line; stacked at larger text.
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) { buttons }
-                    VStack(spacing: 8) { buttons }
+                    EqualWidthPair(spacing: 10) {
+                        fixButton
+                        backupButton
+                    }
+                    VStack(spacing: 8) {
+                        fixButton
+                        backupButton
+                    }
                 }
                 .padding(.top, 2)
             }
@@ -107,17 +119,15 @@ struct CloudAccountCard: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    @ViewBuilder
-    private var buttons: some View {
-        Button(action: fix) {
-            Text(Copy.CloudAccount.fixAction(issue.kind)).lineLimit(1)
-        }
-        .buttonStyle(.inCardFilled)
-        .disabled(isChecking)
-        Button { showsBackup = true } label: {
-            Text(Copy.CloudAccount.chooseBackup).lineLimit(1)
-        }
-        .buttonStyle(.borderedTint)
+    private var fixButton: some View {
+        Button(Copy.CloudAccount.fixAction(issue.kind), action: fix)
+            .buttonStyle(.inCardFilled)
+            .disabled(isChecking)
+    }
+
+    private var backupButton: some View {
+        Button(Copy.CloudAccount.chooseBackup) { showsBackup = true }
+            .buttonStyle(.borderedTint)
     }
 
     private func fix() {
@@ -131,6 +141,37 @@ struct CloudAccountCard: View {
 
     private func checkAfterKey() {
         Task { await CloudAccountAlerts.shared.refresh() }
+    }
+}
+
+/// Two views side by side at equal widths, asking for twice the WIDER one's ideal width. An
+/// `HStack` asks only for the sum, so at larger text `ViewThatFits` kept the pair and the equal
+/// split then cut the longer label off.
+private struct EqualWidthPair: Layout {
+    var spacing: CGFloat
+
+    private func cell(_ subviews: Subviews, total: CGFloat?) -> CGFloat {
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        guard let total, total.isFinite else { return ideal }
+        return (total - spacing) / 2
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = cell(subviews, total: proposal.width)
+        let height =
+            subviews.map { $0.sizeThatFits(.init(width: width, height: nil)).height }.max() ?? 0
+        return CGSize(width: width * 2 + spacing, height: height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        let width = cell(subviews, total: bounds.width)
+        for (index, view) in subviews.enumerated() {
+            view.place(
+                at: CGPoint(x: bounds.minX + CGFloat(index) * (width + spacing), y: bounds.minY),
+                proposal: .init(width: width, height: bounds.height))
+        }
     }
 }
 

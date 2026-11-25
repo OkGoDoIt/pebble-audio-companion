@@ -2,6 +2,7 @@ import CompanionRuntime
 import Foundation
 import Observation
 import Transcription
+import UIKit
 import UserNotifications
 
 // The news that a cloud account has stopped taking work, for every screen that shows it, and the
@@ -24,6 +25,7 @@ final class CloudAccountAlerts {
         ((CloudProvider) async -> CloudAccountProbeOutcome?)?
     @ObservationIgnored private var notifier: CloudAccountNotifier?
     @ObservationIgnored private var visited: CloudProvider?
+    @ObservationIgnored private var watchesForeground = false
 
     init(issues: [CloudAccountIssue] = []) { self.issues = issues }
 
@@ -35,6 +37,16 @@ final class CloudAccountAlerts {
         self.resolve = resolve
         self.recheckAccount = recheckAccount
         self.notifier = notifier
+        guard !watchesForeground else { return }
+        watchesForeground = true
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in
+                await CloudAccountAlerts.shared.refresh()
+                await CloudAccountAlerts.shared.returnedToApp()
+            }
+        }
     }
 
     func refresh() async {

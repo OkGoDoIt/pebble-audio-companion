@@ -2,7 +2,6 @@ import CompanionRuntime
 import Foundation
 import Intelligence
 import Transcription
-import UIKit
 
 // Wires `CloudAccountHold` to what the person sees. See `CloudAccountAlerts`.
 
@@ -18,14 +17,6 @@ extension AppComposition {
         cloudHold.onChanged {
             runtime.notifyConfigChanged(reviveFailures: false)
             Task { @MainActor in await CloudAccountAlerts.shared.refresh() }
-        }
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { _ in
-            Task { @MainActor in
-                await CloudAccountAlerts.shared.refresh()
-                await CloudAccountAlerts.shared.returnedToApp()
-            }
         }
         // A hold outlives the process, so an outage already in force is news at launch too.
         Task { await alerts.refresh() }

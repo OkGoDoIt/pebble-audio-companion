@@ -91,7 +91,7 @@ struct CloudAccountAlertTests {
                 == "This iPhone is writing summaries and answers.")
         #expect(
             Copy.CloudAccount.line(issue(.openAi, ai: .onDevice))
-                == "This iPhone is transcribing and writing summaries meanwhile.")
+                == "This iPhone is transcribing and writing summaries.")
         #expect(
             Copy.CloudAccount.line(issue(.openAi, transcription: .provider(.soniox), ai: .waiting))
                 == "Soniox is transcribing new recordings. New summaries and answers are waiting.")

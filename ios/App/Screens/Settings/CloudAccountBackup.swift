@@ -175,8 +175,14 @@ struct CloudAccountBackupLists: View {
                         settings.transcriptionBackup, main: provider,
                         mode: settings.transcriptionMode)
                 ) { option in
-                    settings.transcriptionBackup = option.value
-                    if let needed = option.needsKey { keyFor = needed } else { chose() }
+                    // A service with no key cannot stand in, so it is not chosen until it has
+                    // one: a check mark on something that is doing nothing would be a lie.
+                    if let needed = option.needsKey {
+                        keyFor = needed
+                    } else {
+                        settings.transcriptionBackup = option.value
+                        chose()
+                    }
                 }
             }
             if showsAi {
@@ -196,6 +202,18 @@ struct CloudAccountBackupLists: View {
         }
         .task { SettingsDataSources.current.localModel.refresh() }
         .navigationDestination(item: $keyFor) { ApiKeyChangeScreen(provider: $0) }
+        .onChange(of: keyFor) { asked, now in
+            if now == nil { choose(asked) }
+        }
+        // Closed from the key screen itself.
+        .onDisappear { choose(keyFor) }
+    }
+
+    /// Back from the key screen: the service it was for is the choice, if it has a key now.
+    private func choose(_ provider: CloudProvider?) {
+        guard let provider, settings.hasApiKey(for: provider) else { return }
+        let backup = TranscriptionBackup(provider: provider)
+        if settings.transcriptionBackup != backup { settings.transcriptionBackup = backup }
     }
 }
 
