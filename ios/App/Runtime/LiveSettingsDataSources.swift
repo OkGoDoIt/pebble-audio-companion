@@ -1426,6 +1426,9 @@ final class LiveProcessingModeSource: ProcessingModeSource {
 
     var transcriptionFallback: ProcessingFallback? { composition.transcriptionRouter.lastFallback }
     var aiFallback: ProcessingFallback? { composition.aiRouter.lastFallback }
+    func recordingsToTranscribeAgain() async -> Int {
+        await composition.runtime.environment.transcription.standInsOwed()
+    }
 }
 
 // MARK: - Diagnostics

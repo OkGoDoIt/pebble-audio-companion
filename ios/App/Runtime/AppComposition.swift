@@ -611,6 +611,13 @@ final class AppComposition {
             modelLifecycle: localBatch,
             cloudAccounts: batchCloud,
             cloudFailureText: { TranscriptionFailureKind.classify($0).reason },
+            rehearing: StandInRehearing(
+                queue: queue, transcripts: transcripts, store: store, database: database,
+                cloud: batchCloud, settings: settingsBox, clock: clock,
+                log: AppRuntimeLog.runtimeLog,
+                send: BackgroundUploadWiring.rehear(
+                    cloud: batchCloud, files: files, transport: transport,
+                    log: AppRuntimeLog.runtimeLog)),
             log: AppRuntimeLog.runtimeLog
         )
 

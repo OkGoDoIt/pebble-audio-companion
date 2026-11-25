@@ -15,6 +15,8 @@ import Intelligence
 struct SettingsTranscriptionScreen: View {
     @Environment(AppSettings.self) private var settings
 
+    @State private var toTranscribeAgain = 0
+
     private var sources: SettingsDataSources { SettingsDataSources.current }
     private var model: LocalModelManaging { sources.localModel }
 
@@ -185,6 +187,11 @@ struct SettingsTranscriptionScreen: View {
             ) {
                 SettingsFooter(text: note)
             }
+            if toTranscribeAgain > 0 {
+                SettingsFooter(
+                    text: Copy.CloudAccount.toTranscribeAgain(
+                        toTranscribeAgain, settings.cloudTranscriptionProvider.displayName))
+            }
 
             SettingsSectionHeader(title: Copy.Settings.TranscriptionAI.aiSection)
             ListCard {
@@ -325,6 +332,9 @@ struct SettingsTranscriptionScreen: View {
             )
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.title)
+        .task {
+            toTranscribeAgain = await sources.processing.recordingsToTranscribeAgain()
+        }
         .task {
             model.refresh()
             await checkKeysIfNeeded()

@@ -48,7 +48,8 @@ struct CloudAccountAlertTests {
         await notifier.accountsChanged([issue()])
         #expect(poster.posted.count == 1)
         #expect(poster.posted.first?.title == "Soniox is out of credit")
-        #expect(poster.posted.first?.body == "This iPhone is transcribing new recordings.")
+        #expect(poster.posted.first?.body
+                == "This iPhone is transcribing. Soniox will redo these recordings when it works again.")
         #expect(poster.posted.first?.route == .today(date: nil))
         poster.withdrawn = []
         await notifier.accountsChanged([])

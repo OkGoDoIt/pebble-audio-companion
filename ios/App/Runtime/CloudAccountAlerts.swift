@@ -232,6 +232,8 @@ actor CloudAccountNotifier {
                 ]
             case "key":
                 issues = [.init(provider: .soniox, kind: .keyRejected, sinceMs: threeDays, transcription: .onDevice)]
+            case "back":
+                (SettingsDataSources.current.processing as? MockProcessingModeSource)?.toTranscribeAgain = 180
             default: break
             }
             CloudAccountAlerts.shared.install(

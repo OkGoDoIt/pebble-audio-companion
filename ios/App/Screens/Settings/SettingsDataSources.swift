@@ -779,6 +779,9 @@ protocol ProcessingModeSource: AnyObject {
     var transcriptionFallback: ProcessingFallback? { get }
     /// `AiModeRouter.lastFallback` — nil when the configured path is working.
     var aiFallback: ProcessingFallback? { get }
+    /// Recordings this iPhone transcribed while the cloud account was refused, that the cloud has
+    /// still to transcribe again.
+    func recordingsToTranscribeAgain() async -> Int
 }
 
 /// The artboard case is the healthy one: both nil, so the stance card shows no live line. The
@@ -789,6 +792,8 @@ protocol ProcessingModeSource: AnyObject {
 final class MockProcessingModeSource: ProcessingModeSource {
     var transcriptionFallback: ProcessingFallback?
     var aiFallback: ProcessingFallback?
+    var toTranscribeAgain = 0
+    func recordingsToTranscribeAgain() async -> Int { toTranscribeAgain }
 
     init(
         transcriptionFallback: ProcessingFallback? = nil,

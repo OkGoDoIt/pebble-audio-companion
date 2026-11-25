@@ -495,6 +495,11 @@ extension LiveWorld: ConversationDataSource {
         let provider = walked.provider
         let transcribedAtMs = walked.transcribedAtMs
         let zone = walked.zone
+        // Only a transcript this iPhone made can be a stand-in, and those are the few.
+        let queue = composition.queue
+        let standInFor =
+            walked.provider.map { CloudProvider.named($0) != nil } ?? true
+            ? nil : memberIds.lazy.compactMap { (try? queue.load($0))?.standInFor }.first
 
         // The scrubber measures STORED AUDIO. Using the wall span instead (a 1 hr 4 min
         // conversation holding 33 min of audio) made the player claim time that does not
@@ -522,7 +527,8 @@ extension LiveWorld: ConversationDataSource {
                 ) : nil,
             audioAvailability: audioAvailability,
             transcript: transcript,
-            provenance: Self.provenance(provider: provider, atMs: transcribedAtMs),
+            provenance: Self.provenance(
+                provider: provider, standInFor: standInFor, atMs: transcribedAtMs),
             followUps: followUps,
             timeZone: zone ?? .current,
             startedAt: start,
@@ -835,11 +841,18 @@ extension LiveWorld: ConversationDataSource {
         }
     }
 
-    private static func provenance(provider: String?, atMs: Int64?) -> String? {
+    private static func provenance(provider: String?, standInFor: String?, atMs: Int64?) -> String? {
         guard let provider, let atMs, atMs > 0 else { return nil }
         let date = Date(timeIntervalSince1970: Double(atMs) / 1000)
-        let name = provider == "soniox" ? "Soniox" : (provider == "openai" ? "OpenAI" : provider)
-        return "Transcribed with \(name) · \(TimeFmt.dayLabel(for: date)) \(TimeFmt.time(date))"
+        let what: String
+        if let cloud = CloudProvider.named(provider) {
+            what = "Transcribed with \(cloud.displayName)"
+        } else if let held = standInFor.flatMap(CloudProvider.heldAccount) {
+            what = Copy.CloudAccount.transcribedHere(insteadOf: held.displayName)
+        } else {
+            what = Copy.CloudAccount.transcribedHere
+        }
+        return "\(what) · \(TimeFmt.dayLabel(for: date)) \(TimeFmt.time(date))"
     }
 }
 

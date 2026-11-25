@@ -53,7 +53,8 @@ extension Copy {
             default:
                 return [
                     issue.transcription.map {
-                        transcription($0, fallbackOnly: issue.transcriptionIsFallbackOnly)
+                        transcription(
+                            $0, for: issue.provider, fallbackOnly: issue.transcriptionIsFallbackOnly)
                     },
                     issue.ai.map(ai),
                 ].compactMap { $0 }.joined(separator: " ")
@@ -61,7 +62,7 @@ extension Copy {
         }
 
         private static func transcription(
-            _ standIn: CloudAccountIssue.StandIn, fallbackOnly: Bool
+            _ standIn: CloudAccountIssue.StandIn, for provider: CloudProvider, fallbackOnly: Bool
         ) -> String {
             switch standIn {
             case .provider(let provider) where fallbackOnly:
@@ -70,7 +71,9 @@ extension Copy {
                 return "Recordings this iPhone can’t finish are waiting."
             case .provider(let provider):
                 return "\(provider.displayName) is transcribing new recordings."
-            case .onDevice: return "This iPhone is transcribing new recordings."
+            case .onDevice:
+                return "This iPhone is transcribing. \(provider.displayName) will redo these "
+                    + "recordings when it works again."
             case .waiting, .applePrivateCloud:
                 return "New recordings are waiting to be transcribed."
             }
@@ -85,6 +88,17 @@ extension Copy {
             case .waiting, .provider: return "New summaries and answers are waiting."
             }
         }
+
+        /// The Transcription & AI screen, once the account works again.
+        static func toTranscribeAgain(_ count: Int, _ provider: String) -> String {
+            "\(provider) has \(count) recording\(count == 1 ? "" : "s") to transcribe again."
+        }
+
+        /// Under a conversation's transcript.
+        static func transcribedHere(insteadOf provider: String) -> String {
+            "Transcribed on this iPhone, not \(provider)"
+        }
+        static let transcribedHere = "Transcribed on this iPhone"
 
         // MARK: Backup
 
@@ -135,6 +149,16 @@ extension Copy {
 }
 
 extension CloudProvider {
+    /// The provider a stored transcript names ("soniox"), or nil for one made on this iPhone.
+    static func named(_ providerId: String) -> CloudProvider? {
+        allCases.first { $0.rawValue.lowercased() == providerId.lowercased() }
+    }
+
+    /// The account a stand-in was for (`TranscriptionTask.standInFor`: "soniox: accountOutOfFunds").
+    static func heldAccount(_ standInFor: String) -> CloudProvider? {
+        named(String(standInFor.prefix { $0 != ":" }))
+    }
+
     /// The page where this account's money or limit is. Soniox's are the ones its own error
     /// reference names (checked 2026-11-25); OpenAI's are its billing and limits settings.
     func accountPage(for kind: TranscriptionFailureKind) -> URL {
