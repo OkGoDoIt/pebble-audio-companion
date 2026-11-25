@@ -22,7 +22,7 @@ final class LocalModelUITests: XCTestCase {
     }
 
     @MainActor private func capture(_ app: XCUIApplication, _ name: String) {
-        let shot = app.screenshot()
+        let shot = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
