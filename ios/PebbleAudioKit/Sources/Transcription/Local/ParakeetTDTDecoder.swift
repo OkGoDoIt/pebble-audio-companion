@@ -267,13 +267,19 @@ struct ParakeetVocabulary: Sendable {
         } else if let list = json as? [String] {
             for (id, piece) in list.enumerated() where table.indices.contains(id) { table[id] = piece }
         }
-        guard table.contains(where: { $0.hasPrefix("▁") }) else {
+        self.init(pieces: table)
+        guard pieces.contains(where: { $0.hasPrefix(Self.wordStart) }) else {
             throw ParakeetEngineError.modelLoadFailed("the vocabulary has no word pieces")
         }
-        self.init(pieces: table)
     }
 
-    init(pieces: [String]) { self.pieces = pieces }
+    /// A piece that starts a word. SentencePiece writes "▁"; the Core ML vocabularies on Hugging
+    /// Face have already turned it into a space.
+    private static let wordStart = " "
+
+    init(pieces: [String]) {
+        self.pieces = pieces.map { $0.replacingOccurrences(of: "▁", with: Self.wordStart) }
+    }
 
     struct Word: Equatable, Sendable {
         var text: String
@@ -291,8 +297,8 @@ struct ParakeetVocabulary: Sendable {
             if piece.isEmpty || (piece.hasPrefix("<") && piece.hasSuffix(">")) { continue }
             let startMs = token.frame * Self.frameMs
             let endMs = (token.frame + max(1, token.duration)) * Self.frameMs
-            let startsWord = piece.hasPrefix("▁") || words.isEmpty
-            let text = piece.replacingOccurrences(of: "▁", with: "")
+            let startsWord = piece.hasPrefix(Self.wordStart) || words.isEmpty
+            let text = piece.trimmingCharacters(in: .whitespaces)
             if startsWord {
                 if let last = words.indices.last { words[last].endMs = min(words[last].endMs, startMs) }
                 words.append(Word(text: text, startMs: startMs, endMs: endMs))

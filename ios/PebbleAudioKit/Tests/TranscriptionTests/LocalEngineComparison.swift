@@ -67,6 +67,15 @@ import Testing
                 }
             }
         #endif
+        if let bundle = env["PEBBLE_COREML_BUNDLE"] {
+            engines.append((
+                "coreml parakeet",
+                ParakeetTranscriptionProvider(
+                    spec: ParakeetModelCatalog.byId(ParakeetModelCatalog.watchModelId),
+                    location: FixedLocation(path: URL(fileURLWithPath: bundle, isDirectory: true)),
+                    engine: CoreMLParakeetEngine.shared, temporaryDirectory: temp)
+            ))
+        }
         let apple = SpeechAnalyzerProvider(locale: Locale(identifier: "en-US"))
         if await apple.isAvailable() { engines.append(("apple speech", apple)) }
         print("engines: \(engines.map(\.name))")

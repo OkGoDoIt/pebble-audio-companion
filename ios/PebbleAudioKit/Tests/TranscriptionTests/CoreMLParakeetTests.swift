@@ -55,11 +55,11 @@ import Testing
         #expect(decoder.decode(encoded: [], frames: 0).isEmpty)
     }
 
-    @Test func piecesBecomeTimedWords() {
+    @Test(arguments: ["▁", " "]) func piecesBecomeTimedWords(mark: String) {
         var pieces = [String](repeating: "", count: W.pieces)
-        pieces[1] = "▁hel"
+        pieces[1] = mark + "hel"
         pieces[2] = "lo"
-        pieces[3] = "▁there"
+        pieces[3] = mark + "there"
         pieces[4] = "."
         pieces[5] = "<unk>"
         let words = ParakeetVocabulary(pieces: pieces).words([

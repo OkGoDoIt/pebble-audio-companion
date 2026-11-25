@@ -149,6 +149,9 @@ public enum ParakeetModelCatalog {
     /// The Core AI export of the same checkpoint — the iOS 27 experiment.
     public static let coreAIModelId = "parakeet-tdt-0.6b-v3-coreai"
 
+    /// Parakeet with its encoder adapted to the watch's audio, on Core ML.
+    public static let watchModelId = "parakeet-watch"
+
     /// App Group defaults key prefix for a per-model download URL override; see
     /// `ParakeetModelSpec.downloadURL`.
     public static let downloadURLOverrideKeyPrefix = "local_model_url_override."
@@ -228,6 +231,28 @@ public enum ParakeetModelCatalog {
             modelVersionForProvenance: "v1",
             downloadBytes: 1_256_163_783,
             runtime: .coreAI,
+            published: false
+        ),
+        // The v3 checkpoint with its encoder trained further on watch recordings, int8, on Core ML.
+        // Trained on private recordings, so it is NOT published: it is installed from
+        // `Documents/models-inbox/parakeet-watch.zip`. On 60 held-out English segments (14.6 h,
+        // recorded after everything it was trained on, scored against the cloud transcript) it
+        // made 57.7% errors where stock v3 made 63.7% and Apple Speech 76.1%; on the clearest
+        // third of them 24.7%, 30.3% and (leveled) 38.4%.
+        ParakeetModelSpec(
+            id: watchModelId,
+            displayName: "Parakeet for Pebble",
+            shortLabel: "Best for the watch",
+            modelDescription: "Hears quiet and distant conversation best. English and 24 other "
+                + "European languages.",
+            repository: "pebble-audio-companion/parakeet-watch-UNPUBLISHED",
+            revision: "v1",
+            archivePath: "parakeet-watch.zip",
+            installDirectoryName: "parakeet-watch",
+            modelNameForProvenance: "parakeet-watch",
+            modelVersionForProvenance: "v1",
+            downloadBytes: 631_823_041,
+            runtime: .coreML,
             published: false
         ),
     ]
