@@ -928,6 +928,13 @@ enum Copy {
             static func freeOfCapacity(free: String, capacity: String) -> String {
                 "\(free) free of \(capacity)"
             }
+            /// After the free space, once it is low: the app's own floors, said before they act.
+            static func lowSpace(pauseFloor: String) -> String {
+                "Recording pauses below \(pauseFloor)."
+            }
+            static func pausedForSpace(pauseFloor: String) -> String {
+                "Recording is paused until \(pauseFloor) is free."
+            }
             static let measuring = "Measuring…"
             static let legendAudio = "Recordings"
             static let legendText = "Transcripts & index"
@@ -949,62 +956,71 @@ enum Copy {
                 }
             }
 
-            // ── Recordings: what is deleted, and when ──────────────────────────────────
+            // ── As recordings get older ────────────────────────────────────────────────
             //
-            // Both rules delete the whole recording, transcript included, so the copy says
-            // recordings and never "audio".
-            static let recordingsSection = "Recordings"
-            static let keep = "Keep recordings"
-            static let storageLimit = "Storage limit"
+            // One path: this phone, iCloud, deleted. Deleting takes the whole recording,
+            // transcript included, so the copy says recordings there; only audio moves.
+            static let pathSection = "As recordings get older"
+            static let phoneStop = "This phone"
+            static let cloudStop = "iCloud"
+            static let deletedStop = "Deleted"
+            static let everyNewRecording = "Every new recording"
+            /// Under This phone with a limit, e.g. "Up to 5 GB".
+            static func upTo(_ limit: String) -> String { "Up to \(limit)" }
+            static let never = "Never"
+            /// Audio the rule covers that is not there yet, e.g. "0.2 GB on its way".
+            static func onItsWay(_ size: String) -> String { "\(size) on its way" }
+            static func bringingBack(done: Int, total: Int) -> String {
+                "Bringing back \(done.formatted()) of \(total.formatted())…"
+            }
+            static let cloudOffMovesNothing = "iCloud Drive is off, so nothing is moving"
+            static let cloudOffCannotPlay = "iCloud Drive is off, so this audio can’t play"
+            static let cloudOffOnThisPhone = "iCloud Drive is off on this phone"
+            static let cloudFull = "iCloud is full, so audio is staying here"
+            static let cloudRefused = "iCloud hasn’t taken some audio yet"
+            static let deletingFooter = "Deleting a recording deletes its transcript too."
+            static let cloudFooter =
+                "Transcripts stay on this phone, and audio in iCloud downloads when you play it."
+            static let keptFooter = "Everything is kept on this phone."
+
+            // ── A stop's own screen ────────────────────────────────────────────────────
+            static let moveTitle = "Move to iCloud"
+            static let deleteTitle = "Delete"
+            static let byAge = "By age"
+            static let byRoom = "Or when this phone holds more than"
             // ("No limit" comes from `AppSettings.retentionLimitLabel`, which is what the
             // picker actually reads.)
-            static func usedOfLimit(used: String, limit: String) -> String {
-                "\(used) of \(limit) used"
-            }
+            /// Beside a choice that would move audio already here, e.g. "moves 1.3 GB".
+            static func moves(_ size: String) -> String { "moves \(size)" }
             /// Beside a choice that would delete something already here.
             static func deletesCount(_ count: Int) -> String {
                 "deletes \(Copy.count(count, "recording"))"
             }
             static func deletesSize(_ size: String) -> String { "deletes \(size)" }
-
-            // ── iCloud ─────────────────────────────────────────────────────────────────
-            //
-            // Nothing here deletes: audio MOVES, and the transcript stays. How much each age
-            // would move is in the picker, beside the age.
-            static let cloudSection = "Older audio"
-            static let cloudMove = "Move to iCloud"
-            static let cloudOff = "Off"
-            /// e.g. "After 1 month".
-            static func cloudAfter(_ days: Int) -> String { "After \(ageLabel(days))" }
-            /// Under the row while it is off, e.g. "Can free up to 3.1 GB on this phone".
-            static func cloudCouldFree(_ size: String) -> String {
-                "Can free up to \(size) on this phone"
-            }
-            /// Beside an age in the picker, e.g. "moves 1.3 GB".
-            static func moves(_ size: String) -> String { "moves \(size)" }
-            static let barOnPhone = "Phone"
-            static let barCloud = "iCloud"
-            /// e.g. "0.2 GB uploading".
-            static func uploading(_ size: String) -> String { "\(size) uploading" }
+            static let moveFooter =
+                "The oldest audio moves first. Transcripts stay on this phone."
+            static let deleteFooter = "The oldest recordings are deleted first, with their transcripts."
+            static let deleteCloudFooter =
+                "Recordings are deleted from iCloud too, with their transcripts."
             static let cloudUnavailable =
-                "iCloud Drive isn’t available to Pebble Audio on this phone. Turn it on in "
-                + "iOS Settings › your name › iCloud › Saved to iCloud."
-            static func cloudError(_ message: String) -> String { "iCloud reported a problem: \(message)" }
-            static let cloudFooter =
-                "Transcripts stay on this phone, and moved audio downloads when you play it."
+                "Turn on iCloud Drive for Pebble Audio in iOS Settings › your name › iCloud › "
+                + "Saved to iCloud."
             /// e.g. "Bring 1.3 GB Back to This Phone".
             static func bringBack(_ size: String) -> String { "Bring \(size) Back to This Phone" }
-            static func bringingBack(done: Int, total: Int) -> String {
-                "Bringing back \(done) of \(total)…"
+            static func bringBackNoRoom(_ free: String) -> String {
+                "This phone has only \(free) free"
             }
 
             // ── Export ─────────────────────────────────────────────────────────────────
             static let exportSection = "Export"
             static let exportAll = "Export All Audio"
+            /// Its title while some audio is in iCloud, which exporting does not fetch.
+            static let exportOnPhone = "Export Audio on This Phone"
             /// e.g. "About 13 GB of WAV files, in the Files app".
             static func exportAllSub(_ size: String) -> String {
                 "About \(size) of WAV files, in the Files app"
             }
+            static let nothingToExport = "No recordings on this phone"
             /// In its place when the files would not fit, e.g. "Needs about 90 GB".
             static func exportNeeds(_ size: String) -> String {
                 "Needs about \(size), more than this phone has free"

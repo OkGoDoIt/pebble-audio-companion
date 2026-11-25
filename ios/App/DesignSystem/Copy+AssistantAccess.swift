@@ -95,7 +95,7 @@ extension Copy {
             return "All \(count.formatted()), back to \(oldest), and every new one."
         }
         static let keepAudioLine =
-            "Your server keeps the text even after Keep recordings clears one here."
+            "Your server keeps the text even after a recording is deleted here."
         static func sinceTitle(_ day: String) -> String { "From \(day) on" }
         static func sinceLine(count: Int) -> String {
             switch count {

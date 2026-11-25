@@ -370,8 +370,8 @@ struct ComponentGallery: View {
                     value: Copy.Settings.TranscriptionAI.cloudFirst
                 ) {}
                 SettingsRow(
-                    title: Copy.Settings.Storage.keep,
-                    value: Copy.Settings.Storage.keepLabel(30)
+                    title: Copy.Settings.Storage.deletedStop,
+                    value: Copy.Settings.Storage.when(ageDays: 30, maxBytes: 0)
                 ) {}
                 SettingsRow(
                     title: Copy.Settings.Watch.watchReports,

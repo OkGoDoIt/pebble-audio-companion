@@ -79,24 +79,25 @@ import Testing
         #expect(overview.freeBytes == 0)
     }
 
-    /// The preview counts only what the rule WOULD move: closed, transcribed, old enough, and
-    /// not already in iCloud. The share is of all audio, so it does not jump as audio moves.
-    @Test func thePreviewFollowsTheAgeAndSkipsWhatCannotMove() {
-        let audio: Int64 = 15_000
-        let twoMonths = StoragePlanner.wouldMove(metas: library, olderThanDays: 60, nowMs: now, audioBytes: audio)
-        #expect(twoMonths.bytes == 3_000, "c only: d is untranscribed, a and b already moved")
-        #expect(twoMonths.count == 1)
-        #expect(twoMonths.percent == 20)
-
-        let twoWeeks = StoragePlanner.wouldMove(metas: library, olderThanDays: 14, nowMs: now, audioBytes: audio)
-        #expect(twoWeeks.bytes == 8_000, "c and e; f is still open")
-        #expect(twoWeeks.percent == 53)
-
-        let year = StoragePlanner.wouldMove(metas: library, olderThanDays: 365, nowMs: now, audioBytes: audio)
-        #expect(year == StoragePreview(bytes: 0, count: 0, percent: 0))
+    /// The previews count only what a rule WOULD move: closed, transcribed, old enough or over
+    /// the limit, and not already in iCloud.
+    @Test func thePreviewsFollowTheRuleAndSkipWhatCannotMove() {
+        func move(age: Int? = nil, limit: Int64 = 0) -> StoragePreview {
+            StoragePlanner.wouldMove(metas: library, ageDays: age, maxBytes: limit, nowMs: now)
+        }
+        #expect(move(age: 60) == StoragePreview(bytes: 3_000, count: 1), "c only: d is untranscribed, a and b already moved")
+        #expect(move(age: 14) == StoragePreview(bytes: 8_000, count: 2), "c and e; f is still open")
+        #expect(move(age: 365) == StoragePreview(bytes: 0, count: 0))
+        // 18,000 bytes here that have not moved (c, d, e and the open f).
+        #expect(move(limit: 18_000).bytes == 0)
+        #expect(move(limit: 16_000).bytes == 3_000, "the oldest that can go")
+        #expect(move(limit: 14_000).bytes == 8_000)
+        #expect(move(limit: 1).bytes == 8_000, "untranscribed and open audio stays whatever the limit")
+        #expect(move(age: 60, limit: 14_000).bytes == 8_000)
+        #expect(move().bytes == 0)
     }
 
-    /// What the Keep recordings picker says a choice would delete is what retention would delete:
+    /// What the Delete screen says a choice would delete is what retention would delete:
     /// closed recordings past the age, and nothing at all under Forever.
     @Test func thePickerCountsWhatAShorterKeepWouldDelete() {
         func count(_ days: Int) -> Int {
@@ -118,6 +119,8 @@ import Testing
         // Every closed recording whose audio is here (b, c, d, e), at 640 bytes a frame.
         #expect(overview.exportAllBytes == [2_000, 3_000, 4_000, 5_000].reduce(0) { $0 + $1 / 39 } * 640)
 
+        #expect(overview.exportFits, "not measured yet is not full")
+        overview.capacityBytes = 512 << 30
         overview.exportAllBytes = 90 << 30
         overview.freeBytes = 91 << 30
         #expect(!overview.exportFits, "filling the phone pauses recording")
@@ -126,21 +129,12 @@ import Testing
         overview.freeBytes = 12 << 30
         overview.exportBytes = 80 << 30
         #expect(overview.exportFits, "files already exported are written over")
-    }
 
-    @Test func theDeletingLineSaysWhatTheTwoRulesAddUpTo() {
-        typealias S = Copy.Settings.Storage
-        let forever = AppSettings.keepForever
-        let fiveGB: Int64 = 5 << 30
-        #expect(
-            S.deletingLine(keepDays: forever, limitBytes: 0, cloud: true)
-                == "Nothing is deleted automatically.")
-        #expect(
-            S.deletingLine(keepDays: 365, limitBytes: 0, cloud: true)
-                == "After 1 year, a recording and its transcript are deleted, from iCloud too.")
-        #expect(S.deletingLine(keepDays: forever, limitBytes: fiveGB, cloud: false).contains("Past 5 GB"))
-        let both = S.deletingLine(keepDays: 30, limitBytes: fiveGB, cloud: false)
-        #expect(both.contains("After 1 month") && both.contains("Past 5 GB"))
+        // Bringing audio back is measured the same way.
+        overview.audioInCloudBytes = 11 << 30
+        #expect(!overview.bringBackFits)
+        overview.freeBytes = 13 << 30
+        #expect(overview.bringBackFits)
     }
 
     /// Forever survives a relaunch, and leaves a build that has never heard of it a year rather
@@ -182,6 +176,5 @@ import Testing
         #expect(Copy.Settings.Storage.ageLabel(60) == "2 months")
         #expect(Copy.Settings.Storage.ageLabel(180) == "6 months")
         #expect(Copy.Settings.Storage.ageLabel(365) == "1 year")
-        #expect(Copy.Settings.Storage.keepLabel(AppSettings.keepForever) == "Forever")
     }
 }
