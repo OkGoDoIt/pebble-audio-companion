@@ -2244,7 +2244,8 @@ extension LiveFollowUps: FollowUpsDataSource {
                 modelName: AiModels.displayName(modelUsed: row.model),
                 stage: row.stage,
                 decidedAtMs: row.decidedAtMs,
-                saidAtMs: row.sourceWall?.startMs)
+                saidAtMs: row.sourceWall?.startMs,
+                appleId: row.appleId)
         }
     }
 

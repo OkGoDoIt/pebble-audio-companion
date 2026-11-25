@@ -660,6 +660,8 @@ struct FollowUpItem: Equatable, Identifiable {
     var decidedAtMs: Int64? = nil
     /// When the words were said, on the wall clock; nil when the moment is unknown.
     var saidAtMs: Int64? = nil
+    /// Its copy in Apple Reminders, while that is where reminders are kept.
+    var appleId: String? = nil
 
     var isArchived: Bool { archivedAtMs != nil }
 

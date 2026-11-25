@@ -1595,7 +1595,10 @@ extension MockFollowUps: FollowUpsDataSource {
             sourceEndMs: row.sourceEndMs,
             stage: row.stage,
             decidedAtMs: row.decidedAtMs,
-            saidAtMs: row.sourceWall?.startMs)
+            saidAtMs: row.sourceWall?.startMs,
+            appleId: row.appleId
+                ?? (ReminderHomeSources.current.preferences.home == .apple && row.stage == .reminder
+                    ? "demo-\(row.id)" : nil))
     }
 
     /// Oldest first, as `FollowUpStore` orders the review queue.

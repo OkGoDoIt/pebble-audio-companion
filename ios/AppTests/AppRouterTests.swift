@@ -1,3 +1,4 @@
+import CompanionRuntime
 import Foundation
 import Testing
 
@@ -311,5 +312,16 @@ struct AppRouterTests {
         router.navigate(to: try #require(Route.parse(URL(string: "companion://library?tag=apartment")!)))
         #expect(router.selectedTab == .library)
         #expect(router.consumePendingLibraryTag() == "apartment")
+    }
+
+    /// What the sync writes on a reminder in Apple Reminders opens that reminder here.
+    @Test func theLinkAnAppleReminderCarriesOpensItsReminder() throws {
+        let id = "conv-seg-1789300000000-f1"
+        let url = try #require(ReminderLink.url(followUpId: id))
+        #expect(Route.parse(url) == .followUp(id: id))
+        #expect(ReminderLink.followUpId(in: url) == id)
+        #expect(ReminderLink.followUpId(in: Route.followUp(id: id).url) == id)
+        #expect(ReminderLink.followUpId(in: URL(string: "companion://followup?id=\(id)")) == id)
+        #expect(ReminderLink.followUpId(in: URL(string: "https://example.com/followup/\(id)")) == nil)
     }
 }

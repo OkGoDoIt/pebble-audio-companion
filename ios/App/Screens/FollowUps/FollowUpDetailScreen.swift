@@ -1,4 +1,5 @@
 import AppDB
+import CompanionRuntime
 import SwiftUI
 
 /// One follow-up, opened.
@@ -18,6 +19,7 @@ struct FollowUpDetailScreen: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var model = FollowUpDetailViewModel()
     @State private var showingEditor = false
     @State private var showingDatePicker = false
@@ -241,6 +243,24 @@ struct FollowUpDetailScreen: View {
     private func actions(_ item: FollowUpItem) -> some View {
         VStack(spacing: Tokens.blockGap) {
             ListCard {
+                if let appleId = item.appleId, let url = ReminderLink.inReminders(appleId: appleId) {
+                    Button {
+                        openURL(url)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(Copy.Reminders.openInReminders)
+                                .font(AppFont.callout)
+                                .foregroundStyle(Tokens.label)
+                            Spacer(minLength: 10)
+                            Image(systemName: "arrow.up.forward")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Tokens.chevron)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
                 if item.isArchived {
                     SettingsRow(title: Copy.FollowUps.restore, showsChevron: false) {
                         model.setArchived(false)
