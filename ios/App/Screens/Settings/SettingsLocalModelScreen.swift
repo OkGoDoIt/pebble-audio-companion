@@ -1,328 +1,270 @@
 import SwiftUI
 import Transcription
 
-/// Settings · Transcription & AI → **Local model** (pushed).
+/// Settings · Transcription & AI → **On this iPhone** (pushed).
 ///
-/// The row that leads here never acts on its own: opening this screen downloads nothing, and a
-/// download starts only when a specific model is chosen — with its size shown before the tap.
-/// Every entry carries the four Part 6.7 states (not installed · downloading with real progress
-/// + Cancel · installed · failed + Try Again).
+/// Which engine transcribes on the phone. Two rows for almost everyone: the Pebble model and Apple
+/// Speech, each with a bar for how much quiet conversation it catches. Choosing one that is not
+/// here starts getting it, and the engine in use keeps transcribing until it is ready.
 struct SettingsLocalModelScreen: View {
     @Environment(AppSettings.self) private var settings
 
     private var model: LocalModelManaging { SettingsDataSources.current.localModel }
 
     @State private var removeTarget: LocalModelOption?
+    @State private var openRow: String?
 
     var body: some View {
         SettingsScroll {
-            // The chosen model is one that downloads, and it is not here. The kit transcribes
-            // with Apple Speech meanwhile (`SelectableLocalTranscriptionProvider.resolution`),
-            // so this screen says which engine is actually running rather than showing a check
-            // mark beside a model that is doing nothing.
-            if model.fallsBackToAppleSpeech(settings.localTranscriptionModelId),
-                let missing = model.model(settings.localTranscriptionModelId)
-            {
-                Card {
-                    HStack(alignment: .top, spacing: 8) {
-                        StatusDot(color: Tokens.attention, size: .lifecycle)
-                            .padding(.top, 5)
-                        Text(fallbackNotice(missing))
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.secondaryBody)
-                        .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                    }
-                    .accessibilityElement(children: .combine)
+            ListCard(rowVerticalPadding: 0, rowHorizontalPadding: 0) {
+                ForEach(model.listed) { option in
+                    row(option)
+                }
+            }
+            // Anchored to the card that raises it. Attached to `SettingsScroll` the source rect is
+            // the whole screen and iOS 26 places the panel against the top of it, far from the row.
+            .confirmationDialog(
+                removeTarget.map { Copy.OnThisIPhone.removeTitle($0.displayName) } ?? "",
+                isPresented: Binding(
+                    get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: removeTarget
+            ) { target in
+                Button(Copy.OnThisIPhone.remove, role: .destructive) { remove(target) }
+            } message: { target in
+                if let size = target.sizeText {
+                    Text(Copy.Settings.TranscriptionAI.removeModelNote(size))
                 }
             }
 
-            ListCard {
-                ForEach(model.models) { option in
-                    LocalModelRow(
-                        option: option,
-                        state: model.state(for: option.id),
-                        isSelected: option.id == settings.localTranscriptionModelId,
-                        select: { select(option) },
-                        cancel: { model.cancelDownload(option.id) }
-                    )
-                }
-            }
-
-            // Everything actually taking up room here, not only the engine in use: with three
-            // downloadable models in the catalog, a 1.2 GB one you tried once would otherwise
-            // be unremovable without selecting it first.
-            if !installed.isEmpty {
-                ListCard {
-                    ForEach(installed) { option in
-                        DestructiveRow(
-                            title: Copy.Settings.TranscriptionAI.removeModel(option.compactName)
-                        ) {
-                            removeTarget = option
-                        }
-                    }
-                }
-                // Anchored to the card that raises it. Attached to `SettingsScroll` the source
-                // rect is the whole screen and iOS 26 places the panel against the top of it,
-                // far from the row that was tapped. Same fix as `SettingsWatchScreen` and
-                // `SettingsStorageScreen`. (The card, not each row: `presenting: removeTarget`
-                // already names which model is going, and one dialog per row would be a dialog
-                // per model in the catalog.)
-                .confirmationDialog(
-                    removeTarget?.displayName ?? Copy.Settings.TranscriptionAI.localModel,
-                    isPresented: Binding(
-                        get: { removeTarget != nil }, set: { if !$0 { removeTarget = nil } }
-                    ),
-                    titleVisibility: .visible,
-                    presenting: removeTarget
-                ) { target in
-                    Button(
-                        Copy.Settings.TranscriptionAI.removeModelButton, role: .destructive
-                    ) {
-                        Haptics.destructiveConfirmed()
-                        model.delete(target.id)
-                        // Cleared here as well as by the dialog's own dismissal: removing the
-                        // LAST installed model collapses the card this dialog is anchored to,
-                        // and a host that disappears before SwiftUI writes `false` through the
-                        // binding would leave `removeTarget` set — so the next remove, after a
-                        // re-download, would find the dialog already "presented" and show
-                        // nothing.
-                        removeTarget = nil
-                    }
-                } message: { target in
-                    Text(removeNote(target))
-                }
-            }
-
-            SettingsFooter(text: Copy.Settings.TranscriptionAI.wifiFootnote)
-
-            #if DEBUG
-                ListCard {
-                    TintActionRow(title: "Debug: simulate failed download") {
-                        model.debugFailDownload(settings.localTranscriptionModelId)
-                    }
-                }
-            #endif
+            SettingsFooter(text: Copy.OnThisIPhone.footer)
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.localModel)
         .navigationBarTitleDisplayMode(.inline)
         // Re-reading install state is the only thing opening this screen does.
         .task { model.refresh() }
-    }
-
-    /// The fallback fact, worded for whether anything is being done about it right now.
-    private func fallbackNotice(_ option: LocalModelOption) -> String {
-        // A model this phone cannot run at all: "tap it to download" would be an invitation
-        // to something that cannot finish, so say what would actually change things.
-        guard option.canRunHere else { return Copy.CoreAI.unavailableNotice(option.compactName) }
-        let busy = model.state(for: option.id).isBusy
-        // Apple Speech stands in only when iOS actually has a speech model for this phone's
-        // language. `fallsBackToAppleSpeech` answers "would the kit fall back?", not "would the
-        // fallback work?", so on a phone with no system model this card was naming an engine
-        // that transcribes nothing — the substitution it exists to expose, one level down.
-        guard model.state(for: LocalModelCatalog.appleSpeechId) == .installed else {
-            return busy
-                ? Copy.Settings.TranscriptionAI.noFallbackNoticeInProgress(option.compactName)
-                : Copy.Settings.TranscriptionAI.noFallbackNotice(option.compactName)
+        .onChange(of: model.state(for: settings.shownLocalTranscriptionModelId)) {
+            settings.adoptPendingLocalModel(state: model.state(for:))
         }
-        return busy
-            ? Copy.Settings.TranscriptionAI.fallbackNoticeInProgress(option.compactName)
-            : Copy.Settings.TranscriptionAI.fallbackNotice(option.compactName)
+        #if DEBUG
+            .onAppear {
+                // Screenshots: a state that is on its way is on its way because it was chosen.
+                let shown = model.state(for: ParakeetModelCatalog.watchModelId)
+                if UserDefaults.standard.string(forKey: "localmodel.state") != nil {
+                    settings.pendingLocalTranscriptionModelId =
+                        shown == .installed ? nil : ParakeetModelCatalog.watchModelId
+                    settings.localTranscriptionModelId =
+                        shown == .installed
+                        ? ParakeetModelCatalog.watchModelId : LocalModelCatalog.appleSpeechId
+                }
+            }
+        #endif
     }
 
-    private var installed: [LocalModelOption] {
-        model.models.filter { model.state(for: $0.id) == .installed }
-    }
-
-    /// Honest about what removal actually does: app-owned weights go now, system speech files
-    /// go when iOS decides it needs the room.
-    private func removeNote(_ option: LocalModelOption) -> String {
-        guard let size = option.sizeText else {
-            return Copy.Settings.TranscriptionAI.removeSystemModelNote
-        }
-        return Copy.Settings.TranscriptionAI.removeModelNote(size)
-    }
-
-    /// The one action here: make a model the on-device engine, and fetch it if it isn't here.
-    /// Tapping a row whose download is already running must not start a second one.
-    private func select(_ option: LocalModelOption) {
-        settings.localTranscriptionModelId = option.id
+    private func row(_ option: LocalModelOption) -> some View {
         let state = model.state(for: option.id)
-        guard state != .installed, !state.isBusy else { return }
+        // Apple Speech is the system's and the floor under everything else: nothing to remove.
+        let removable = option.isDownloadable && state == .installed
+        return SwipeRow(
+            rowID: option.id,
+            trailing: removable
+                ? [
+                    SwipeAction(
+                        id: "remove", title: Copy.OnThisIPhone.remove, systemImage: "trash",
+                        tint: Tokens.destructive
+                    ) { removeTarget = option }
+                ] : [],
+            openRow: $openRow
+        ) {
+            LocalModelRow(
+                option: option,
+                state: state,
+                isInUse: option.id == inUseId,
+                choose: { choose(option) },
+                overCellular: { model.downloadOverCellular(option.id) },
+                cancel: { cancel(option) }
+            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .contextMenu {
+            if removable {
+                Button(role: .destructive) {
+                    removeTarget = option
+                } label: {
+                    Label(Copy.OnThisIPhone.remove, systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    /// The row with the check: the engine in use. A persisted choice that names no row (a language
+    /// tag from the old app) is Apple Speech.
+    private var inUseId: String {
+        let id = settings.localTranscriptionModelId
+        return model.model(id) == nil ? LocalModelCatalog.appleSpeechId : id
+    }
+
+    private func choose(_ option: LocalModelOption) {
+        let state = model.state(for: option.id)
+        if state == .installed {
+            settings.pendingLocalTranscriptionModelId = nil
+            settings.localTranscriptionModelId = option.id
+            return
+        }
+        guard !state.isBusy else { return }
+        if option.isDownloadable { settings.pendingLocalTranscriptionModelId = option.id }
         model.download(option.id)
+    }
+
+    private func cancel(_ option: LocalModelOption) {
+        if settings.pendingLocalTranscriptionModelId == option.id {
+            settings.pendingLocalTranscriptionModelId = nil
+        }
+        model.cancelDownload(option.id)
+    }
+
+    private func remove(_ option: LocalModelOption) {
+        Haptics.destructiveConfirmed()
+        if settings.localTranscriptionModelId == option.id {
+            settings.localTranscriptionModelId = LocalModelCatalog.appleSpeechId
+        }
+        model.delete(option.id)
+        openRow = nil
+        removeTarget = nil
     }
 }
 
 // MARK: - Model row
 
-/// Name · standing · size · what it is for, then whatever state the engine reports — including
-/// real download progress with a Cancel (never a spinner that stands for nothing).
+/// Name, what it is, how much it catches, and whatever the engine is doing — with real progress and
+/// a Cancel while something is moving.
 private struct LocalModelRow: View {
     let option: LocalModelOption
     let state: LocalModelState
-    let isSelected: Bool
-    let select: () -> Void
+    let isInUse: Bool
+    let choose: () -> Void
+    let overCellular: () -> Void
     let cancel: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(action: select) {
+        let layout =
+            typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+        layout {
+            Button(action: choose) {
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 10) {
-                        Text(option.displayName)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Tokens.label)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 10)
-                        accessory
-                        if isSelected {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Tokens.tint)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    Text(standingLine)
+                    Text(option.displayName)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Tokens.label)
+                    Text(detail)
                         .font(AppFont.footnote)
-                        .foregroundStyle(option.isRecommended ? Tokens.tint : Tokens.meta)
-                    Text(option.description)
-                        .font(AppFont.footnote)
-                        .foregroundStyle(Tokens.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(state == .failed ? Tokens.attention : Tokens.tertiary)
                         .multilineTextAlignment(.leading)
-                    if option.isImportOnly, state != .installed, !state.isBusy {
-                        Text(Copy.CoreAI.importHint(option.id))
-                            .font(AppFont.footnote)
-                            .foregroundStyle(Tokens.meta)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .multilineTextAlignment(.leading)
+                    if case .downloading(let progress) = state {
+                        ProgressView(value: progress).tint(Tokens.tint).padding(.top, 5)
+                    } else if let hearing = option.hearing {
+                        HearingBar(level: hearing).padding(.top, 5)
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // An engine that cannot run here is shown, and says why, but cannot be chosen.
-            .disabled(state == .unavailable)
-            .accessibilityElement(children: .combine)
+            .disabled(state == .unavailable || state.isBusy)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityAddTraits(isInUse ? .isSelected : [])
+            .accessibilityAddTraits(.isButton)
 
-            switch state {
-            case .downloading(let progress):
-                HStack(spacing: 12) {
-                    ProgressView(value: progress)
-                        .tint(Tokens.tint)
-                    Button(Copy.Common.cancel, action: cancel)
-                        .font(AppFont.smallButton)
-                        .foregroundStyle(Tokens.tint)
-                        .buttonStyle(.plain)
-                }
-            // Unpacking: the bytes are all here, so the bar is full and honest — but there is
-            // no second number to report, and it is still cancellable.
-            case .installing:
-                HStack(spacing: 12) {
-                    ProgressView(value: 1)
-                        .tint(Tokens.tint)
-                    Button(Copy.Common.cancel, action: cancel)
-                        .font(AppFont.smallButton)
-                        .foregroundStyle(Tokens.tint)
-                        .buttonStyle(.plain)
-                }
-            // Setting up: real work that runs while the app is open. A full bar and no Cancel —
-            // there is nothing to cancel back to (the files are installed), and the Cancel this
-            // state used to share with the unpack flickered the row to "not installed".
-            case .preparing:
-                ProgressView(value: 1)
-                    .tint(Tokens.tint)
-            case .failed:
-                // Same slot the progress bar uses: what went wrong, and the way out of it.
-                HStack(spacing: 12) {
-                    Text(Copy.Settings.TranscriptionAI.downloadFailed)
-                        .font(AppFont.subBody)
-                        .foregroundStyle(Tokens.attention)
-                    Spacer(minLength: 10)
-                    Button(Copy.Common.tryAgain, action: select)
-                        .buttonStyle(.smallBordered)
-                }
-            default:
-                EmptyView()
-            }
+            accessory
         }
     }
 
-    /// "Recommended · 706 MB" — or just "Built in" for the engine that downloads nothing.
-    private var standingLine: String {
-        [option.shortLabel, option.sizeText].compactMap { $0 }.joined(separator: " · ")
+    /// One line: what it costs and covers, or what is happening to it.
+    private var detail: String {
+        switch state {
+        case .waitingForWiFi: return Copy.OnThisIPhone.waitingForWiFi
+        case .downloading(let progress):
+            return Copy.OnThisIPhone.downloaded(progress, of: option.downloadBytes ?? 0)
+        case .installing, .preparing: return Copy.OnThisIPhone.settingUp
+        case .failed: return Copy.OnThisIPhone.failed
+        case .needsSpace(let free):
+            return Copy.OnThisIPhone.needsSpace(
+                (option.downloadBytes ?? 0) * 2 + 200_000_000, free: free)
+        case .unavailable where option.isDownloadable: return Copy.OnThisIPhone.cannotRunHere
+        case .unavailable: return Copy.OnThisIPhone.noSystemModel
+        case .notInstalled, .installed:
+            let facts = option.isOffered ? option.description : option.shortLabel
+            return [option.sizeText ?? option.shortLabel, facts]
+                .filter { !$0.isEmpty }.joined(separator: " · ")
+        }
     }
 
     @ViewBuilder
     private var accessory: some View {
         switch state {
         case .notInstalled:
-            // An import-only model has no download to offer; the glyph says "bring a file".
-            Image(systemName: option.isImportOnly ? "square.and.arrow.down" : "arrow.down.circle")
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(Tokens.tint)
-                .accessibilityHidden(true)
+            Button(Copy.OnThisIPhone.get, action: choose).buttonStyle(.smallBordered)
+                .accessibilityLabel(Copy.OnThisIPhone.getLabel(option.displayName))
         case .waitingForWiFi:
-            stateText(Copy.Settings.TranscriptionAI.waitingForWiFi, color: Tokens.meta)
-        case .downloading(let progress):
-            // Just the number: the bar below says "downloading", and the longer phrase pushed
-            // the model's name into a second line mid-download.
-            stateText(Copy.Settings.TranscriptionAI.percent(Int(progress * 100)), color: Tokens.meta)
-        case .installing:
-            stateText(Copy.Settings.TranscriptionAI.installing, color: Tokens.meta)
-        case .preparing:
-            stateText(Copy.Settings.TranscriptionAI.preparing, color: Tokens.meta)
-        case .installed:
-            if !isSelected {
-                stateText(Copy.Settings.TranscriptionAI.installedValue, color: Tokens.meta)
-            }
+            Button(Copy.OnThisIPhone.useCellular, action: overCellular).buttonStyle(.smallBordered)
+        case .downloading:
+            Button(Copy.Common.cancel, action: cancel)
+                .font(AppFont.smallButton)
+                .foregroundStyle(Tokens.tint)
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+        case .installing, .preparing:
+            ProgressView()
         case .failed:
-            // The failure and its Try Again live on the line below, together.
+            Button(Copy.Common.tryAgain, action: choose).buttonStyle(.smallBordered)
+        case .needsSpace:
+            NavigationLink(Copy.OnThisIPhone.storage) { SettingsStorageScreen() }
+                .buttonStyle(.smallBordered)
+        case .installed:
+            if isInUse {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Tokens.tint)
+                    .accessibilityHidden(true)
+            }
+        case .unavailable:
             EmptyView()
-        case .unavailable:
-            // Apple Speech: no model for this language. A Core AI model: the OS is too old (or
-            // this is a simulator) — a different reason, and one worth naming.
-            stateText(
-                option.canRunHere ? Copy.Settings.TranscriptionAI.unavailable : Copy.CoreAI.needsIOS27,
-                color: Tokens.meta
-            )
         }
     }
 
-    private func stateText(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(AppFont.subBody)
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-    }
-
-    /// VoiceOver reads name, standing, state, and whether this is the engine in use.
     private var accessibilityLabel: String {
-        var parts = [option.displayName, standingLine]
-        switch state {
-        case .notInstalled: parts.append(Copy.Settings.TranscriptionAI.downloadAction)
-        case .waitingForWiFi: parts.append(Copy.Settings.TranscriptionAI.waitingForWiFi)
-        case .downloading(let progress):
-            parts.append(Copy.Settings.TranscriptionAI.downloading(Int(progress * 100)))
-        case .installing: parts.append(Copy.Settings.TranscriptionAI.installing)
-        case .preparing: parts.append(Copy.Settings.TranscriptionAI.preparingDetail)
-        case .installed: parts.append(Copy.Settings.TranscriptionAI.installedValue)
-        case .failed: parts.append(Copy.Settings.TranscriptionAI.downloadFailed)
-        case .unavailable:
-            parts.append(
-                option.canRunHere ? Copy.Settings.TranscriptionAI.unavailable : Copy.CoreAI.needsIOS27
-            )
-        }
-        if isSelected { parts.append(Copy.Settings.TranscriptionAI.inUse) }
+        var parts = [option.displayName, detail]
+        if let hearing = option.hearing { parts.append(Copy.OnThisIPhone.hearing(hearing)) }
+        if isInUse { parts.append(Copy.Settings.TranscriptionAI.inUse) }
         return parts.joined(separator: ", ")
     }
 }
 
-#Preview("Local model") {
+/// How much quiet conversation an engine catches, as five segments.
+private struct HearingBar: View {
+    let level: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(1...5, id: \.self) { step in
+                Capsule()
+                    .fill(step <= level ? Tokens.tint : Tokens.track)
+                    .frame(height: 6)
+            }
+        }
+        .frame(maxWidth: 220)
+        .accessibilityHidden(true)
+    }
+}
+
+#Preview("On this iPhone") {
     NavigationStack {
         SettingsLocalModelScreen()
     }

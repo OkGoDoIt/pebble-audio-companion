@@ -39,6 +39,9 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
     /// exists only as an import (`Documents/models-inbox/<id>.zip`) or a LAN override until a
     /// release is published — the store must never start a download that can only fail.
     public let published: Bool
+    /// Whether the picker offers this model to someone who does not have it. A model that is no
+    /// longer worth downloading stays in the catalog so a phone that already has it keeps it.
+    public let offered: Bool
 
     public init(
         id: String,
@@ -54,7 +57,8 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         downloadBytes: Int64,
         recommended: Bool = false,
         runtime: LocalEngineRuntime = .cactus,
-        published: Bool = true
+        published: Bool = true,
+        offered: Bool = true
     ) {
         self.id = id
         self.displayName = displayName
@@ -70,6 +74,7 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         self.recommended = recommended
         self.runtime = runtime
         self.published = published
+        self.offered = offered
     }
 
     /// The Hugging Face archive URL (`{base}/{repository}/resolve/{revision}/{archivePath}`)
@@ -175,7 +180,8 @@ public enum ParakeetModelCatalog {
             installDirectoryName: "parakeet-tdt-0.6b-v3-int4",
             modelNameForProvenance: "parakeet-tdt-0.6b-v3-int4",
             modelVersionForProvenance: "v1.10",
-            downloadBytes: 430_744_371
+            downloadBytes: 430_744_371,
+            offered: false
         ),
         ParakeetModelSpec(
             id: defaultModelId,
@@ -192,7 +198,8 @@ public enum ParakeetModelCatalog {
             modelNameForProvenance: "parakeet-tdt-0.6b-v3-int8",
             modelVersionForProvenance: "v1.10",
             downloadBytes: 706_097_687,
-            recommended: true
+            recommended: true,
+            offered: false
         ),
         ParakeetModelSpec(
             id: "parakeet-ctc-1.1b-int8",
@@ -206,7 +213,8 @@ public enum ParakeetModelCatalog {
             installDirectoryName: "parakeet-ctc-1.1b-int8",
             modelNameForProvenance: "parakeet-ctc-1.1b-int8",
             modelVersionForProvenance: "v1.14",
-            downloadBytes: 1_184_422_635
+            downloadBytes: 1_184_422_635,
+            offered: false
         ),
         // The Core AI export (apple/coreai-models `export.py --streaming`, float16, 150-frame
         // window) of the same Parakeet TDT v3 checkpoint. NOT published anywhere yet: the
@@ -231,7 +239,8 @@ public enum ParakeetModelCatalog {
             modelVersionForProvenance: "v1",
             downloadBytes: 1_256_163_783,
             runtime: .coreAI,
-            published: false
+            published: false,
+            offered: false
         ),
         // The v3 checkpoint with its encoder trained further on watch recordings, int8, on Core ML.
         // Trained on private recordings, so it is NOT published: it is installed from
@@ -241,10 +250,9 @@ public enum ParakeetModelCatalog {
         // third of them 24.7%, 30.3% and (leveled) 38.4%.
         ParakeetModelSpec(
             id: watchModelId,
-            displayName: "Parakeet for Pebble",
+            displayName: "Pebble",
             shortLabel: "Best for the watch",
-            modelDescription: "Hears quiet and distant conversation best. English and 24 other "
-                + "European languages.",
+            modelDescription: "English and 24 other European languages",
             repository: "pebble-audio-companion/parakeet-watch-UNPUBLISHED",
             revision: "v1",
             archivePath: "parakeet-watch.zip",

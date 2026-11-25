@@ -365,59 +365,31 @@ struct SettingsTranscriptionScreen: View {
 
     // MARK: Local model row
 
-    /// "Apple Speech" · "Parakeet TDT 0.6B · 706 MB" when installed; otherwise the state
-    /// itself, in the same lowercase register as "not set" on the key rows.
+    /// "Pebble" · "Apple Speech" once installed; otherwise the state itself, in the same lowercase
+    /// register as "not set" on the key rows.
     private var localModelValue: String {
-        switch model.state(for: settings.localTranscriptionModelId) {
-        case .notInstalled:
-            // A chosen model that has to be downloaded and isn't here means Apple Speech is
-            // doing the transcribing. The row names the engine that is actually running — the
-            // alternative is a settings row that quietly describes nothing.
-            //
-            // ... but only when Apple Speech can actually run. `fallsBackToAppleSpeech` answers
-            // "would the kit fall back?", not "would the fallback work?", so on a phone whose
-            // speech assets are absent or whose language iOS has no model for, this row was
-            // naming an engine that transcribes nothing. Saying "not installed" plainly is the
-            // honest version; the footer under the card says what that means.
-            guard model.fallsBackToAppleSpeech(settings.localTranscriptionModelId),
-                model.state(for: LocalModelCatalog.appleSpeechId) == .installed
-            else {
-                return Copy.Settings.TranscriptionAI.notInstalled
-            }
-            return Copy.Settings.TranscriptionAI.notInstalledUsingAppleSpeech
-        case .waitingForWiFi:
-            return Copy.Settings.TranscriptionAI.waitingForWiFi
+        let id = settings.shownLocalTranscriptionModelId
+        switch model.state(for: id) {
+        case .notInstalled: return Copy.Settings.TranscriptionAI.notInstalled
+        case .waitingForWiFi: return Copy.Settings.TranscriptionAI.waitingForWiFi
         case .downloading(let progress):
             return Copy.Settings.TranscriptionAI.downloading(Int(progress * 100))
-        case .installing:
-            return Copy.Settings.TranscriptionAI.installing
-        case .preparing:
-            return Copy.Settings.TranscriptionAI.preparingDetail
-        case .failed:
-            return Copy.Settings.TranscriptionAI.downloadFailed
-        case .unavailable:
-            return Copy.Settings.TranscriptionAI.unavailable
+        case .installing, .preparing: return Copy.Settings.TranscriptionAI.installing
+        case .failed, .needsSpace: return Copy.Settings.TranscriptionAI.downloadFailed
+        case .unavailable: return Copy.Settings.TranscriptionAI.unavailable
         case .installed:
-            guard let option = model.selectedModel(settings.localTranscriptionModelId) else {
-                return Copy.Settings.TranscriptionAI.notInstalled
-            }
-            return [option.compactName, option.sizeText]
-                .compactMap { $0 }
-                .joined(separator: " · ")
+            return model.selectedModel(id)?.compactName
+                ?? Copy.Settings.TranscriptionAI.notInstalled
         }
     }
 
-    /// Attention for a failed download, and equally for a selection that is not running — a
-    /// model this phone does not have is a gap the user has to know about, not a grey detail.
+    /// Attention only for something that needs the person: a download that stopped, or no engine
+    /// at all.
     private var localModelValueColor: Color {
-        let state = model.state(for: settings.localTranscriptionModelId)
-        if state == .failed { return Tokens.attention }
-        if state == .notInstalled,
-            model.fallsBackToAppleSpeech(settings.localTranscriptionModelId)
-        {
-            return Tokens.attention
+        switch model.state(for: settings.shownLocalTranscriptionModelId) {
+        case .failed, .needsSpace, .notInstalled: return Tokens.attention
+        default: return Tokens.meta
         }
-        return Tokens.meta
     }
 
     // MARK: On-device AI row

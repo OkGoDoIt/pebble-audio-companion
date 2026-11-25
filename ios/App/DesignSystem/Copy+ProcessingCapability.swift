@@ -153,9 +153,9 @@ extension Copy.Settings.TranscriptionAI {
         case .localOnly:
             return appleSpeechUnsupported
                 ? "iOS has no speech model for this phone’s language, so nothing is transcribed "
-                    + "until you download one in Local model."
+                    + "until you download one in On this iPhone."
                 : "No speech model is installed, so nothing is transcribed until you download "
-                    + "one in Local model."
+                    + "one in On this iPhone."
         case .localFirst:
             return "With no speech model installed, every recording goes to \(cloudProvider)."
         case .remoteFirst, .remoteOnly:

@@ -78,11 +78,19 @@ public protocol ParakeetModelStoring: Sendable {
     /// Re-reads disk (e.g. on screen appear) and returns the refreshed rows.
     func refresh() async -> [ParakeetModelEntry]
     /// Starts (or joins) the download+install and returns the terminal state of the attempt.
-    @discardableResult func install(_ modelId: String) async -> ParakeetInstallState
+    /// `overCellular`: the person asked for this download not to wait for Wi-Fi.
+    @discardableResult func install(_ modelId: String, overCellular: Bool) async
+        -> ParakeetInstallState
     func cancel(_ modelId: String) async
     @discardableResult func uninstall(_ modelId: String) async -> ParakeetInstallState
     /// Live row updates (buffered; safe to subscribe before acting).
     func states() async -> AsyncStream<[ParakeetModelEntry]>
+}
+
+extension ParakeetModelStoring {
+    @discardableResult public func install(_ modelId: String) async -> ParakeetInstallState {
+        await install(modelId, overCellular: false)
+    }
 }
 
 /// Resolves an installed model to its directory — the read-only half of the store, so the
@@ -271,6 +279,8 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
 
     private let location: ParakeetModelLocation
     private let downloader: any ParakeetArchiveDownloading
+    /// The one used when the person chose not to wait for Wi-Fi.
+    private let cellularDownloader: any ParakeetArchiveDownloading
     private let extractor: any ParakeetArchiveExtracting
     private let temporaryDirectory: URL
     private let inboxDirectory: URL?
@@ -301,6 +311,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     public init(
         location: ParakeetModelLocation = ParakeetModelLocation(),
         downloader: (any ParakeetArchiveDownloading)? = nil,
+        cellularDownloader: (any ParakeetArchiveDownloading)? = nil,
         extractor: any ParakeetArchiveExtracting = ZipArchiveExtractor(),
         temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
         inboxDirectory: URL? = ParakeetModelStore.defaultInboxDirectory,
@@ -310,6 +321,8 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     ) {
         self.location = location
         self.downloader = downloader ?? URLSessionArchiveDownloader()
+        self.cellularDownloader =
+            cellularDownloader ?? URLSessionArchiveDownloader(configuration: .default)
         self.extractor = extractor
         self.temporaryDirectory = temporaryDirectory
         self.inboxDirectory = inboxDirectory
@@ -368,7 +381,9 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
                 !location.isInstalled(spec)
             {
                 set(spec.id, .installing)
-                start(spec) { await self.performInstall(spec, archive: archive) }
+                start(spec) {
+                    await self.performInstall(spec, archive: archive, overCellular: false)
+                }
                 continue
             }
             if location.isInstalled(spec), !location.isPrepared(spec),
@@ -407,7 +422,7 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
     // MARK: - Installing
 
     @discardableResult
-    public func install(_ modelId: String) async -> ParakeetInstallState {
+    public func install(_ modelId: String, overCellular: Bool) async -> ParakeetInstallState {
         guard let spec = ParakeetModelCatalog.spec(id: modelId) else { return .notInstalled }
         if let running = installs[spec.id] {
             await running.value
@@ -427,7 +442,9 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
             return await run(spec) { await self.performPrepare(spec) }
         }
         if let archive = inboxArchive(for: spec) {
-            return await run(spec) { await self.performInstall(spec, archive: archive) }
+            return await run(spec) {
+                await self.performInstall(spec, archive: archive, overCellular: false)
+            }
         }
         guard spec.hasDownloadSource else {
             // Nothing is hosted for this model yet: the only way in is the Files inbox, and a
@@ -436,7 +453,9 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
             return resolvedState(spec)
         }
         set(spec.id, .downloading(receivedBytes: 0, totalBytes: spec.downloadBytes))
-        return await run(spec) { await self.performInstall(spec, archive: nil) }
+        return await run(spec) {
+            await self.performInstall(spec, archive: nil, overCellular: overCellular)
+        }
     }
 
     /// Runs `work` as the one install task for `spec` and reports the state it ended in.
@@ -483,7 +502,9 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
 
     /// Download (unless `archive` names one already on disk — the inbox path), extract, record
     /// the revision, then run the runtime's prepare pass.
-    private func performInstall(_ spec: ParakeetModelSpec, archive inboxArchive: URL?) async {
+    private func performInstall(
+        _ spec: ParakeetModelSpec, archive inboxArchive: URL?, overCellular: Bool
+    ) async {
         let target = location.directory(for: spec)
         let downloaded = temporaryDirectory.appendingPathComponent("cactus_download_\(spec.id).zip")
         let archive = inboxArchive ?? downloaded
@@ -498,7 +519,9 @@ public actor ParakeetModelStore: ParakeetModelStoring, ParakeetModelLocating {
                     at: archive.deletingLastPathComponent(), withIntermediateDirectories: true
                 )
                 let expected = spec.downloadBytes
-                try await downloader.download(from: spec.downloadURL, to: archive) {
+                try await (overCellular ? cellularDownloader : downloader).download(
+                    from: spec.downloadURL, to: archive
+                ) {
                     [weak self] received, total in
                     guard let self else { return }
                     // A server that omits Content-Length reports total 0/-1; fall back to the

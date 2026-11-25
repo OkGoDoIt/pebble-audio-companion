@@ -320,6 +320,22 @@ struct LocalModelOption: Identifiable, Hashable {
     /// entry on iOS 26 or a simulator, where the row shows "needs iOS 27" and cannot be chosen.
     var canRunHere: Bool { !isDownloadable || ParakeetEngineFactory.isSupported(runtime) }
 
+    /// How much quiet conversation this engine catches, out of five; nil when it has not been
+    /// measured. From 60 held-out watch recordings (2026-11-25): the share of the cloud's words
+    /// each got was 46% for Pebble, 37% for stock Parakeet v3 and 28% for Apple Speech.
+    var hearing: Int? {
+        switch id {
+        case ParakeetModelCatalog.watchModelId: return 4
+        case "parakeet-tdt-0.6b-v3-int4", "parakeet-tdt-0.6b-v3-int8",
+            ParakeetModelCatalog.coreAIModelId:
+            return 3
+        case LocalModelCatalog.appleSpeechId: return 2
+        default: return nil
+        }
+    }
+    /// False for a model kept only for phones that already have it.
+    var isOffered = true
+
     /// Compact identity for the Settings row, e.g. "Parakeet TDT 0.6B".
     var compactName: String {
         displayName.split(separator: ",").first.map { $0.trimmingCharacters(in: .whitespaces) }
@@ -355,7 +371,8 @@ extension LocalModelOption {
             downloadBytes: spec.downloadBytes,
             isRecommended: spec.recommended,
             runtime: spec.runtime,
-            isImportOnly: !spec.hasDownloadSource
+            isImportOnly: !spec.hasDownloadSource,
+            isOffered: spec.offered
         )
     }
 }
@@ -376,6 +393,8 @@ enum LocalModelState: Equatable {
     case preparing
     case installed
     case failed
+    /// The phone has too little room to download and unpack it.
+    case needsSpace(freeBytes: Int64)
     /// This engine cannot run here at all (e.g. Apple Speech has no model for the phone's
     /// language). Offering a download would be offering something that can never finish.
     case unavailable
@@ -384,7 +403,8 @@ enum LocalModelState: Equatable {
     var isBusy: Bool {
         switch self {
         case .downloading, .installing, .preparing: return true
-        case .notInstalled, .waitingForWiFi, .installed, .failed, .unavailable: return false
+        case .notInstalled, .waitingForWiFi, .installed, .failed, .needsSpace, .unavailable:
+            return false
         }
     }
 }
@@ -398,6 +418,8 @@ protocol LocalModelManaging: AnyObject {
     /// Re-reads install state for every model (cheap; safe to call on appear).
     func refresh()
     func download(_ modelId: String)
+    /// Starts a download that was waiting for Wi-Fi, on whatever network there is.
+    func downloadOverCellular(_ modelId: String)
     func cancelDownload(_ modelId: String)
     func delete(_ modelId: String)
     #if DEBUG
@@ -407,6 +429,22 @@ protocol LocalModelManaging: AnyObject {
 
 extension LocalModelManaging {
     func model(_ id: String) -> LocalModelOption? { models.first { $0.id == id } }
+
+    /// The rows of the On this iPhone screen: the downloadable models worth having, Apple Speech,
+    /// then any older model this phone still holds. A model with no way to get it is left out.
+    var listed: [LocalModelOption] {
+        let downloadable = models.filter(\.isDownloadable)
+        let offered = downloadable.filter { option in
+            guard option.isOffered else { return false }
+            let state = state(for: option.id)
+            return state != .unavailable && (!option.isImportOnly || state != .notInstalled)
+        }
+        let kept = downloadable.filter { option in
+            let state = state(for: option.id)
+            return !option.isOffered && state != .notInstalled && state != .unavailable
+        }
+        return offered + models.filter { !$0.isDownloadable } + kept
+    }
 
     /// The entry a persisted id names, falling back to the first the build has — a choice
     /// migrated from the old app can name an engine this build does not carry yet.
@@ -436,7 +474,7 @@ enum LocalModelCatalog {
         id: appleSpeechId,
         displayName: "Apple Speech",
         shortLabel: "Built in",
-        description: "Transcribes in your phone's language, using the models iOS manages.",
+        description: "Your phone’s language",
         downloadBytes: nil
     )
 
@@ -452,9 +490,32 @@ enum LocalModelCatalog {
 final class MockLocalModelManager: LocalModelManaging {
     /// The same catalog the live source lists — read from the kit rather than transcribed by
     /// hand, so a preview can never advertise a model (or a size) the app cannot install.
-    let models: [LocalModelOption] = LocalModelCatalog.installable
+    /// In the simulator the Core ML engine cannot run; the preview shows the model as if it could.
+    let models: [LocalModelOption] = LocalModelCatalog.installable.map { option in
+        guard option.isOffered, option.isDownloadable else { return option }
+        var shown = option
+        shown.runtime = .cactus
+        shown.isImportOnly = false
+        return shown
+    }
 
-    private var states: [String: LocalModelState] = [LocalModelCatalog.appleSpeechId: .installed]
+    private var states: [String: LocalModelState] = {
+        var states: [String: LocalModelState] = [LocalModelCatalog.appleSpeechId: .installed]
+        #if DEBUG
+            // `-localmodel.state <name>` puts the Pebble row in one state, for screenshots.
+            let demo: [String: LocalModelState] = [
+                "downloading": .downloading(progress: 0.42), "preparing": .preparing,
+                "installed": .installed, "wifi": .waitingForWiFi, "failed": .failed,
+                "space": .needsSpace(freeBytes: 210_000_000),
+            ]
+            if let name = UserDefaults.standard.string(forKey: "localmodel.state"),
+                let state = demo[name]
+            {
+                states[ParakeetModelCatalog.watchModelId] = state
+            }
+        #endif
+        return states
+    }()
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
 
     func state(for modelId: String) -> LocalModelState {
@@ -485,6 +546,8 @@ final class MockLocalModelManager: LocalModelManaging {
             self?.states[modelId] = .installed
         }
     }
+
+    func downloadOverCellular(_ modelId: String) { download(modelId) }
 
     func cancelDownload(_ modelId: String) {
         downloadTask?.cancel()

@@ -640,7 +640,33 @@ final class LiveLocalModelManager: LocalModelManaging {
             return
         }
         deferredForWiFi.remove(modelId)
-        Task { [parakeet] in await parakeet.install(modelId) }
+        start(modelId, overCellular: false)
+    }
+
+    func downloadOverCellular(_ modelId: String) {
+        guard model(modelId)?.canRunHere ?? false, ParakeetModelCatalog.isParakeetId(modelId) else {
+            return
+        }
+        deferredForWiFi.remove(modelId)
+        start(modelId, overCellular: true)
+    }
+
+    private func start(_ modelId: String, overCellular: Bool) {
+        // The archive and what it unpacks to are both on disk for a moment. A model that is
+        // already unpacked needs no more room than it has.
+        if state(for: modelId) != .preparing, let bytes = model(modelId)?.downloadBytes,
+            let free = Self.freeBytes(), free < bytes * 2 + 200_000_000
+        {
+            states[modelId] = .needsSpace(freeBytes: free)
+            return
+        }
+        Task { [parakeet] in await parakeet.install(modelId, overCellular: overCellular) }
+    }
+
+    private static func freeBytes() -> Int64? {
+        try? URL.homeDirectory
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage
     }
 
     func cancelDownload(_ modelId: String) {
@@ -707,8 +733,15 @@ final class LiveLocalModelManager: LocalModelManaging {
             // A model the user is waiting on Wi-Fi for has no store state of its own yet; the
             // store would report it as plain "not installed" and erase the row's explanation.
             if deferredForWiFi.contains(entry.id), next == .notInstalled { continue }
+            // Likewise a download the phone had no room for, until the row is tried again.
+            if case .needsSpace? = states[entry.id], next == .notInstalled { continue }
             states[entry.id] = next
         }
+        // Here rather than on the screen: a model can finish while nobody is looking at it. Every
+        // Parakeet state has just been read, which `dropMissingLocalModel` depends on.
+        let settings = composition.settings
+        settings.adoptPendingLocalModel(state: state(for:))
+        settings.dropMissingLocalModel(state: state(for:))
     }
 
     private static func map(_ state: Transcription.LocalModelState) -> LocalModelState {

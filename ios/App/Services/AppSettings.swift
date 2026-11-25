@@ -199,6 +199,36 @@ final class AppSettings {
         }
     }
 
+    /// A model the person chose that is not ready yet. The engine in use keeps transcribing until
+    /// it is; `adoptPendingLocalModel` then switches.
+    var pendingLocalTranscriptionModelId: String? {
+        didSet { defaults.set(pendingLocalTranscriptionModelId, forKey: Keys.pendingLocalModel) }
+    }
+
+    /// What the Local model surfaces are about: the model on its way, else the one in use.
+    var shownLocalTranscriptionModelId: String {
+        pendingLocalTranscriptionModelId ?? localTranscriptionModelId
+    }
+
+    /// Switches to the chosen model once it is ready.
+    func adoptPendingLocalModel(state: (String) -> LocalModelState) {
+        guard let pending = pendingLocalTranscriptionModelId, state(pending) == .installed else {
+            return
+        }
+        localTranscriptionModelId = pending
+        pendingLocalTranscriptionModelId = nil
+    }
+
+    /// Goes back to Apple Speech when the engine in use is a model this phone does not have. Call
+    /// only with states that have been read: an unread model looks like a missing one.
+    func dropMissingLocalModel(state: (String) -> LocalModelState) {
+        let current = localTranscriptionModelId
+        guard ParakeetModelCatalog.isParakeetId(current),
+            state(current) == .notInstalled || state(current) == .unavailable
+        else { return }
+        localTranscriptionModelId = LocalModelCatalog.appleSpeechId
+    }
+
     var cloudTranscriptionProvider: CloudProvider {
         didSet {
             defaults.set(cloudTranscriptionProvider.rawValue, forKey: Keys.cloudProvider)
@@ -584,6 +614,7 @@ final class AppSettings {
         // download, so it is the default until the user picks another from the catalog.
         localTranscriptionModelId =
             defaults.string(forKey: Keys.localModel) ?? LocalModelCatalog.defaultModelId
+        pendingLocalTranscriptionModelId = defaults.string(forKey: Keys.pendingLocalModel)
         cloudTranscriptionProvider =
             defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) ?? .soniox
         aiMode = defaults.string(forKey: Keys.aiMode).flatMap(AiProcessingMode.init) ?? .remoteFirst
@@ -673,6 +704,7 @@ final class AppSettings {
         if let stored = defaults.string(forKey: Keys.localModel) {
             localTranscriptionModelId = stored
         }
+        pendingLocalTranscriptionModelId = defaults.string(forKey: Keys.pendingLocalModel)
         if let stored = defaults.string(forKey: Keys.cloudProvider).flatMap(CloudProvider.init) {
             cloudTranscriptionProvider = stored
         }
@@ -740,6 +772,7 @@ final class AppSettings {
         static let backgroundCatchUp = "background_catch_up"
         static let cloudUploadNetwork = "cloud_upload_network"
         static let localModel = "local_transcription_model"
+        static let pendingLocalModel = "local_transcription_model_pending"
         static let cloudProvider = "cloud_transcription_provider"
         static let aiMode = "ai_mode"
         static let aiModel = "ai_model"

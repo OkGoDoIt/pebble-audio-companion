@@ -89,7 +89,7 @@ import Testing
         // so it only ever arrives through `Documents/models-inbox`.
         Row(
             id: "parakeet-watch",
-            displayName: "Parakeet for Pebble",
+            displayName: "Pebble",
             shortLabel: "Best for the watch",
             repository: "pebble-audio-companion/parakeet-watch-UNPUBLISHED",
             revision: "v1",
@@ -121,6 +121,11 @@ import Testing
             #expect(spec.runtime == row.runtime)
             #expect(!spec.modelDescription.isEmpty)
         }
+    }
+
+    /// Only the Core ML model is offered; the older ones stay for phones that have them.
+    @Test func onlyTheCoreMLModelIsOffered() {
+        #expect(ParakeetModelCatalog.all.filter(\.offered).map(\.id) == [ParakeetModelCatalog.watchModelId])
     }
 
     /// The runtime decides the on-disk contract; both halves are pinned because a rename would

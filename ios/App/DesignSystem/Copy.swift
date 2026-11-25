@@ -320,7 +320,7 @@ enum Copy {
         static let timedOut = "The provider took too long to answer."
         static let recordingTooLong = "This recording is too long for the provider to accept in one piece."
         static let noConnection = "It couldn’t reach the provider."
-        static let modelMissing = "The on-device model couldn’t load. Check Local model in Transcription & AI."
+        static let modelMissing = "The on-device model couldn’t load. Check On this iPhone in Transcription & AI."
         static let localEngineFailed = "On-device transcription failed on this recording."
         static let audioUnreadable = "The stored audio for this recording couldn’t be read."
         static let notConfigured = "No transcription provider was available. Check Transcription & AI."
@@ -813,7 +813,7 @@ enum Copy {
             static let transcriptionSection = "Transcription"
             static let aiSection = "AI"
             static let mode = "Mode"
-            static let localModel = "Local model"
+            static let localModel = "On this iPhone"
             static let cloudProvider = "Cloud provider"
             /// Key rows, e.g. "Soniox key" / "OpenAI key". Keys NEVER render inline.
             static func keyRow(provider: String) -> String { "\(provider) key" }
