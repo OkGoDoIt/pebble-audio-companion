@@ -22,6 +22,8 @@ public actor RecapService {
         self.briefs = briefs
     }
 
+    public func transcriptsReplaced() async { await engine?.transcriptsReplaced() }
+
     /// Starts the engine's own debounce loop. Idempotent.
     ///
     /// NOT called by the runtime: that loop ignores the background, charger and thermal rules

@@ -24,6 +24,9 @@ public actor TranscriptionService {
     /// The words a surface shows for a stored failure message (the app's `Copy`), used where this
     /// service publishes to cloud health itself. Identity by default (tests).
     private let cloudFailureText: @Sendable (String) -> String
+    /// Hears again, in the cloud, what this device transcribed during an account outage. Nil where
+    /// there is no cloud to ask (tests, tools).
+    private let rehearing: StandInRehearing?
     private let settings: any RuntimeSettings
     private let clock: RuntimeClock
     private let log: RuntimeLog
@@ -49,6 +52,7 @@ public actor TranscriptionService {
         modelLifecycle: (any LocalTranscriptionLifecycle)? = nil,
         cloudAccounts: SelectableCloudTranscriptionProvider? = nil,
         cloudFailureText: @escaping @Sendable (String) -> String = { $0 },
+        rehearing: StandInRehearing? = nil,
         log: RuntimeLog = .silent
     ) {
         self.queue = queue
@@ -64,6 +68,7 @@ public actor TranscriptionService {
         self.modelLifecycle = modelLifecycle
         self.cloudAccounts = cloudAccounts
         self.cloudFailureText = cloudFailureText
+        self.rehearing = rehearing
         self.log = log
     }
 
@@ -217,6 +222,10 @@ public actor TranscriptionService {
             await onAdvance()
             guard await shouldContinue() else { break }
         }
+        if processed == 0, try await rehearStandIns() {
+            processed += 1
+            await onAdvance()
+        }
         return processed > 0
     }
 
@@ -236,8 +245,28 @@ public actor TranscriptionService {
             processed += 1
             await onAdvance()
         }
+        while processed < maxSegments, try await rehearStandIns() {
+            try Task.checkCancellation()
+            processed += 1
+            await onAdvance()
+        }
         return processed
     }
+
+    /// One step of `StandInRehearing`, once everything new has had its turn: nothing waits behind
+    /// audio that already has a transcript.
+    private func rehearStandIns() async throws -> Bool {
+        guard let rehearing, try queue.nextRunnable() == nil else { return false }
+        return try await rehearing.step()
+    }
+
+    /// Segments whose finished transcripts were replaced since the last call.
+    public func takeReplacedTranscripts() async -> [String] {
+        await rehearing?.takeReplaced() ?? []
+    }
+
+    /// Recordings this device transcribed for a refused account that the cloud has still to hear.
+    public func standInsOwed() async -> Int { await rehearing?.owedCount() ?? 0 }
 
     /// One task, after a held cloud account's check if one is due.
     ///

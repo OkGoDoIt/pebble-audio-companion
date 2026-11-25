@@ -425,6 +425,13 @@ public actor DailyRecapEngine {
         failures.removeAll()
     }
 
+    /// Finished recordings have new words: every day is looked at again. (The recaps no longer claim
+    /// to have read them, `TranscriptReplacement`, but a settled day is not even asked.)
+    public func transcriptsReplaced() {
+        settledDays.removeAll()
+        partials.removeAll()
+    }
+
     /// Starts the slow 15-minute loop. Idempotent while running.
     public func start() {
         guard loopTask == nil else { return }

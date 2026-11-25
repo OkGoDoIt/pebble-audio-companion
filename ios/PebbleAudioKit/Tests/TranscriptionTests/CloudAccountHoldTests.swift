@@ -121,7 +121,7 @@ private func makeHold(
     @Test func probesBackOffFromFifteenMinutesToSixHours() {
         #expect(
             (0...7).map { CloudAccountHold.probeDelayMs(afterRefusedProbes: $0) / 60_000 }
-                == [15, 30, 60, 120, 240, 360, 360, 360])
+                == [15, 30, 60, 60, 60, 60, 60, 60])
 
         let clock = Clock()
         let hold = makeHold(clock: clock)

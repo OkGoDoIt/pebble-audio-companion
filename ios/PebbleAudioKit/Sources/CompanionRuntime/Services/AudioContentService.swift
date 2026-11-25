@@ -518,6 +518,15 @@ public actor AudioContentService {
         }
     }
 
+    /// A settled segment's transcript was replaced: `classifyPass` re-keys a segment only when its
+    /// state moved, and this one's did not. Corrections stay: they are about the audio.
+    public func transcriptsReplaced(_ segmentIds: [String]) {
+        for id in segmentIds {
+            observed[id] = nil
+            dirty.insert(id)
+        }
+    }
+
     // MARK: Masks
 
     static func isSettled(_ meta: SegmentMeta) -> Bool {

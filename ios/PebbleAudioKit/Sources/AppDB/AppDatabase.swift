@@ -938,6 +938,11 @@ public struct AppDatabase: Sendable {
         migrator.registerMigration("voice-split-ranges-v1") { db in
             try VoiceSplitStore.installSchema(db)
         }
+        // Who this device stood in for when it settled a segment, so a cloud account that takes work
+        // again can hear it (`StandInRehearing`).
+        migrator.registerMigration("transcription-stand-ins-v1") { db in
+            try TranscriptReplacement.installStandIns(db)
+        }
         try migrator.migrate(writer)
     }
 }

@@ -21,7 +21,7 @@ import Foundation
 //
 //   • the key is replaced or removed (the hold is bound to the key it was recorded against);
 //   • the user picks the other provider (holds are per provider);
-//   • a probe succeeds — one second of silence, sent on a backoff from 15 minutes to 6 hours,
+//   • a probe succeeds — one second of silence, sent on a backoff from 15 minutes to an hour,
 //     from the foreground at most every 10 minutes, and whenever the user taps Test Connection;
 //   • any real cloud attempt succeeds (an upload already in flight when the account was topped
 //     up, say).
@@ -57,14 +57,18 @@ public final class CloudAccountHold: @unchecked Sendable {
     ]
 
     public static let firstProbeDelayMs: Int64 = 15 * 60_000
-    public static let maxProbeDelayMs: Int64 = 6 * 60 * 60_000
+    public static let maxProbeDelayMs: Int64 = 60 * 60_000
     /// Opening the app is the moment a person who just topped up is looking, so a probe is due
     /// then if the last one is at least this old — whatever the backoff says.
     public static let foregroundProbeIntervalMs: Int64 = 10 * 60_000
     /// A probe that could not tell (offline, provider trouble) does not escalate the backoff.
     public static let inconclusiveProbeDelayMs: Int64 = 15 * 60_000
 
-    /// 15 min, 30 min, 1 h, 2 h, 4 h, then 6 h.
+    /// 15 min, 30 min, then every hour.
+    ///
+    /// It went up to six hours until 2026-11-25. A refused check costs nothing and a few kilobytes,
+    /// from a process that is awake anyway; six hours was how long an account topped up on a
+    /// computer could stay unused by a phone in a pocket.
     public static func probeDelayMs(afterRefusedProbes refused: Int) -> Int64 {
         let shift = min(max(refused, 0), 5)
         return min(firstProbeDelayMs << shift, maxProbeDelayMs)
@@ -224,7 +228,7 @@ public final class CloudAccountHold: @unchecked Sendable {
 
     /// The person has just gone to fix the account, so the backoff starts over: a payment can
     /// take a few minutes to show, and an account held for days would otherwise not be asked
-    /// again for six hours.
+    /// again for an hour.
     public func restartBackoff(provider: CloudProvider) {
         let now = nowMs()
         lock.withLock {

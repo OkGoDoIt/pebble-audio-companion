@@ -122,6 +122,15 @@ public final class FollowUpCurator: @unchecked Sendable {
         let open =
             try await followUps.list(scope: .open, nowMs: now)
             + followUps.list(scope: .suggested, nowMs: now)
+        // What the person already did or dismissed from these same conversations. A conversation is
+        // read again when its words change, and the same thing in other words is a new candidate.
+        var decided: [FollowUp] = []
+        for id in Set(batch.map(\.conversationId)).sorted() {
+            let found = try await followUps.list(conversationId: id)
+            decided += found.filter {
+                $0.done || $0.archivedAtMs != nil || $0.stage == .skipped
+            }
+        }
         var titles: [String: String] = [:]
         for candidate in batch where titles[candidate.conversationId] == nil {
             if let title = await titleOf(candidate.conversationId), !title.isEmpty {
@@ -129,8 +138,8 @@ public final class FollowUpCurator: @unchecked Sendable {
             }
         }
         let body = prompt(
-            batch: batch, open: Array(open.prefix(Self.openContextLimit)), titles: titles,
-            now: now)
+            batch: batch, open: Array(open.prefix(Self.openContextLimit)), decided: decided,
+            titles: titles, now: now)
 
         // Only a failure on the input spends an attempt from the batch's budget — a batch that
         // keeps failing on its own content has to stop costing a call every five minutes. A
@@ -268,7 +277,8 @@ public final class FollowUpCurator: @unchecked Sendable {
     // MARK: - Prompt body
 
     func prompt(
-        batch: [FollowUpCandidate], open: [FollowUp], titles: [String: String], now: Int64
+        batch: [FollowUpCandidate], open: [FollowUp], decided: [FollowUp] = [],
+        titles: [String: String], now: Int64
     ) -> String {
         var out = "Today is \(dayLabel(Date(timeIntervalSince1970: Double(now) / 1000))).\n\n"
         if open.isEmpty {
@@ -282,6 +292,12 @@ public final class FollowUpCurator: @unchecked Sendable {
                 }
                 out += "\n"
             }
+            out += "\n"
+        }
+        if !decided.isEmpty {
+            out += "ALREADY DONE OR DISMISSED BY THIS PERSON (a candidate for the same thing is a "
+                + "duplicate):\n"
+            for item in decided { out += "- \(item.text)\n" }
             out += "\n"
         }
         out += "CANDIDATES:\n"

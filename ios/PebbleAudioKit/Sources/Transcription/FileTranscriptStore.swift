@@ -189,6 +189,7 @@ extension SegmentTranscript {
 public final class FileTranscriptStore: Sendable {
     public static let suffix = ".transcript.json"
     public static let redactionsSuffix = ".redactions.json"
+    public static let reheardSuffix = ".reheard.json"
 
     private let transcriptsDir: URL
     private let nowMs: @Sendable () -> Int64
@@ -219,6 +220,11 @@ public final class FileTranscriptStore: Sendable {
         // `isDirectory: false` matters: without it Foundation asks the file system whether the
         // path is a directory on every call, and this is called once per transcript per pass.
         transcriptsDir.appendingPathComponent("\(segmentId)\(Self.suffix)", isDirectory: false)
+    }
+
+    private func reheardURL(_ segmentId: String) -> URL {
+        transcriptsDir.appendingPathComponent(
+            "\(segmentId)\(Self.reheardSuffix)", isDirectory: false)
     }
 
     private func redactionsURL(_ segmentId: String) -> URL {
@@ -280,6 +286,8 @@ public final class FileTranscriptStore: Sendable {
         return try writeLock.withLock {
             let ranges = Self.merged(loadRedactions(segmentId) + [mediaRangeMs])
             try writeRedactions(segmentId, ranges)
+            // A hearing waiting to be applied was made from the audio as it was. It is made again.
+            try removeIfExists(reheardURL(segmentId))
             guard let transcript = load(segmentId) else { return nil }
             let redacted = transcript.redacting(ranges)
             // Untouched when nothing fell in the range, so `version` only moves with the words.
@@ -464,7 +472,47 @@ public final class FileTranscriptStore: Sendable {
             defer { versions.forget(segmentId) }
             try removeIfExists(transcriptURL(segmentId))
             try removeIfExists(redactionsURL(segmentId))
+            try removeIfExists(reheardURL(segmentId))
         }
+    }
+
+    // MARK: - Hearings waiting to be applied (`StandInRehearing`)
+
+    /// What the cloud made of a stand-in's audio, kept beside the transcript it will replace until
+    /// the rest of its day has been heard too.
+    public struct Reheard: Codable, Sendable {
+        /// The stand-in's `TranscriptionTask.updatedAtMs` when its audio was sent.
+        public var settledAtMs: Int64
+        /// Nil when the cloud found no speech; `noSpeech` then says so in its words.
+        public var transcript: SegmentTranscript?
+        public var noSpeech: String?
+
+        public init(settledAtMs: Int64, transcript: SegmentTranscript?, noSpeech: String?) {
+            self.settledAtMs = settledAtMs
+            self.transcript = transcript
+            self.noSpeech = noSpeech
+        }
+    }
+
+    /// Keeps a result until it is applied. Nothing is kept for a segment that was deleted meanwhile.
+    public func saveReheard(_ segmentId: String, _ reheard: Reheard) throws {
+        try writeLock.withLock {
+            guard !deletedSegments.ids.contains(segmentId) else { return }
+            try FileManager.default.createDirectory(
+                at: transcriptsDir, withIntermediateDirectories: true)
+            let tmp = transcriptsDir.appendingPathComponent("\(segmentId)\(Self.reheardSuffix).tmp")
+            try JSONEncoder().encode(reheard).write(to: tmp)
+            try atomicMove(from: tmp, to: reheardURL(segmentId))
+        }
+    }
+
+    public func loadReheard(_ segmentId: String) -> Reheard? {
+        guard let data = try? Data(contentsOf: reheardURL(segmentId)) else { return nil }
+        return try? JSONDecoder().decode(Reheard.self, from: data)
+    }
+
+    public func dropReheard(_ segmentId: String) throws {
+        try writeLock.withLock { try removeIfExists(reheardURL(segmentId)) }
     }
 
     public func deleteAll() throws {
@@ -481,6 +529,8 @@ public final class FileTranscriptStore: Sendable {
                 if name.hasSuffix(Self.suffix) || name.hasSuffix("\(Self.suffix).tmp")
                     || name.hasSuffix(Self.redactionsSuffix)
                     || name.hasSuffix("\(Self.redactionsSuffix).tmp")
+                    || name.hasSuffix(Self.reheardSuffix)
+                    || name.hasSuffix("\(Self.reheardSuffix).tmp")
                 {
                     try removeIfExists(url)
                 }

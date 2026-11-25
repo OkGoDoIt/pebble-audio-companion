@@ -143,10 +143,12 @@ public final class TranscriptionProcessor: Sendable {
         try queue.markRunning(task.segmentId)
         onStateChanged(task.segmentId, .running)
         let segmentId = task.segmentId
+        let standIn = StandIn()
         do {
             let result = try await router.transcribe(
                 pcmChunks: { [pcmSource] in try await pcmSource(segmentId) },
-                sampleRateHz: sampleRateHz
+                sampleRateHz: sampleRateHz,
+                onStandIn: { standIn.note($0) }
             )
             if await isSegmentOpen(segmentId) {
                 // The segment reattached mid-transcription; this result covers a stale prefix.
@@ -158,7 +160,8 @@ public final class TranscriptionProcessor: Sendable {
             // Durability order matters: the transcript text is on disk before the task goes
             // terminal, so a crash in between re-runs transcription instead of losing text.
             try transcriptStore?.save(segmentId, result: result)
-            let complete = try queue.markComplete(segmentId, result: result)
+            let complete = try queue.markComplete(
+                segmentId, result: result, standInFor: standIn.value)
             onStateChanged(segmentId, .complete)
             return complete
         } catch let error where error is CancellationError {
@@ -170,7 +173,8 @@ public final class TranscriptionProcessor: Sendable {
             }
             throw error
         } catch TranscriptionError.noSpeechDetected(let reason) {
-            let terminal = try queue.markNoSpeech(segmentId, decidedBy: reason)
+            let terminal = try queue.markNoSpeech(
+                segmentId, decidedBy: reason, standInFor: standIn.value)
             onStateChanged(segmentId, .noSpeech)
             return terminal
         } catch TranscriptionError.providerUnavailable {
@@ -184,6 +188,14 @@ public final class TranscriptionProcessor: Sendable {
             onStateChanged(segmentId, .failed)
             return failed
         }
+    }
+
+    /// Who the on-device engine ran in place of, if it did (`TranscriptionModeRouter.transcribe`).
+    private final class StandIn: @unchecked Sendable {
+        private let lock = NSLock()
+        private var who: String?
+        var value: String? { lock.withLock { who } }
+        func note(_ who: String) { lock.withLock { self.who = who } }
     }
 
     /// Decodes the segment once and asks whether it demonstrably contains no voice.

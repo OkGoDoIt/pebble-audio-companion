@@ -189,6 +189,30 @@ private final class ScriptedCurationProvider: AiProvider, @unchecked Sendable {
         #expect(!body.contains("Recorded: Monday"))
     }
 
+    /// A conversation read again (its words were replaced by better ones) proposes what it proposed
+    /// before in other words; what the person did with it is on the table.
+    @Test func whatThePersonDecidedFromTheSameConversationIsShown() async throws {
+        try await followUps.upsertExtracted(
+            FollowUp(
+                id: "gone", text: "Pay the water bill", done: true,
+                sourceConversationId: "conv-1", sourceSegmentId: nil, createdAtMs: clock.now))
+        try await followUps.upsertExtracted(
+            FollowUp(
+                id: "elsewhere", text: "Order the paint", done: true,
+                sourceConversationId: "conv-2", sourceSegmentId: nil, createdAtMs: clock.now))
+        try await candidate("c1", task: "Settle the water invoice")
+        let provider = ScriptedCurationProvider(
+            response: """
+                {"decisions":[{"index":1,"decision":"duplicate","reason":"done","task":"",
+                "priority":"normal","dueDate":""}]}
+                """)
+        _ = try await curator(provider).curate()
+        let body = provider.requests.first?.transcripts.first?.text ?? ""
+        #expect(body.contains("ALREADY DONE OR DISMISSED"))
+        #expect(body.contains("Pay the water bill"))
+        #expect(!body.contains("Order the paint"))
+    }
+
     @Test func prosewhereJsonWasPromisedFailsRatherThanGuessing() async throws {
         try await candidate("c1", task: "something")
         let provider = ScriptedCurationProvider(response: "I would keep the first one.")

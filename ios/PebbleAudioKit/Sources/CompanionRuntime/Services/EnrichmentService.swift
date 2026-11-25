@@ -593,6 +593,7 @@ public actor EnrichmentService {
         guard settling else { return rebuilt }
         await reconcile(after: rebuilt)
         if rebuilt.structureChanged { await withdrawStaleTitles(rebuilt.conversations) }
+        await donateReplaced(rebuilt.conversations)
         return rebuilt
     }
 
@@ -758,6 +759,26 @@ public actor EnrichmentService {
     /// and the conversation that was just deleted would be grouped straight back.
     public func invalidateSpeechEvidence(segmentId: String) {
         evidenceCache[segmentId] = nil
+    }
+
+    /// Settled segments whose transcripts were replaced: their turns are read again at the next
+    /// regroup, and the conversations that hold them are searchable by their new words after it.
+    public func transcriptsReplaced(_ segmentIds: [String]) {
+        for id in segmentIds { evidenceCache[id] = nil }
+        cachedGrouping = nil
+        replacedSegments.formUnion(segmentIds)
+    }
+
+    /// Replaced since the last regroup; that regroup donates their conversations.
+    private var replacedSegments: Set<String> = []
+
+    private func donateReplaced(_ conversations: [GroupedConversation]) async {
+        guard !replacedSegments.isEmpty else { return }
+        let replaced = replacedSegments
+        replacedSegments = []
+        await donate(
+            conversationIds: conversations
+                .filter { $0.members.contains { replaced.contains($0.segmentId) } }.map(\.id))
     }
 
     private func grouping() async -> [GroupedConversation] {

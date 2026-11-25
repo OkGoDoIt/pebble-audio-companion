@@ -280,6 +280,9 @@ public final class PipelinePassMemory: @unchecked Sendable {
         set { lock.withLock { _aiStagesLeftWork = newValue } }
     }
 
+    /// Words the AI stages read changed under a grouping that may not have.
+    public func noteAiWorkOwed() { aiStagesLeftWork = true }
+
     func libraryScanDue(atMs: Int64) -> Bool {
         lock.withLock {
             guard let last = _lastLibraryScanAtMs, last <= atMs else { return true }

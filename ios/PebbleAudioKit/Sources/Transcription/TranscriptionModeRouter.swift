@@ -103,8 +103,12 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
         }
     }
 
+    /// `onStandIn` is called before the on-device engine runs in place of a cloud account that is
+    /// refusing work, with who it stands in for and why ("soniox: accountOutOfFunds"). Only for
+    /// the account: a phone that is offline, or off Wi-Fi by choice, is not an outage.
     public func transcribe(
-        pcmChunks: @escaping PcmChunksFactory, sampleRateHz: Int
+        pcmChunks: @escaping PcmChunksFactory, sampleRateHz: Int,
+        onStandIn: @Sendable (String) -> Void = { _ in }
     ) async throws -> RoutedTranscription {
         let result: RoutedTranscription
         // Set only where a fallback actually produced the result; every other path clears it.
@@ -136,13 +140,15 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
                 // attempted, so it must not reach cloud health as a failed attempt: the primary's
                 // failure is the whole story. See `runProvider` for the same rule.
                 guard let remote, await remote.isAvailable() else {
-                    noteFallback(from: "on-device", to: nil, error)
+                    noteFallback(
+                        from: "on-device", to: nil, message: storedFailureMessage(error))
                     if error.isProviderUnavailable {
                         throw TranscriptionError.providerUnavailable(providerId: remote?.id ?? "remote")
                     }
                     throw error
                 }
-                noteFallback(from: "on-device", to: "cloud", error)
+                noteFallback(
+                    from: "on-device", to: "cloud", message: storedFailureMessage(error))
                 result = try await reportingRemote {
                     try await self.runProvider(
                         self.remote, role: "remote", pcmChunks: pcmChunks,
@@ -167,17 +173,21 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
             } catch let error where error is CancellationError || error.isNoSpeechDetected {
                 throw error
             } catch {
+                // A cloud that was never tried because it is unavailable says why when it can
+                // (a paused account is "not accepted", not "not configured").
+                let cause = await explained(error, by: remote)
                 noteFallback(
-                    from: "cloud", to: await local?.isAvailable() == true ? "on-device" : nil, error)
+                    from: "cloud", to: await local?.isAvailable() == true ? "on-device" : nil,
+                    message: cause)
+                let kind = TranscriptionFailureKind.classify(cause)
+                if CloudAccountHold.holdingKinds.contains(kind) {
+                    onStandIn("\(remote?.id ?? "cloud"): \(kind.rawValue)")
+                }
                 result = try await runProvider(
                     local, role: "local", pcmChunks: pcmChunks, sampleRateHz: sampleRateHz,
                     modeUsed: .localOnly, suppressed: error,
                     primaryRole: "cloud", fallbackRole: "on-device")
-                // A cloud that was never tried because it is unavailable says why when it can
-                // (a paused account is "not accepted", not "not configured").
-                fallback = ProcessingFallback(
-                    direction: .cloudToLocal,
-                    cause: .classify(await explained(error, by: remote)))
+                fallback = ProcessingFallback(direction: .cloudToLocal, cause: .classify(cause))
             }
         }
         lock.withLock {
@@ -281,8 +291,7 @@ public final class TranscriptionModeRouter: @unchecked Sendable {
     /// Writes the fallback to the flight recorder — the first time, and then at most once per
     /// `RepeatingLogGate` interval while the same kind of failure keeps recurring.
     /// `fallback` nil means there is nothing to fall back to right now.
-    private func noteFallback(from primary: String, to fallback: String?, _ error: Error) {
-        let message = storedFailureMessage(error)
+    private func noteFallback(from primary: String, to fallback: String?, message: String) {
         let kind = TranscriptionFailureKind.classify(message)
         let next = fallback.map { "trying \($0)" } ?? "no fallback available"
         guard let repeats = logGate.admit("\(primary)->\(next):\(kind.rawValue)") else {

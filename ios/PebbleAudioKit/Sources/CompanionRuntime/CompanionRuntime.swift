@@ -229,6 +229,17 @@ public actor CompanionRuntime {
 
     private func noteLibraryScanOwed() { passMemory?.noteLibraryScanOwed() }
 
+    /// Finished transcripts were replaced by better ones: what remembers their old words in memory
+    /// forgets them, and the AI stages have work whether or not the grouping moves.
+    private func noteReplacedTranscripts() async {
+        let replaced = await environment.transcription.takeReplacedTranscripts()
+        guard !replaced.isEmpty else { return }
+        await environment.enrichment.transcriptsReplaced(replaced)
+        await environment.audioContent?.transcriptsReplaced(replaced)
+        await environment.recap.transcriptsReplaced()
+        passMemory?.noteAiWorkOwed()
+    }
+
     private func noteBriefsOwed() {
         passMemory?.noteBriefsOwed(atMs: clock.nowMs)
     }
@@ -631,6 +642,7 @@ public actor CompanionRuntime {
         await Task.detached {
             await transcription.releaseModel("background catch-up")
         }.value
+        await noteReplacedTranscripts()
         foreground.catchUpActive = false
         return processed
     }
@@ -799,14 +811,14 @@ public actor CompanionRuntime {
             // segments is one stage that legitimately runs for many minutes. Backgrounded, the
             // drain only carries on while the charger policy that admitted the pass still
             // holds — unplugging mid-backlog ends it at the next segment, not at the end.
-            drainQueue: {
+            drainQueue: { [weak self] in
                 // Give foreground acoustic identity a turn even behind a large ASR backlog.
                 // This reads only the setting; it never loads or runs either voice model.
                 let voiceEnabled: Bool
                 if env.voiceRecognition != nil, foreground.value, voiceMayRun() {
                     voiceEnabled = (try? await VoiceIdentityStore(db: env.database).configuration().mode) == .local
                 } else { voiceEnabled = false }
-                return try await env.transcription.drainQueue(
+                let advanced = try await env.transcription.drainQueue(
                     maximumTasks: voiceEnabled ? 1 : nil,
                     shouldContinue: {
                         if foreground.value {
@@ -824,6 +836,8 @@ public actor CompanionRuntime {
                     health.progressed()
                     await env.diagnostics.refresh()
                 }
+                await self?.noteReplacedTranscripts()
+                return advanced
             },
             // Self-paced inside the service: normally an interval check and nothing else. This is
             // what makes "Keep audio" take effect while the app is open instead of at the next

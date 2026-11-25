@@ -37,6 +37,13 @@ public struct TranscriptionTask: Equatable, Sendable, Codable {
     public var modeUsed: TranscriptionMode?
     public var providerId: String?
     public var modelUsed: String?
+    /// Who this device stood in for when it settled this segment ("soniox: accountOutOfFunds"),
+    /// or nil. Set only when the chosen cloud account was refusing work, on a transcript and on a
+    /// "no speech" verdict alike; every other terminal write clears it. While it is set, the
+    /// segment is owed a hearing by the cloud (`StandInRehearing`).
+    public var standInFor: String?
+    /// Times the audio has been sent to the cloud for that hearing.
+    public var rehearAttempts: Int?
 
     public init(
         segmentId: String,
@@ -48,7 +55,9 @@ public struct TranscriptionTask: Equatable, Sendable, Codable {
         updatedAtMs: Int64,
         modeUsed: TranscriptionMode? = nil,
         providerId: String? = nil,
-        modelUsed: String? = nil
+        modelUsed: String? = nil,
+        standInFor: String? = nil,
+        rehearAttempts: Int? = nil
     ) {
         self.segmentId = segmentId
         self.state = state
@@ -60,11 +69,31 @@ public struct TranscriptionTask: Equatable, Sendable, Codable {
         self.modeUsed = modeUsed
         self.providerId = providerId
         self.modelUsed = modelUsed
+        self.standInFor = standInFor
+        self.rehearAttempts = rehearAttempts
     }
 }
 
 extension TranscriptionTask: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "transcription_tasks"
+}
+
+/// What the cloud made of a stand-in, for `TranscriptionQueue.settleReheard`.
+public struct ReheardTask: Sendable {
+    public enum Outcome: Sendable {
+        case transcript(RoutedTranscription)
+        case noSpeech(decidedBy: String)
+    }
+    public var segmentId: String
+    /// The stand-in's `updatedAtMs` when its audio was sent.
+    public var settledAtMs: Int64
+    public var outcome: Outcome
+
+    public init(segmentId: String, settledAtMs: Int64, outcome: Outcome) {
+        self.segmentId = segmentId
+        self.settledAtMs = settledAtMs
+        self.outcome = outcome
+    }
 }
 
 /// Durable transcription queue over the AppDB `transcription_tasks` table. Every mutation is
@@ -254,7 +283,7 @@ public final class TranscriptionQueue: Sendable {
 
     @discardableResult
     public func markComplete(
-        _ segmentId: String, result: RoutedTranscription
+        _ segmentId: String, result: RoutedTranscription, standInFor: String? = nil
     ) throws -> TranscriptionTask? {
         try update(segmentId) { task in
             var next = task
@@ -263,6 +292,8 @@ public final class TranscriptionQueue: Sendable {
             next.modeUsed = result.modeUsed
             next.providerId = result.providerId
             next.modelUsed = result.modelUsed
+            next.standInFor = standInFor
+            next.rehearAttempts = nil
             return next
         }
     }
@@ -276,11 +307,15 @@ public final class TranscriptionQueue: Sendable {
     /// wrong (see `requeueUnexplainedNoSpeech`). A verdict with no author is now exactly what
     /// marks one from before then.
     @discardableResult
-    public func markNoSpeech(_ segmentId: String, decidedBy: String) throws -> TranscriptionTask? {
+    public func markNoSpeech(
+        _ segmentId: String, decidedBy: String, standInFor: String? = nil
+    ) throws -> TranscriptionTask? {
         try update(segmentId) { task in
             var next = task
             next.state = .noSpeech
             next.lastError = Self.noSpeechPrefix + decidedBy
+            next.standInFor = standInFor
+            next.rehearAttempts = nil
             return next
         }
     }
@@ -318,6 +353,77 @@ public final class TranscriptionQueue: Sendable {
                 try next.update(db)
             }
             return matching.map(\.segmentId)
+        }
+    }
+
+    // MARK: - Stand-ins (see `StandInRehearing`)
+
+    /// Settled segments this device handled for a cloud account that was refusing work.
+    public func standIns() throws -> [TranscriptionTask] {
+        try database.reader.read { db in
+            try TranscriptionTask
+                .filter(Column("standInFor") != nil)
+                .filter([TaskState.complete.rawValue, TaskState.noSpeech.rawValue]
+                    .contains(Column("state")))
+                .fetchAll(db)
+        }
+    }
+
+    /// Counts a send BEFORE it happens, so a process that dies mid-request has still spent it.
+    /// `updatedAtMs` is left alone: it says when the segment was settled, and a result made for
+    /// that settling is applied only while it still stands.
+    public func addRehearAttempt(_ segmentId: String, by delta: Int) throws {
+        try database.writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE transcription_tasks
+                    SET rehearAttempts = MAX(0, COALESCE(rehearAttempts, 0) + ?)
+                    WHERE segmentId = ? AND standInFor IS NOT NULL
+                    """,
+                arguments: [delta, segmentId])
+        }
+    }
+
+    /// Settles stand-ins as the cloud heard them, all in one transaction, together with what has
+    /// to notice that their words changed (`TranscriptReplacement`).
+    ///
+    /// Only rows that are still the stand-in the result was made for (`settledAtMs`) are touched;
+    /// one that was re-transcribed, reopened or deleted meanwhile is left alone. A Complete row
+    /// goes through Running on the way: the archive outbox and the voice names listen for a
+    /// change INTO Complete, and this one never left it.
+    public func settleReheard(_ results: [ReheardTask]) throws {
+        try database.writer.write { db in
+            var replaced: [String] = []
+            for result in results {
+                guard var task = try TranscriptionTask.fetchOne(db, key: result.segmentId),
+                    task.standInFor != nil, task.updatedAtMs == result.settledAtMs,
+                    task.state == .complete || task.state == .noSpeech
+                else { continue }
+                task.standInFor = nil
+                task.rehearAttempts = nil
+                task.updatedAtMs = nowMs()
+                switch result.outcome {
+                case .transcript(let transcript):
+                    let before = task.state
+                    task.state = .running
+                    try task.update(db)
+                    task.state = .complete
+                    task.lastError = nil
+                    task.modeUsed = transcript.modeUsed
+                    task.providerId = transcript.providerId
+                    task.modelUsed = transcript.modelUsed
+                    try task.update(db)
+                    replaced.append(task.segmentId)
+                    if before == .noSpeech {
+                        try TranscriptReplacement.gainedWords(db, segmentId: task.segmentId)
+                    }
+                case .noSpeech(let decidedBy):
+                    // Words already here are kept: the cloud's silence does not unsay them.
+                    if task.state == .noSpeech { task.lastError = Self.noSpeechPrefix + decidedBy }
+                    try task.update(db)
+                }
+            }
+            try TranscriptReplacement.wordsChanged(db, segmentIds: replaced)
         }
     }
 
