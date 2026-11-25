@@ -42,6 +42,7 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             _items[item.id] = item
             return item
         }
+        .announced(by: self)
     }
     func update(id: String, to draft: AppleReminderDraft) throws -> AppleReminder? {
         lock.withLock {
@@ -95,7 +96,18 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
         }
     }
     func reminders(ids: [String]) -> [AppleReminder] { lock.withLock { ids.compactMap { _items[$0] } } }
-    func observeChanges(_ onChange: @escaping @Sendable () -> Void) -> AnyObject { NSObject() }
+    /// What Reminders does after every save of ours: it says its data changed.
+    private var onChange: (@Sendable () -> Void)?
+    /// Runs first, before a save is announced.
+    var beforeAnnouncing: (@Sendable () -> Void)?
+    func observeChanges(_ onChange: @escaping @Sendable () -> Void) -> AnyObject {
+        lock.withLock { self.onChange = onChange }
+        return NSObject()
+    }
+    func announce() {
+        beforeAnnouncing?()
+        lock.withLock { onChange }?()
+    }
 
     /// The person, in Apple Reminders.
     func edit(_ id: String, at ms: Int64, _ change: (inout AppleReminder) -> Void) {
@@ -105,6 +117,13 @@ private final class FakeAppleReminders: AppleRemindersAccess, @unchecked Sendabl
             item.modifiedAtMs = ms
             _items[id] = item
         }
+    }
+}
+
+extension AppleReminder {
+    fileprivate func announced(by apple: FakeAppleReminders) -> AppleReminder {
+        apple.announce()
+        return self
     }
 }
 
@@ -188,6 +207,41 @@ private final class FakeAlerts: ReminderAlertScheduling, @unchecked Sendable {
         await home.sync()
         #expect(apple.items.isEmpty)
         #expect(try await store.load(id: "selected")?.appleId == nil)
+    }
+
+    /// 2026-11-25: Reminders announced each reminder the app made, the announcement cancelled the
+    /// pass that was saving its identifier, and the next pass made it again.
+    @Test func aReminderIsMadeOnceHoweverReminderChangesArrive() async throws {
+        let home = home()
+        try await home.switchToApple(.existing(id: "todo"))
+        await home.start(database: db)
+        // The database is busy when the identifier is to be saved, as it is on the phone.
+        let writer = db.writer
+        apple.beforeAnnouncing = {
+            writer.asyncWriteWithoutTransaction { _ in Thread.sleep(forTimeInterval: 0.2) }
+        }
+        try await put("a")
+        try await Task.sleep(for: .seconds(4))
+        #expect(apple.items.count == 1)
+        #expect(try await store.load(id: "a")?.appleId == apple.items.first?.id)
+    }
+
+    @Test func aScreenThatGoesAwayMidMoveLeavesNoReminderTheAppLostTrackOf() async throws {
+        try await put("a")
+        try await put("b")
+        let home = home()
+        let writer = db.writer
+        apple.beforeAnnouncing = {
+            writer.asyncWriteWithoutTransaction { _ in Thread.sleep(forTimeInterval: 0.2) }
+        }
+        let screen = Task { try await home.switchToApple(.existing(id: "todo")) }
+        try await Task.sleep(for: .milliseconds(100))
+        screen.cancel()
+        _ = try? await screen.value
+        await home.sync()
+        #expect(apple.items.count == 2)
+        let kept = try await store.list(scope: .open, nowMs: now).compactMap(\.appleId)
+        #expect(Set(kept) == Set(apple.items.map(\.id)))
     }
 
     @Test func theNewListIsMadeOnceAndUsed() async throws {

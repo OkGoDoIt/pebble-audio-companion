@@ -176,7 +176,8 @@ public actor RemindersHome {
         observers.append(TaskBox(preferencesTask))
     }
 
-    /// Coalesces a burst of changes into one pass.
+    /// Coalesces a burst of changes into one pass. Cancelling reaches only the wait, never a pass
+    /// already running (`sync`).
     private func scheduleSync() {
         pending?.cancel()
         pending = Task {
@@ -193,20 +194,27 @@ public actor RemindersHome {
         // Apple reminders before either has saved its identifier.
         guard !syncing else { syncAgain = true; return }
         syncing = true
+        // Its own task, so a pass always finishes. Saving to Apple Reminders announces a change,
+        // which asks for another pass; on 2026-11-25 that cancelled this one before it had saved
+        // the new reminder's identifier, and the next pass made the reminder again, and again.
+        await Task { await self.runPasses() }.value
+    }
+
+    private func runPasses() async {
         defer { syncing = false }
         repeat {
-        syncAgain = false
-        do {
-            let prefs = preferences.current.value
-            if prefs.home == .apple, apple.authorized {
-                try await reconcileApple(prefs)
-            } else {
-                await scheduleDueAlerts(prefs)
+            syncAgain = false
+            do {
+                let prefs = preferences.current.value
+                if prefs.home == .apple, apple.authorized {
+                    try await reconcileApple(prefs)
+                } else {
+                    await scheduleDueAlerts(prefs)
+                }
+                await scheduleEveningReview(prefs)
+            } catch {
+                log?("reminders: sync failed: \(error)")
             }
-            await scheduleEveningReview(prefs)
-        } catch {
-            log?("reminders: sync failed: \(error)")
-        }
         } while syncAgain
     }
 
@@ -288,7 +296,17 @@ public actor RemindersHome {
             // A selected list that disappeared must not silently become the default list.
             guard apple.lists().contains(where: { $0.id == destination && $0.writable }) else { continue }
             let created = try apple.create(draft(item, prefs), inList: destination)
-            try await followUps.setApple(id: item.id, appleId: created.id, listId: created.listId)
+            do {
+                // Saved even if whoever asked (a screen moving the reminders) has gone away: a
+                // reminder the app has no identifier for would be made again.
+                let store = followUps
+                try await Task {
+                    try await store.setApple(id: item.id, appleId: created.id, listId: created.listId)
+                }.value
+            } catch {
+                try? apple.delete(id: created.id)
+                throw error
+            }
             made += 1
         }
         return made
