@@ -320,16 +320,13 @@ struct LocalModelOption: Identifiable, Hashable {
     /// entry on iOS 26 or a simulator, where the row shows "needs iOS 27" and cannot be chosen.
     var canRunHere: Bool { !isDownloadable || ParakeetEngineFactory.isSupported(runtime) }
 
-    /// How much quiet conversation this engine catches, out of five; nil when it has not been
-    /// measured. From 60 held-out watch recordings (2026-11-25): the share of the cloud's words
-    /// each got was 46% for Pebble, 37% for stock Parakeet v3 and 28% for Apple Speech.
-    var hearing: Int? {
+    /// How accurate this engine is next to the other one offered; nil for an older model. Measured
+    /// on 60 held-out watch recordings (2026-11-25): 57.7% word errors for Pebble, 72.7% for Apple
+    /// Speech.
+    var accuracy: LocalModelAccuracy? {
         switch id {
-        case ParakeetModelCatalog.watchModelId: return 4
-        case "parakeet-tdt-0.6b-v3-int4", "parakeet-tdt-0.6b-v3-int8",
-            ParakeetModelCatalog.coreAIModelId:
-            return 3
-        case LocalModelCatalog.appleSpeechId: return 2
+        case ParakeetModelCatalog.watchModelId: return .most
+        case LocalModelCatalog.appleSpeechId: return .less
         default: return nil
         }
     }
@@ -354,6 +351,18 @@ struct LocalModelOption: Identifiable, Hashable {
             return String(format: "%.2f GB", megabytes / 1000)
         }
         return "\(Int(megabytes.rounded())) MB"
+    }
+}
+
+enum LocalModelAccuracy: Equatable {
+    case most
+    case less
+
+    var title: String {
+        switch self {
+        case .most: return Copy.OnThisIPhone.mostAccurate
+        case .less: return Copy.OnThisIPhone.lessAccurate
+        }
     }
 }
 

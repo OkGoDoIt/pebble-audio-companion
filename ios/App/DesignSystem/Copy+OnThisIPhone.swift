@@ -4,7 +4,8 @@ import Foundation
 
 extension Copy {
     enum OnThisIPhone {
-        static let footer = "Bars show how much quiet conversation each one catches."
+        static let mostAccurate = "Most accurate"
+        static let lessAccurate = "Less accurate"
         static let get = "Get"
         static func getLabel(_ name: String) -> String { "Get \(name)" }
         static let remove = "Remove"
@@ -33,11 +34,6 @@ extension Copy {
             let megabytes = Double(bytes) / 1_000_000
             return megabytes >= 1_000
                 ? String(format: "%.1f GB", megabytes / 1_000) : "\(Int(megabytes.rounded())) MB"
-        }
-
-        /// VoiceOver's reading of the bar.
-        static func hearing(_ level: Int) -> String {
-            "catches \(level) out of 5 of quiet conversation"
         }
     }
 }

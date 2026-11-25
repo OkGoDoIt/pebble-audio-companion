@@ -4,7 +4,7 @@ import Transcription
 /// Settings · Transcription & AI → **On this iPhone** (pushed).
 ///
 /// Which engine transcribes on the phone. Two rows for almost everyone: the Pebble model and Apple
-/// Speech, each with a bar for how much quiet conversation it catches. Choosing one that is not
+/// Speech, each saying how accurate it is next to the other. Choosing one that is not
 /// here starts getting it, and the engine in use keeps transcribing until it is ready.
 struct SettingsLocalModelScreen: View {
     @Environment(AppSettings.self) private var settings
@@ -37,8 +37,6 @@ struct SettingsLocalModelScreen: View {
                     Text(Copy.Settings.TranscriptionAI.removeModelNote(size))
                 }
             }
-
-            SettingsFooter(text: Copy.OnThisIPhone.footer)
         }
         .navigationTitle(Copy.Settings.TranscriptionAI.localModel)
         .navigationBarTitleDisplayMode(.inline)
@@ -138,7 +136,7 @@ struct SettingsLocalModelScreen: View {
 
 // MARK: - Model row
 
-/// Name, what it is, how much it catches, and whatever the engine is doing — with real progress and
+/// Name, how accurate it is, what it is, and whatever the engine is doing — with real progress and
 /// a Cancel while something is moving.
 private struct LocalModelRow: View {
     let option: LocalModelOption
@@ -164,14 +162,17 @@ private struct LocalModelRow: View {
                             .foregroundStyle(Tokens.label)
                         if typeSize.isAccessibilitySize { check }
                     }
+                    if let accuracy = option.accuracy {
+                        Text(accuracy.title)
+                            .font(AppFont.footnote)
+                            .foregroundStyle(accuracy == .most ? Tokens.tint : Tokens.tertiary)
+                    }
                     Text(detail)
                         .font(AppFont.footnote)
                         .foregroundStyle(state == .failed ? Tokens.attention : Tokens.tertiary)
                         .multilineTextAlignment(.leading)
                     if case .downloading(let progress) = state {
                         ProgressView(value: progress).tint(Tokens.tint).padding(.top, 5)
-                    } else if let hearing = option.hearing {
-                        HearingBar(level: hearing).padding(.top, 5)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
@@ -253,26 +254,9 @@ private struct LocalModelRow: View {
 
     private var accessibilityLabel: String {
         var parts = [option.displayName, detail]
-        if let hearing = option.hearing { parts.append(Copy.OnThisIPhone.hearing(hearing)) }
+        if let accuracy = option.accuracy { parts.insert(accuracy.title, at: 1) }
         if isInUse { parts.append(Copy.Settings.TranscriptionAI.inUse) }
         return parts.joined(separator: ", ")
-    }
-}
-
-/// How much quiet conversation an engine catches, as five segments.
-private struct HearingBar: View {
-    let level: Int
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(1...5, id: \.self) { step in
-                Capsule()
-                    .fill(step <= level ? Tokens.tint : Tokens.track)
-                    .frame(height: 6)
-            }
-        }
-        .frame(maxWidth: 220)
-        .accessibilityHidden(true)
     }
 }
 

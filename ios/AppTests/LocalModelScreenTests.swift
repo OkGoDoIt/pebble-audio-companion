@@ -35,6 +35,11 @@ struct LocalModelScreenTests {
         #expect(MockLocalModelManager().listed.map(\.id) == [pebble, apple])
     }
 
+    @Test("each of the two says how it compares with the other")
+    func accuracy() {
+        #expect(MockLocalModelManager().listed.map(\.accuracy) == [.most, .less])
+    }
+
     @Test("a model with no way to get it is not listed; one that is here, or on its way, is")
     func nothingThatCannotFinish() {
         let models = Models(LocalModelCatalog.installable, [apple: .installed])
