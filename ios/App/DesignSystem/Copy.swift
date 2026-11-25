@@ -997,6 +997,21 @@ enum Copy {
                 "deletes \(Copy.count(count, "recording"))"
             }
             static func deletesSize(_ size: String) -> String { "deletes \(size)" }
+            /// The question before a choice that deletes something already here.
+            static func deleteTitle(count: Int) -> String {
+                "Delete \(Copy.count(count, "recording"))?"
+            }
+            static func deleteTitle(size: String) -> String { "Delete \(size) of recordings?" }
+            static func deleteConfirm(count: Int) -> String {
+                "Delete \(Copy.count(count, "Recording"))"
+            }
+            static func deleteConfirm(size: String) -> String { "Delete \(size)" }
+            static func deleteAgeMessage(age: String, cloud: Bool) -> String {
+                "Everything older than \(age) is deleted\(cloud ? ", from iCloud too" : ""), with its "
+                    + "transcript. This can’t be undone."
+            }
+            static let deleteLimitMessage =
+                "The oldest recordings are deleted with their transcripts. This can’t be undone."
             static let moveFooter =
                 "The oldest audio moves first. Transcripts stay on this phone."
             static let deleteFooter = "The oldest recordings are deleted first, with their transcripts."

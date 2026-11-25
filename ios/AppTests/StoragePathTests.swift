@@ -210,6 +210,28 @@ import Testing
         #expect(s.runtimeSettings.retentionConfig.maxTotalBytes == 2 * Self.GB)
     }
 
+    // MARK: - Asking before deleting
+
+    /// Every choice that would delete something already here asks, saying how much; no other does.
+    @Test func onlyAChoiceThatDeletesSomethingAsks() {
+        let forever = AppSettings.keepForever
+        let age = StorageDeletion.age(90, current: forever, count: 239, cloud: false)
+        #expect(age?.title == "Delete 239 recordings?")
+        #expect(age?.confirm == "Delete 239 Recordings")
+        #expect(age?.message == "Everything older than 3 months is deleted, with its transcript. This can’t be undone.")
+        #expect(StorageDeletion.age(90, current: 365, count: 1, cloud: true)?.title == "Delete 1 recording?")
+        #expect(StorageDeletion.age(90, current: 365, count: 1, cloud: true)?.message.contains("from iCloud too") == true)
+        #expect(StorageDeletion.age(365, current: forever, count: 0, cloud: false) == nil)
+        #expect(StorageDeletion.age(forever, current: 30, count: 0, cloud: false) == nil)
+        #expect(StorageDeletion.age(30, current: 30, count: 5, cloud: false) == nil, "already in force")
+
+        let limit = StorageDeletion.limit(5 * Self.GB, current: 0, used: 6 * Self.GB)
+        #expect(limit?.title == "Delete 1.0 GB of recordings?")
+        #expect(StorageDeletion.limit(10 * Self.GB, current: 0, used: 6 * Self.GB) == nil)
+        #expect(StorageDeletion.limit(0, current: 5 * Self.GB, used: 6 * Self.GB) == nil, "no limit deletes nothing")
+        #expect(StorageDeletion.limit(5 * Self.GB, current: 5 * Self.GB, used: 6 * Self.GB) == nil)
+    }
+
     // MARK: - Privacy says the same
 
     @Test func privacyNamesICloudHoweverAudioGetsThereAndWhileItStays() {

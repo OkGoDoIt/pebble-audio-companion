@@ -10,6 +10,7 @@ struct SettingsStorageStopScreen: View {
     let stop: Stop
 
     @Environment(AppSettings.self) private var settings
+    @State private var pending: Pending?
     private var storage: StorageStatsSource { SettingsDataSources.current.storage }
     private typealias C = Copy.Settings.Storage
 
@@ -31,6 +32,16 @@ struct SettingsStorageStopScreen: View {
         }
         .navigationTitle(stop == .cloud ? C.moveTitle : C.deleteTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            pending?.deletion.title ?? "",
+            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+            presenting: pending
+        ) { pending in
+            Button(pending.deletion.confirm, role: .destructive, action: pending.apply)
+            Button(Copy.Common.cancel, role: .cancel) {}
+        } message: { pending in
+            Text(pending.deletion.message)
+        }
         // Pushed over Storage, which stops watching when it leaves the screen; the sizes beside
         // the choices are as live here as there.
         .onAppear { storage.setVisible(true) }
@@ -154,34 +165,55 @@ struct SettingsStorageStopScreen: View {
             section(C.byRoom, deleteLimits, destroys: true)
         }
         SettingsFooter(
-            text: settings.cloudRule != nil || (storage.overview?.audioInCloudBytes ?? 0) > 0
-                ? C.deleteCloudFooter : C.deleteFooter)
+            text: cloudDeletes ? C.deleteCloudFooter : C.deleteFooter)
     }
 
-    /// Deleting starts on the next pass after the tap, so what a choice would delete is beside
-    /// it. Only a shorter age than the one in force can.
+    private var cloudDeletes: Bool {
+        settings.cloudRule != nil || (storage.overview?.audioInCloudBytes ?? 0) > 0
+    }
+
+    /// What is here has been counted. Until then a choice that could delete some of it is not
+    /// offered: it could neither say how much nor know to ask.
+    private var isCounted: Bool { storage.overview != nil }
+
     private var deleteAges: [Choice] {
-        AppSettings.retentionOptions.map { days in
-            let count = days < settings.retentionDays ? storage.wouldDelete(olderThanDays: days) : 0
+        let current = settings.retentionDays
+        return AppSettings.retentionOptions.map { days in
+            let count = days < current ? storage.wouldDelete(olderThanDays: days) : 0
+            let deletion = StorageDeletion.age(
+                days, current: current, count: count, cloud: cloudDeletes)
             return Choice(
                 id: Int64(days),
                 label: days == AppSettings.keepForever ? C.never : C.ageLabel(days),
-                consequence: count > 0 ? C.deletesCount(count) : nil,
-                isSelected: settings.retentionDays == days
-            ) { settings.retentionDays = days }
+                consequence: deletion.map { _ in C.deletesCount(count) },
+                isSelected: current == days, isEnabled: isCounted || days >= current
+            ) { ask(deletion) { settings.retentionDays = days } }
         }
     }
 
     private var deleteLimits: [Choice] {
-        sized { bytes in
-            let over = bytes > 0 && bytes != settings.retentionMaxBytes
-                ? storage.recordingsBytes - bytes : 0
+        let current = settings.retentionMaxBytes
+        return sized { bytes in
+            let used = storage.overview?.audioOnPhoneBytes ?? 0
+            let deletion = StorageDeletion.limit(bytes, current: current, used: used)
             return Choice(
                 id: bytes, label: AppSettings.retentionLimitLabel(bytes),
-                consequence: over > 0 ? C.deletesSize(Formatting.storageSize(over)) : nil,
-                isSelected: settings.retentionMaxBytes == bytes
-            ) { settings.setDeleteLimit(bytes) }
+                consequence: deletion.map { _ in
+                    C.deletesSize(Formatting.storageSize(used - bytes))
+                },
+                isSelected: current == bytes, isEnabled: isCounted || bytes == 0 || bytes == current
+            ) { ask(deletion) { settings.setDeleteLimit(bytes) } }
         }
+    }
+
+    private struct Pending {
+        let deletion: StorageDeletion
+        let apply: () -> Void
+    }
+
+    private func ask(_ deletion: StorageDeletion?, then apply: @escaping () -> Void) {
+        guard let deletion else { return apply() }
+        pending = Pending(deletion: deletion, apply: apply)
     }
 }
 
