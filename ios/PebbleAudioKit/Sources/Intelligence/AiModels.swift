@@ -37,10 +37,13 @@ public enum AiModels {
     public static let conservativeContextTokens = 128_000
 
     public static let all: [AiModelSpec] = [
-        // The GPT-6 family (added 2026-09-30, beside 5.6 rather than in place of it). Ids,
-        // windows and prices are from OpenAI's model pages on that date. All three take the
-        // Responses API, `reasoning.effort` of low and medium (the two this app sends) and
-        // structured outputs, so nothing about the request changes with the model.
+        // Ids, windows and prices are from OpenAI's model pages (GPT-6 2026-09-30, GPT-6.1 Terra
+        // 2026-11-11, GPT-6.2 2026-11-25), and every id here was in the account's `/v1/models`
+        // on 2026-11-25. All of them take the Responses API, `reasoning.effort` of low and
+        // medium (the two this app sends) and structured outputs, so nothing about the request
+        // changes with the model. GPT-6.2 rejects `temperature`, `top_p` and effort `none`,
+        // none of which this app sends. Current models first, cheapest first; then the ones
+        // they replaced.
         //
         // `contextTokens` is the most INPUT a request may carry: the advertised 1,050,000-token
         // window less the 128,000 tokens reserved for output, 922,000. A prompt over 272,000
@@ -53,28 +56,40 @@ public enum AiModels {
             recommended: true,
             contextTokens: 922_000
         ),
-        // GPT-6.1 Terra (added 2026-11-11; released by OpenAI 2026-10-26): the middle of the
-        // ladder at $1/$5 per MTok — ten times GPT-6 Luna, half GPT-6.1 Sol. Same window and
-        // the same request shape (Responses API, low/medium effort, structured outputs).
+        // $1/$5 per MTok: ten times GPT-6 Luna, half GPT-6.2 Sol.
         AiModelSpec(
             id: "gpt-6.1-terra",
             displayName: "GPT-6.1 Terra",
             description: "Balances intelligence and cost: more capable than GPT-6 Luna on hard "
-                + "questions, at half GPT-6.1 Sol's price.",
+                + "questions, at half GPT-6.2 Sol's price.",
+            contextTokens: 922_000
+        ),
+        // $2/$10, the same as GPT-6.1 Sol.
+        AiModelSpec(
+            id: "gpt-6.2-sol",
+            displayName: "GPT-6.2 Sol",
+            description: "Close to the top model on hard questions at a quarter of its price; "
+                + "about twenty times GPT-6 Luna's.",
+            contextTokens: 922_000
+        ),
+        // $8/$40, a fifth less than GPT-6 Astra.
+        AiModelSpec(
+            id: "gpt-6.2-astra",
+            displayName: "GPT-6.2 Astra",
+            description: "OpenAI's most capable model, for the most demanding questions across "
+                + "a whole archive. About eighty times GPT-6 Luna's price.",
             contextTokens: 922_000
         ),
         AiModelSpec(
             id: "gpt-6.1-sol",
             displayName: "GPT-6.1 Sol",
-            description: "Close to the top model on hard questions at a fifth of its price; "
-                + "about twenty times GPT-6 Luna's.",
+            description: "The previous Sol, at the same price as GPT-6.2 Sol.",
             contextTokens: 922_000
         ),
         AiModelSpec(
             id: "gpt-6-astra",
             displayName: "GPT-6 Astra",
-            description: "OpenAI's most capable model, for the most demanding questions across "
-                + "a whole archive. By far the highest cost.",
+            description: "The previous top model. GPT-6.2 Astra is newer and costs a fifth less.",
             contextTokens: 922_000
         ),
         // The GPT-5.6 family, kept as options. GPT-5.6 Luna was the default until 2026-09-30;
@@ -96,7 +111,7 @@ public enum AiModels {
         AiModelSpec(
             id: "gpt-5.6-sol",
             displayName: "GPT-5.6 Sol",
-            description: "The previous frontier model, at more than twice GPT-6.1 Sol's price.",
+            description: "The previous frontier model, at twice GPT-6.2 Sol's price or more.",
             contextTokens: 400_000
         ),
     ]

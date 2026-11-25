@@ -272,9 +272,14 @@ public final class FollowUpWorker: @unchecked Sendable {
     /// the feature worth turning off: reading ambient chatter as commitments.
     ///
     /// GPT-6.1 Sol since 2026-09-30 (was GPT-5.6 Terra): the same input price, cheaper output,
-    /// a tier up. Not measured against Terra on our own conversations. Extraction state is
-    /// keyed by the transcript, not the model, so the change re-reads nothing; a key that
-    /// cannot use the pinned model gets the person's own (`OpenAiChatAiProvider`).
+    /// a tier up. Extraction state is keyed by the transcript, not the model, so a change
+    /// re-reads nothing; a key that cannot use the pinned model gets the person's own
+    /// (`OpenAiChatAiProvider`).
+    ///
+    /// Kept on 2026-11-25 after measuring the newer models with this prompt and effort on 24 of
+    /// our own conversations, items judged without seeing the model: GPT-6.1 Sol 13 items, 1
+    /// wrong; GPT-6.2 Sol (same price) 26 items, 7 wrong; GPT-6.1 Terra (half the price) 7
+    /// items, 0 wrong, missing half of what Sol found. A newer id is not a reason to move this.
     public static let modelId = "gpt-6.1-sol"
     public static let reasoningEffort = "medium"
 

@@ -22,6 +22,8 @@ import Testing
         #expect(ids.contains("gpt-6.1-terra"))
         #expect(ids.contains("gpt-6.1-sol"))
         #expect(ids.contains("gpt-6-astra"))
+        #expect(ids.contains("gpt-6.2-sol"))
+        #expect(ids.contains("gpt-6.2-astra"))
         #expect(Set(ids).count == ids.count, "model ids must be unique")
         #expect(
             AiModels.all.filter { $0.recommended }.count == 1,
@@ -31,7 +33,10 @@ import Testing
     /// A GPT-6 request may carry 922,000 input tokens (the 1,050,000 window less the 128,000
     /// reserved for output). Ask sizes its read from this number, so it must not exceed it.
     @Test func gpt6WindowsNeverExceedTheInputLimit() {
-        for id in ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"] {
+        for id in [
+            "gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6.2-sol",
+            "gpt-6.2-astra",
+        ] {
             let spec = AiModels.byId(id)
             #expect(spec.id == id, "\(id) resolves to itself, not to the default")
             #expect(spec.contextTokens <= 922_000)
@@ -39,6 +44,7 @@ import Testing
         }
         // A dated snapshot is named by its family, dots in the version included.
         #expect(AiModels.displayName(modelUsed: "gpt-6.1-sol-2026-09-15") == "GPT-6.1 Sol")
+        #expect(AiModels.displayName(modelUsed: "gpt-6.2-sol") == "GPT-6.2 Sol")
         #expect(AiModels.displayName(modelUsed: "gpt-6-luna") == "GPT-6 Luna")
     }
 
