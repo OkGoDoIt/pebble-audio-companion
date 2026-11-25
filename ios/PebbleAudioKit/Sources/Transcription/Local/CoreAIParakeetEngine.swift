@@ -30,6 +30,8 @@ public enum LocalEngineRuntime: String, Sendable, Equatable, CaseIterable {
     case cactus
     /// Apple Core AI through `CoreAISpeechVendored` (`CoreAIParakeetEngine`), iOS 27+ device only.
     case coreAI
+    /// Core ML encoder on the Neural Engine with our own token search (`CoreMLParakeetEngine`).
+    case coreML
 }
 
 /// Prepares a freshly installed model so its first real use is not a cold start: for Core AI
@@ -81,6 +83,8 @@ extension ParakeetEngineFactory {
             #else
                 return false
             #endif
+        case .coreML:
+            return CoreMLParakeetEngine.shared.isSupported
         }
     }
 
@@ -97,6 +101,8 @@ extension ParakeetEngineFactory {
             #else
                 return UnsupportedParakeetEngine()
             #endif
+        case .coreML:
+            return CoreMLParakeetEngine.shared
         }
     }
 
@@ -112,6 +118,8 @@ extension ParakeetEngineFactory {
             #else
                 return UnsupportedModelPreparation()
             #endif
+        case .coreML:
+            return CoreMLModelPreparer()
         }
     }
 }

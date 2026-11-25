@@ -11,4 +11,12 @@
 /// vector `x`, and a length-`m` output `y`. Alpha 1, beta 0, unit strides.
 void cacc_sgemv_row_major(int m, int n, const float *a, int lda, const float *x, float *y);
 
+/// y = A · x + y (beta 1): the recurrent half of the Parakeet prediction network.
+void cacc_sgemv_row_major_add(int m, int n, const float *a, int lda, const float *x, float *y);
+
+/// C = A · Bᵀ for row-major `A` (m × k), `B` (n × k) and `C` (m × n): the Parakeet joint network,
+/// which keeps each weight row next to the vector it is multiplied with.
+void cacc_sgemm_row_major_bt(
+    int m, int n, int k, const float *a, int lda, const float *b, int ldb, float *c, int ldc);
+
 #endif

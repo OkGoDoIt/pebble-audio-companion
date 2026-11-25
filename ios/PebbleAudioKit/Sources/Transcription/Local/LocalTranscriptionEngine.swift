@@ -99,6 +99,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
     ///   - engine: the Cactus engine (the factory's when nil).
     ///   - coreAIEngine: the Core AI engine (the factory's when nil — `UnsupportedParakeetEngine`
     ///     wherever Core AI cannot run, which is what makes `resolution` say so).
+    ///   - coreMLEngine: the Core ML engine (the factory's when nil).
     ///   - isForeground / log: handed to every `ParakeetTranscriptionProvider`;
     ///     see its initializer.
     public init(
@@ -106,6 +107,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         location: any ParakeetModelLocating = ParakeetModelLocation(),
         engine: (any ParakeetNativeEngine)? = nil,
         coreAIEngine: (any ParakeetNativeEngine)? = nil,
+        coreMLEngine: (any ParakeetNativeEngine)? = nil,
         makeAppleSpeech: @escaping @Sendable (Locale) -> any TranscriptionProvider = {
             SpeechAnalyzerProvider(locale: $0)
         },
@@ -117,6 +119,7 @@ public final class SelectableLocalTranscriptionProvider: TranscriptionProvider,
         self.engines = [
             .cactus: engine ?? ParakeetEngineFactory.make(runtime: .cactus),
             .coreAI: coreAIEngine ?? ParakeetEngineFactory.make(runtime: .coreAI),
+            .coreML: coreMLEngine ?? ParakeetEngineFactory.make(runtime: .coreML),
         ]
         self.makeAppleSpeech = makeAppleSpeech
         self.isForeground = isForeground

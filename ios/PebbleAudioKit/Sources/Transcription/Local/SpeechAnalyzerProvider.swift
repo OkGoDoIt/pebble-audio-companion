@@ -233,11 +233,16 @@ func localSpeechFinalText(_ pieces: [String]) -> String? {
 
             do {
                 try await analyzer.start(inputSequence: inputSequence)
-                for try await chunk in pcmChunks {
+                var leveler = PcmLeveler(sampleRateHz: sampleRateHz)
+                func feed(_ chunk: Data) {
                     guard let buffer = LocalSpeechPcm.makeBuffer(data: chunk, format: format)
-                    else { continue }
+                    else { return }
                     inputContinuation.yield(AnalyzerInput(buffer: buffer))
                 }
+                for try await chunk in pcmChunks {
+                    for leveled in leveler.append(chunk) { feed(leveled) }
+                }
+                if let rest = leveler.finish() { feed(rest) }
                 inputContinuation.finish()
                 try await analyzer.finalizeAndFinishThroughEndOfInput()
             } catch let error as TranscriptionError {

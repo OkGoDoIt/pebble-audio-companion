@@ -116,6 +116,7 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         switch runtime {
         case .cactus: return "config.txt"
         case .coreAI: return "metadata.json"
+        case .coreML: return "config.json"
         }
     }
 
@@ -124,12 +125,18 @@ public struct ParakeetModelSpec: Sendable, Equatable, Identifiable {
         switch runtime {
         case .cactus: return ".cactus_version"
         case .coreAI: return ".coreai_version"
+        case .coreML: return ".coreml_version"
         }
     }
 
     /// True when the model needs a foreground prepare pass (Core AI's specialization) before
     /// its first use; `preparedMarkerFileName` records that it has happened.
-    public var requiresPreparation: Bool { runtime == .coreAI }
+    public var requiresPreparation: Bool {
+        switch runtime {
+        case .cactus: return false
+        case .coreAI, .coreML: return true
+        }
+    }
 
     /// Written next to the version file once the prepare pass completed.
     public var preparedMarkerFileName: String { ".prepared" }

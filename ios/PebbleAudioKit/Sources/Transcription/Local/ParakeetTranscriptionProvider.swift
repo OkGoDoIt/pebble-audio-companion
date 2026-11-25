@@ -137,11 +137,14 @@ enum ParakeetPcm {
     /// that low: there is essentially no interior silence worth skipping. A segment with nothing
     /// in it is still skipped whole, before the engine is ever touched, by
     /// `TranscriptionProcessor.provablySilent`.
-    static func chunks(levels: [WindowLevel], byteCount: Int, sampleRateHz: Int) -> [PcmSpeechRange] {
+    static func chunks(
+        levels: [WindowLevel], byteCount: Int, sampleRateHz: Int,
+        maxChunkMs: Int = maxTranscribeChunkMs
+    ) -> [PcmSpeechRange] {
         let rawEnd = align(byteCount)
         guard rawEnd >= minAudioBytes else { return [] }
         let windowBytes = max(msToBytes(analysisWindowMs, sampleRateHz: sampleRateHz), bytesPerSample)
-        let maxBytes = msToBytes(maxTranscribeChunkMs, sampleRateHz: sampleRateHz)
+        let maxBytes = msToBytes(maxChunkMs, sampleRateHz: sampleRateHz)
         let searchBytes = min(msToBytes(boundarySearchMs, sampleRateHz: sampleRateHz), maxBytes / 2)
         guard maxBytes > windowBytes else {
             return [PcmSpeechRange(startByte: 0, endByte: rawEnd)]
@@ -352,11 +355,22 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
     /// "on-device"; a different name, because a transcript's provenance should say which
     /// runtime produced it.
     public static let coreAIProviderId = "coreai-local"
+    public static let coreMLProviderId = "coreml-local"
+
+    /// The longest range `runtime` is handed. Cactus and Core AI take 45 s; the Core ML encoder is
+    /// compiled for exactly 15 s.
+    static func maxRangeMs(for runtime: LocalEngineRuntime) -> Int {
+        switch runtime {
+        case .cactus, .coreAI: return ParakeetPcm.maxTranscribeChunkMs
+        case .coreML: return CoreMLParakeetEngine.maxRangeMs
+        }
+    }
 
     public static func providerId(for runtime: LocalEngineRuntime) -> String {
         switch runtime {
         case .cactus: return providerId
         case .coreAI: return coreAIProviderId
+        case .coreML: return coreMLProviderId
         }
     }
 
@@ -504,7 +518,8 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
             return try source.read(upToCount: length) ?? Data()
         }
         let ranges = ParakeetPcm.chunks(
-            levels: levels, byteCount: pcmBytes, sampleRateHz: sampleRateHz)
+            levels: levels, byteCount: pcmBytes, sampleRateHz: sampleRateHz,
+            maxChunkMs: Self.maxRangeMs(for: spec.runtime))
 
         return try await withTaskCancellationHandler {
             try await run(

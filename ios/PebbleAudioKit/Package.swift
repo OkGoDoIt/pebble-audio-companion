@@ -110,7 +110,7 @@ let package = Package(
             name: "Transcription",
             dependencies: [
                 "WireProtocol", "SegmentStore", "AudioCodec", "AppDB", "CCactus",
-                "CoreAISpeechVendored",
+                "CoreAISpeechVendored", "CAccelerateBLAS",
             ],
             swiftSettings: swiftSettings
         ),
