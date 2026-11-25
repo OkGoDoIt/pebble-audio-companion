@@ -212,6 +212,9 @@ final class AppComposition {
                 MainActor.assumeIsolated {
                     guard shared == nil else { return }
                     AppRuntimeLog.shared.record("retrying composition after \(name.rawValue)")
+                    // Before first unlock the settings read as unset too, and an unset Keep
+                    // recordings is a month. Nothing may be deleted on that answer.
+                    settings.reloadFromDefaults()
                     _ = bootstrap(settings: settings, nativeSurfaces: nativeSurfaces)
                     if shared != nil {
                         bootstrapRetryTokens.forEach(center.removeObserver)

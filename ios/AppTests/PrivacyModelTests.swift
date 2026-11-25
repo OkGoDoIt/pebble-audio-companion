@@ -41,7 +41,7 @@ struct PrivacyModelTests {
                                 var inputs = PrivacyInputs()
                                 inputs.transcriptionDestination = stt ? sttName : nil
                                 inputs.aiDestination = ai ? aiName : nil
-                                inputs.iCloudAgeDays = cloud ? 60 : nil
+                                inputs.iCloudRule = cloud ? CloudAudioRule(ageDays: 60, maxBytes: 0) : nil
                                 if server {
                                     inputs.server = .init(
                                         host: host, paused: paused, scope: .lastDays(90),
@@ -86,7 +86,7 @@ struct PrivacyModelTests {
                 && inputs.transcriptionDestination == inputs.aiDestination
             let expectedPlaces = (inputs.transcriptionDestination != nil ? 1 : 0)
                 + (inputs.aiDestination != nil && !mergedProviders ? 1 : 0)
-                + (inputs.iCloudAgeDays != nil ? 1 : 0) + (server != nil ? 1 : 0)
+                + (inputs.usesICloud ? 1 : 0) + (server != nil ? 1 : 0)
                 + (inputs.museState != nil ? 1 : 0) + readers.count
 
             // The blanket claim that cannot be verified, never.
@@ -111,7 +111,7 @@ struct PrivacyModelTests {
             }
             // "Audio stays on this phone" only while no audio goes anywhere.
             if text.contains(where: { $0.contains("Audio stays on this phone") }) {
-                #expect(inputs.transcriptionDestination == nil && inputs.iCloudAgeDays == nil, "\(c)")
+                #expect(inputs.transcriptionDestination == nil && !inputs.usesICloud, "\(c)")
                 #expect(server?.clipsAllowed != true, "\(c)")
             }
             // One row and one branch per destination, in the model's order.
@@ -199,7 +199,7 @@ struct PrivacyModelTests {
 
         var e = PrivacyInputs()
         e.aiDestination = "OpenAI"
-        e.iCloudAgeDays = 60
+        e.iCloudRule = CloudAudioRule(ageDays: 60, maxBytes: 0)
         e.server = .init(host: Self.host, paused: true, scope: .lastDays(90), clipsAllowed: false, editsAllowed: false,
                          assistants: Array(Self.assistants.prefix(2)).map { var a = $0; a.canWrite = false; return a })
         let pe = PrivacyModel.derive(e, nowMs: Self.now)
