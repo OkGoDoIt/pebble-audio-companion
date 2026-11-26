@@ -67,6 +67,24 @@ public final class BackgroundResidency: @unchecked Sendable {
     private let lock = NSLock()
     private var wanted = false
     private var observing = false
+    /// Consecutive refusals since residency was last held, and the generation a scheduled retry
+    /// belongs to (a release or a success makes any retry in flight stale).
+    private var failures = 0
+    private var retryGeneration: UInt64 = 0
+
+    /// How long to wait before trying again after `failures` refusals in a row: soon at first,
+    /// then once a minute for as long as residency is wanted.
+    ///
+    /// A refusal used to be final. On 2026-11-26 the session was refused at 09:00 and nothing
+    /// asked again; it took an unrelated audio interruption at 10:04 to re-acquire it.
+    static func retryDelayMs(afterFailures failures: Int) -> Int {
+        switch failures {
+        case ...1: return 5_000
+        case 2: return 15_000
+        case 3: return 30_000
+        default: return 60_000
+        }
+    }
 
     #if canImport(AVFoundation) && os(iOS)
         private var player: AVAudioPlayer?
@@ -113,19 +131,71 @@ public final class BackgroundResidency: @unchecked Sendable {
                 try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
                 try session.setActive(true, options: [])
             } catch {
-                log.write("background residency session failed: \(error)")
-                state.value = .failed
+                // Most acquires are re-asserts (background entry, the end of a playback) of a
+                // session that is already ours and still playing, and iOS can refuse the call
+                // without touching that session: '!int' on background entry, 2026-11-26 09:00.
+                // The process stayed resident, yet the state read `failed` for an hour. Only a
+                // session that is no longer ours, or a loop that stopped, is a failure.
+                if isStillResident(session) {
+                    log.write("background residency re-assert refused (\(error)); still held")
+                    succeeded()
+                    return
+                }
+                failed("background residency session failed: \(error)")
                 return
             }
             guard startPlayer() else {
-                state.value = .failed
+                failed(nil)
                 return
             }
-            state.value = .held
+            succeeded()
             log.write("background residency held (playback + mixWithOthers)")
         }
 
+        /// Our loop is playing under the mixable residency category.
+        private func isStillResident(_ session: AVAudioSession) -> Bool {
+            guard lock.withLock({ player?.isPlaying ?? false }) else { return false }
+            return session.category == .playback && session.categoryOptions.contains(.mixWithOthers)
+        }
+
+        private func succeeded() {
+            lock.withLock {
+                failures = 0
+                retryGeneration &+= 1
+            }
+            state.value = .held
+        }
+
+        /// Marks residency failed and asks again later, for as long as it is wanted. The first
+        /// three refusals and every tenth after are written; a phone that refuses all afternoon
+        /// would otherwise put a line a minute in the flight recorder.
+        private func failed(_ message: String?) {
+            let (attempt, generation): (Int, UInt64) = lock.withLock {
+                failures += 1
+                retryGeneration &+= 1
+                return (failures, retryGeneration)
+            }
+            if let message, attempt <= 3 || attempt % 10 == 0 {
+                log.write(attempt == 1 ? message : "\(message) (attempt \(attempt))")
+            }
+            state.value = .failed
+            let delayMs = Self.retryDelayMs(afterFailures: attempt)
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + .milliseconds(delayMs)
+            ) { [weak self] in
+                guard let self else { return }
+                let due = self.lock.withLock { self.wanted && self.retryGeneration == generation }
+                // An interruption in between owns the next acquire (its `.ended`).
+                guard due, self.state.value == .failed else { return }
+                self.acquire()
+            }
+        }
+
         private func release() {
+            lock.withLock {
+                failures = 0
+                retryGeneration &+= 1
+            }
             stopPlayer()
             // Deactivating tells the system we are done; `.notifyOthersOnDeactivation` lets a
             // paused app resume. Failing here is not worth surfacing: the engine is already down,

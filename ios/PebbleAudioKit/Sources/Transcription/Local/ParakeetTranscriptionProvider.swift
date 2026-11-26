@@ -718,8 +718,11 @@ public final class ParakeetTranscriptionProvider: TranscriptionProvider, LocalTr
 
     /// `map`, and a memory refusal starts `memoryHold` so the queue parks instead of spinning.
     private func mapNoting(_ error: ParakeetEngineError, id: String) -> TranscriptionError {
-        if case .insufficientMemory = error {
+        if case .insufficientMemory(let availableMb, let requiredMb) = error {
             memoryHold.set(reason: "memory", untilMs: nowMs() + Self.memoryRetryPauseMs)
+            log(
+                "local model \(spec.id) paused for \(Self.memoryRetryPauseMs / 60_000) min: "
+                    + "\(availableMb) MB free, needs \(requiredMb) MB")
         }
         return Self.map(error, id: id)
     }

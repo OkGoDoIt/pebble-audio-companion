@@ -471,7 +471,12 @@ public actor CompanionRuntime {
     }
 
     /// System memory warning.
+    ///
+    /// Written down because it is a hard release: a segment in flight loses its model and, in
+    /// local-first, goes to the cloud as "provider unavailable" with nothing else to explain it
+    /// (2026-11-26 11:44).
     public func releaseLocalModel(reason: String) async {
+        log.write("local model released: \(reason)")
         await environment.transcription.releaseModel(reason)
         await environment.voiceRecognition?.release()
     }
