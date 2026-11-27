@@ -232,7 +232,7 @@ public sealed class BatchApplier(
 		}
 
 		var pending = await requests.CountPendingAsync(userId, cancellationToken);
-		return new BatchResponse(now, accepted, ignored, rejected, pending);
+		return new BatchResponse(now, accepted, ignored, rejected, pending, SyncProtocol.RequestEncodings);
 	}
 
 	private async Task<Upserted> UpsertAsync(Guid userId, Envelope item, SyncedRecord record, DateTimeOffset now, CancellationToken cancellationToken)
@@ -638,7 +638,8 @@ public sealed record BatchResponse(
 	IReadOnlyList<BatchItemRef> Accepted,
 	IReadOnlyList<BatchIgnored> Ignored,
 	IReadOnlyList<BatchRejected> Rejected,
-	int PendingRequests);
+	int PendingRequests,
+	IReadOnlyList<string> RequestEncodings);
 
 public sealed record BatchItemRef(string Kind, string Id, long Version);
 

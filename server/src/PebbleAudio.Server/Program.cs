@@ -33,6 +33,10 @@ builder.WebHost.ConfigureKestrel(options =>
 	options.Limits.MaxRequestHeadersTotalSize = 1024 * 1024;
 });
 
+// Sync batches are JSON transcripts, about 7x smaller gzipped. The phone compresses one only once a batch
+// answer has said the server reads it (`requestEncodings`); the batch endpoint still caps what it decompresses.
+builder.Services.AddRequestDecompression();
+
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
 	?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is missing.");
 var publicOrigin = PebbleAudioOptions.ReadPublicOrigin(builder.Configuration);
@@ -171,6 +175,7 @@ if (SystemdHelpers.IsSystemdService())
 }
 
 app.UseForwardedHeaders();
+app.UseRequestDecompression();
 
 if (!app.Environment.IsDevelopment())
 {

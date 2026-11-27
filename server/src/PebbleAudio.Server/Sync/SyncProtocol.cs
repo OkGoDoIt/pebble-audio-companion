@@ -17,8 +17,11 @@ public static class SyncProtocol
 	/// <summary>§3: at most this many items per batch.</summary>
 	public const int MaxBatchItems = 200;
 
-	/// <summary>§3: at most this many bytes per batch body.</summary>
+	/// <summary>§3: at most this many bytes per batch body, counted after any decompression.</summary>
 	public const long MaxBatchBytes = 8L * 1024 * 1024;
+
+	/// <summary>§3: the <c>Content-Encoding</c>s a batch body may arrive in, as every batch answer lists them.</summary>
+	public static readonly IReadOnlyList<string> RequestEncodings = ["gzip"];
 
 	/// <summary>§1: a link code is this long and lasts this long.</summary>
 	public const int LinkCodeLength = 8;

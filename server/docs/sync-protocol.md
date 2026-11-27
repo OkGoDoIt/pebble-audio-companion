@@ -350,10 +350,18 @@ the body is the file. Items are applied in order inside one database transaction
 batches for one account are applied one at a time. The body's `deviceId` and `sentAt` are
 informational: the token says which phone sent it.
 
+Compression: a batch body may be gzipped, with `Content-Encoding: gzip`. Every `200` lists the
+encodings the server reads in `requestEncodings` (`["gzip"]`); a server from before them omits
+it. The phone sends its first batch uncompressed and zips from the first answer that lists gzip
+onward. If a zipped batch is answered `400` or `415`, the phone sends the same changes
+uncompressed and stops zipping until an answer lists gzip again. The 8 MB limit counts the
+decompressed body, so a small body that inflates past it is a `413`. Measured on the phone's
+transcript batches, gzip shrinks them about 7x.
+
 Response `200`:
 
 ```json
-{ "serverTime": "…", "accepted": [ { "kind": "…", "id": "…", "version": 1 } ], "ignored": [ { "kind": "…", "id": "…", "version": 1, "reason": "stale" } ], "rejected": [ { "kind": "…", "id": "…", "reason": "payload: pieces missing" } ], "pendingRequests": 2 }
+{ "serverTime": "…", "accepted": [ { "kind": "…", "id": "…", "version": 1 } ], "ignored": [ { "kind": "…", "id": "…", "version": 1, "reason": "stale" } ], "rejected": [ { "kind": "…", "id": "…", "reason": "payload: pieces missing" } ], "pendingRequests": 2, "requestEncodings": ["gzip"] }
 ```
 
 `ignored` reasons are `stale` (older than what the server holds), `duplicate` (the same

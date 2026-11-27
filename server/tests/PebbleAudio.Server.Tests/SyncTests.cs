@@ -186,6 +186,51 @@ public sealed class SyncTests(ArchiveServerFactory factory)
 		Assert.Equal(HttpStatusCode.Unauthorized, (await phone.SendAsync(HttpMethod.Get, "/sync/status")).StatusCode);
 	}
 
+	/// <summary>
+	/// A gzipped batch is applied like a plain one, every answer says gzip is read, and the size limit counts the
+	/// decompressed body, so a small body that inflates past it is refused.
+	/// </summary>
+	[Fact]
+	public async Task A_gzipped_batch_is_applied_and_its_limit_counts_what_it_inflates_to()
+	{
+		var userId = await factory.CreateUserAsync();
+		using var phone = await Phone.LinkAsync(factory, userId);
+
+		var plain = await phone.BatchAsync(Wire.Item("person", "p-plain", V, payload: Wire.Person("Dana")));
+		Assert.Equal(["gzip"], plain.GetProperty("requestEncodings").EnumerateArray().Select(e => e.GetString()));
+
+		var zipped = await phone.SendAsync(HttpMethod.Put, "/sync/batch",
+			Gzip(Phone.BatchBody(phone.DeviceId, [Wire.Item("person", "p-zipped", V, payload: Wire.Person("Sam"))])));
+		Assert.Equal(HttpStatusCode.OK, zipped.StatusCode);
+		var answer = JsonDocument.Parse(await zipped.Content.ReadAsStringAsync()).RootElement;
+		Assert.Equal(["person:p-zipped"], Phone.Ids(answer, "accepted"));
+
+		var bomb = Gzip(Phone.BatchBody(phone.DeviceId,
+			[Wire.Item("transcript", "conv-bomb", V, payload: Wire.Transcript("conv-bomb", new string('a', 9 * 1024 * 1024)))]));
+		Assert.True(bomb.Headers.ContentLength < 64 * 1024);
+		Assert.Equal(HttpStatusCode.RequestEntityTooLarge, (await phone.SendAsync(HttpMethod.Put, "/sync/batch", bomb)).StatusCode);
+
+		await using var scope = factory.Services.CreateAsyncScope();
+		var db = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+		Assert.True(await db.People.AnyAsync(p => p.UserId == userId && p.Id == "p-zipped"));
+	}
+
+	private static HttpContent Gzip(HttpContent json)
+	{
+		var raw = json.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+		using var buffer = new MemoryStream();
+		using (var gzip = new System.IO.Compression.GZipStream(buffer, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+		{
+			gzip.Write(raw);
+		}
+
+		var content = new ByteArrayContent(buffer.ToArray());
+		content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+		content.Headers.ContentEncoding.Add("gzip");
+		content.Headers.ContentLength = buffer.Length;
+		return content;
+	}
+
 	[Fact]
 	public async Task A_delete_removes_what_derives_from_a_conversation_and_an_expire_keeps_it()
 	{
