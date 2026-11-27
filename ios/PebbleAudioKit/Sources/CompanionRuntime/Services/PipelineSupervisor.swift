@@ -128,3 +128,38 @@ public actor PipelineSupervisor {
         }
     }
 }
+
+/// Waiting on a task that may never come back.
+public enum BoundedTaskWait {
+    /// Waits for `task` to finish, for at most `milliseconds`. True when it finished in time.
+    ///
+    /// Returns as soon as either the task or the time is up, without waiting for the other. A
+    /// task group cannot do this: it returns only once every child has, so the one child that
+    /// awaits a task ignoring cancellation holds the caller for as long as that task runs. That
+    /// is how a loop restart that promised "a moment" took 4 min 16 s (2026-11-27 15:08).
+    public static func finished(
+        _ task: Task<Void, Never>, withinMs milliseconds: Int64, clock: RuntimeClock
+    ) async -> Bool {
+        // The first outcome is kept and the second dropped.
+        let (outcomes, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingOldest(1))
+        let watcher = Task {
+            await task.value
+            continuation.yield(true)
+            continuation.finish()
+        }
+        let timer = Task {
+            try? await clock.sleep(ms: milliseconds)
+            continuation.yield(false)
+            continuation.finish()
+        }
+        var finished = false
+        for await outcome in outcomes {
+            finished = outcome
+            break
+        }
+        // Neither is awaited: the watcher ends when the task does, whenever that is.
+        watcher.cancel()
+        timer.cancel()
+        return finished
+    }
+}

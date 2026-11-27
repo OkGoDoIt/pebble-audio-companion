@@ -397,11 +397,8 @@ public actor CompanionRuntime {
         guard let previous = loopTask else { return }
         previous.cancel()
         loopTask = nil
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await previous.value }
-            group.addTask { [clock] in try? await clock.sleep(ms: 2_000) }
-            await group.next()
-            group.cancelAll()
+        if !(await BoundedTaskWait.finished(previous, withinMs: 2_000, clock: clock)) {
+            log.write("pipeline loop: the old pass has not stopped; starting a new loop beside it")
         }
         startLoop()
         wake.signal()
