@@ -1,4 +1,5 @@
 import AppDB
+import Compression
 import Foundation
 import Testing
 
@@ -348,6 +349,88 @@ struct ArchiveSyncServiceTests {
         #expect(sizes.first == 4)
         #expect(sizes.dropFirst().allSatisfy { $0 <= ArchiveSyncProtocol.maxItemsPerBatch / 2 })
         #expect(try await w.outbox.counts().pending == 0)
+    }
+}
+
+/// A gzip member back to its bytes, checking its trailer; nil when it isn't one.
+func gunzip(_ data: Data) -> Data? {
+    guard data.count > 18, data[data.startIndex] == 0x1f, data[data.startIndex + 1] == 0x8b else { return nil }
+    let bytes = [UInt8](data)
+    let size = Int(UInt32(bytes[bytes.count - 4]) | UInt32(bytes[bytes.count - 3]) << 8
+        | UInt32(bytes[bytes.count - 2]) << 16 | UInt32(bytes[bytes.count - 1]) << 24)
+    let crc = UInt32(bytes[bytes.count - 8]) | UInt32(bytes[bytes.count - 7]) << 8
+        | UInt32(bytes[bytes.count - 6]) << 16 | UInt32(bytes[bytes.count - 5]) << 24
+    let deflated = Array(bytes[10..<(bytes.count - 8)])
+    var out = [UInt8](repeating: 0, count: max(size, 1))
+    let written = compression_decode_buffer(&out, out.count, deflated, deflated.count, nil, COMPRESSION_ZLIB)
+    guard written == size else { return nil }
+    let result = Data(out.prefix(size))
+    return ArchiveGzip.crc32(result) == crc ? result : nil
+}
+
+/// Accepts every item, gzipped or not, and says it reads gzip.
+private func acceptAllReadingGzip(_ body: Data) -> (Int, Data) {
+    let (status, answer) = acceptAll(gunzip(body) ?? body)
+    var json = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any] ?? [:]
+    json["requestEncodings"] = ["gzip"]
+    return (status, (try? JSONSerialization.data(withJSONObject: json)) ?? answer)
+}
+
+extension ArchiveSyncServiceTests {
+    @Test func aGzippedBodyRoundTrips() throws {
+        let text = Data(String(repeating: "Dana: are we still on for lunch tomorrow?\n", count: 2_000).utf8)
+        let zipped = try #require(ArchiveGzip.compress(text))
+        #expect(zipped.count * 10 < text.count)
+        #expect(gunzip(zipped) == text)
+        #expect(ArchiveGzip.crc32(Data("123456789".utf8)) == 0xCBF4_3926, "The standard CRC-32 check value")
+        #expect(ArchiveGzip.compress(Data([0x42])) == nil, "Nothing to gain: sent as it is")
+    }
+
+    /// Batches go gzipped once an answer says the server reads them, never before.
+    @Test func batchesAreGzippedOnceTheServerSaysItReadsThem() async throws {
+        let w = try await world(answer: acceptAllReadingGzip)
+        _ = try await FollowUpStore(db: w.db).add(text: "Call the landlord")
+        await w.service.pass(.userAsked)
+        #expect(w.uploads.requests.first?.value(forHTTPHeaderField: "Content-Encoding") == nil)
+        let first = try #require(w.uploads.bodies.first)
+        #expect(gunzip(first) == nil)
+
+        let item = try await FollowUpStore(db: w.db).add(text: "Book the dentist")
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+        let request = try #require(w.uploads.requests.last)
+        #expect(request.value(forHTTPHeaderField: "Content-Encoding") == "gzip")
+        let last = try #require(w.uploads.bodies.last)
+        let body = try #require(gunzip(last))
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let items = try #require(json["items"] as? [[String: Any]])
+        #expect(items.contains { $0["id"] as? String == item.id })
+        #expect(try await w.outbox.counts().pending == 0)
+    }
+
+    /// A server rolled back to one that can't read gzip: the refused batch goes again
+    /// uncompressed in the same pass, and nothing is lost or held back.
+    @Test func aGzippedBatchARolledBackServerRefusesGoesAgainUncompressed() async throws {
+        let answers = Counter()
+        let w = try await world(answer: { body in
+            if answers.increment() == 1 { return acceptAllReadingGzip(body) }
+            if gunzip(body) != nil { return (400, Data(#"{"error":"The batch is not JSON."}"#.utf8)) }
+            return acceptAll(body)
+        })
+        _ = try await FollowUpStore(db: w.db).add(text: "Call the landlord")
+        await w.service.pass(.userAsked)
+        _ = try await FollowUpStore(db: w.db).add(text: "Book the dentist")
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+        let encodings = w.uploads.requests.map { $0.value(forHTTPHeaderField: "Content-Encoding") }
+        #expect(encodings == [nil, "gzip", nil])
+        #expect(try await w.outbox.counts().pending == 0)
+        #expect(w.service.status.value.lastError == nil)
+        // And it stays uncompressed while the server doesn't say otherwise.
+        _ = try await FollowUpStore(db: w.db).add(text: "Water the garden")
+        await w.service.pass(.userAsked)
+        await w.service.idle()
+        #expect(w.uploads.requests.last?.value(forHTTPHeaderField: "Content-Encoding") == nil)
     }
 }
 

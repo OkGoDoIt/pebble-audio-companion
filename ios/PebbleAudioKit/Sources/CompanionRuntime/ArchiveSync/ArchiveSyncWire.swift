@@ -703,8 +703,10 @@ public struct ArchiveBatchResponse: Decodable, Equatable, Sendable {
     public var ignored: [Ignored]
     public var rejected: [Rejected]
     public var pendingRequests: Int
+    /// The `Content-Encoding`s this server reads a batch body in; empty from a server before them.
+    public var requestEncodings: [String]
 
-    enum CodingKeys: String, CodingKey { case serverTime, accepted, ignored, rejected, pendingRequests }
+    enum CodingKeys: String, CodingKey { case serverTime, accepted, ignored, rejected, pendingRequests, requestEncodings }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -713,6 +715,7 @@ public struct ArchiveBatchResponse: Decodable, Equatable, Sendable {
         ignored = try c.decodeIfPresent([Ignored].self, forKey: .ignored) ?? []
         rejected = try c.decodeIfPresent([Rejected].self, forKey: .rejected) ?? []
         pendingRequests = try c.decodeIfPresent(Int.self, forKey: .pendingRequests) ?? 0
+        requestEncodings = try c.decodeIfPresent([String].self, forKey: .requestEncodings) ?? []
     }
 
     /// Everything the server now holds: accepted, and ignored as no newer than what it had.

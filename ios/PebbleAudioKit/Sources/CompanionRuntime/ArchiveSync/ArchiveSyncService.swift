@@ -174,6 +174,9 @@ public actor ArchiveSyncService {
         var transcriptExportMarked: String?
         /// How far a re-export has marked (a conversation id), while one is under way.
         var transcriptExportCursor: String?
+        /// True once a batch answer said the server reads gzipped batches; batches go gzipped
+        /// from then on. Cleared when a gzipped batch is refused as unreadable.
+        var gzipBatches: Bool?
     }
 
     public nonisolated let status = StateSubject(ArchiveSyncStatus())
@@ -700,9 +703,14 @@ public actor ArchiveSyncService {
     }
 
     private func submit(_ batch: Batch, _ endpoint: ArchiveEndpoint) async -> Bool {
+        var request = endpoint.request("PUT", "/sync/batch")
         do {
-            let body = try ArchiveBatchBody.encode(
+            var body = try ArchiveBatchBody.encode(
                 deviceId: endpoint.deviceId, sentAtMs: deps.clock.nowMs, items: batch.items)
+            if state.gzipBatches == true, let zipped = ArchiveGzip.compress(body) {
+                body = zipped
+                request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
+            }
             try body.write(to: batchFile(batch.id), options: .atomic)
             try await deps.outbox.markInFlight(batch.sent)
         } catch {
@@ -715,9 +723,7 @@ public actor ArchiveSyncService {
         var status = self.status.value
         status.sending = true
         self.status.value = status
-        await deps.uploads.upload(
-            endpoint.request("PUT", "/sync/batch"), fromFile: batchFile(batch.id),
-            description: "batch:\(batch.id)")
+        await deps.uploads.upload(request, fromFile: batchFile(batch.id), description: "batch:\(batch.id)")
         return true
     }
 
@@ -795,6 +801,11 @@ public actor ArchiveSyncService {
                 backOff("The server's answer could not be read.")
                 return
             }
+            let gzip = response.requestEncodings.contains("gzip")
+            if gzip != (state.gzipBatches == true) {
+                state.gzipBatches = gzip
+                deps.log.write("archive sync: batches go \(gzip ? "gzipped" : "uncompressed") from now on")
+            }
             do {
                 let cleared = try await deps.outbox.acknowledge(response.stored)
                 // Ignored as outside the scope: not stored and not recorded there, so not
@@ -844,6 +855,13 @@ public actor ArchiveSyncService {
         case 426:
             state.appTooOld = true
             save()
+        case 400 where state.gzipBatches == true, 415 where state.gzipBatches == true:
+            // A server that no longer reads gzip (one rolled back) can't parse the body: the
+            // same changes go again uncompressed, and the next answer says whether to zip again.
+            state.gzipBatches = false
+            save()
+            rerun = true
+            deps.log.write("archive sync: a gzipped batch was refused (\(outcome.status)); sending uncompressed")
         default:
             backOff("The server answered \(outcome.status).")
         }
