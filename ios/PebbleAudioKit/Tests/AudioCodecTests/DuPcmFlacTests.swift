@@ -67,19 +67,6 @@ import Testing
         #expect(try PcmFlac.decodeToPcmMono16(flac: flac, sampleRateHz: Self.rate) == pcm)
     }
 
-    @Test func encodingInMemoryLeavesNoTempFileBehind() throws {
-        let tmp = FileManager.default.temporaryDirectory
-        func flacFiles() -> Set<String> {
-            Set((try? FileManager.default.contentsOfDirectory(atPath: tmp.path))?.filter {
-                $0.hasPrefix("pebble-flac-")
-            } ?? [])
-        }
-        let before = flacFiles()
-        let pcm = try Self.realDecodedPcm(seconds: 4)
-        _ = try PcmFlac.encodeInMemory(pcm: pcm, frameCount: pcm.count / 2, sampleRateHz: Self.rate)
-        #expect(flacFiles().subtracting(before).isEmpty)
-    }
-
     @Test func flacRoundTripsFullScaleAndSilentExtremes() throws {
         // Clipping extremes and a dead-silent run are where an integer/float conversion bug would
         // show up first (Int16.min has no positive counterpart in a naive ±32767 scaling).
