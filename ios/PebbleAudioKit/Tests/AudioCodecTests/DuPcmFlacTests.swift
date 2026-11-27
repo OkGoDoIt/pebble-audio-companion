@@ -42,6 +42,44 @@ import Testing
         #expect(back == pcm)
     }
 
+    // The encoder used to write every stream to a temp file and read it back: ~11 MB of flash
+    // per 15-minute segment transcribed in-process (disk-write exception, 2026-11-27). It now
+    // writes to memory. These call the in-memory path directly, so a silent fall back to the
+    // file cannot make them pass.
+
+    @Test func encodingInMemoryGivesBackEverySample() throws {
+        // Long enough for many blocks and for the header to be patched after the last one.
+        let pcm = try Self.realDecodedPcm(seconds: 90)
+        let frames = pcm.count / 2
+        let inMemory = try PcmFlac.encodeInMemory(pcm: pcm, frameCount: frames, sampleRateHz: Self.rate)
+        let throughFile = try PcmFlac.encodeThroughFile(pcm: pcm, frameCount: frames, sampleRateHz: Self.rate)
+        // Sample for sample what went in, and no bigger than the temp file made it.
+        #expect(try PcmFlac.decodeToPcmMono16(flac: inMemory, sampleRateHz: Self.rate) == pcm)
+        #expect(inMemory.count <= throughFile.count + 64)
+        print("flac in memory \(inMemory.count) bytes, through file \(throughFile.count), identical \(inMemory == throughFile)")
+    }
+
+    @Test func encodingInMemoryKeepsAnUnevenLastBlock() throws {
+        // A length that is not a whole number of 4096-sample blocks: the tail must not be lost.
+        var pcm = try Self.realDecodedPcm(seconds: 3)
+        pcm.removeLast(2 * 1_234)
+        let flac = try PcmFlac.encodeInMemory(pcm: pcm, frameCount: pcm.count / 2, sampleRateHz: Self.rate)
+        #expect(try PcmFlac.decodeToPcmMono16(flac: flac, sampleRateHz: Self.rate) == pcm)
+    }
+
+    @Test func encodingInMemoryLeavesNoTempFileBehind() throws {
+        let tmp = FileManager.default.temporaryDirectory
+        func flacFiles() -> Set<String> {
+            Set((try? FileManager.default.contentsOfDirectory(atPath: tmp.path))?.filter {
+                $0.hasPrefix("pebble-flac-")
+            } ?? [])
+        }
+        let before = flacFiles()
+        let pcm = try Self.realDecodedPcm(seconds: 4)
+        _ = try PcmFlac.encodeInMemory(pcm: pcm, frameCount: pcm.count / 2, sampleRateHz: Self.rate)
+        #expect(flacFiles().subtracting(before).isEmpty)
+    }
+
     @Test func flacRoundTripsFullScaleAndSilentExtremes() throws {
         // Clipping extremes and a dead-silent run are where an integer/float conversion bug would
         // show up first (Int16.min has no positive counterpart in a naive ±32767 scaling).

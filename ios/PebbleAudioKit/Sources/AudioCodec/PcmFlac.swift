@@ -209,13 +209,13 @@ public enum PcmFlac {
 
     /// Encodes `pcm` (s16le, mono, `sampleRateHz`) as a native `.flac` stream.
     ///
-    /// Goes through a temp file because FLAC's STREAMINFO block carries the total sample count
-    /// and an MD5 of the decoded audio, both of which the encoder patches back into the header
-    /// after the last frame — that needs a seekable sink. The file is removed before returning;
-    /// it is ~30% of the WAV the caller is already holding in memory, so the peak footprint of
-    /// this path goes DOWN, not up. It lives in `tmp/`, so the one case that can leave a file
-    /// behind — the process being killed mid-encode — is reclaimed by the system rather than
-    /// needing the kind of sweep `BackgroundCloudUploadCoordinator` had to grow for `upload-bodies`.
+    /// FLAC's STREAMINFO block carries the total sample count and an MD5 of the decoded audio,
+    /// both of which the encoder patches back into the header after the last frame, so it needs
+    /// a seekable sink. That sink is memory (`encodeInMemory`): the caller is about to hold the
+    /// whole stream as `Data` anyway, and a temp file meant every 15-minute segment transcribed
+    /// in-process wrote ~11 MB to flash only to read it straight back. With charger passes and
+    /// re-hearing that was a large part of the 1 GB+ a day iOS reported (disk-write exception,
+    /// 2026-11-27). If Core Audio refuses the in-memory sink the temp file still does the job.
     public static func encodeMono16(pcm: Data, sampleRateHz: Int) throws -> Data {
         #if canImport(AudioToolbox)
             precondition(sampleRateHz > 0, "sampleRateHz must be positive")
@@ -226,12 +226,20 @@ public enum PcmFlac {
             guard frameCount >= minimumFrames else {
                 throw Failure.audioTooShort(frames: frameCount, minimum: minimumFrames)
             }
+            if let encoded = try? encodeInMemory(
+                pcm: pcm, frameCount: frameCount, sampleRateHz: sampleRateHz)
+            {
+                return encoded
+            }
+            return try encodeThroughFile(pcm: pcm, frameCount: frameCount, sampleRateHz: sampleRateHz)
+        #else
+            throw Failure.unavailable
+        #endif
+    }
 
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("pebble-flac-\(UUID().uuidString).flac")
-            defer { try? FileManager.default.removeItem(at: url) }
-
-            var output = AudioStreamBasicDescription(
+    #if canImport(AudioToolbox)
+        private static func outputFormat(sampleRateHz: Int) -> AudioStreamBasicDescription {
+            AudioStreamBasicDescription(
                 mSampleRate: Double(sampleRateHz),
                 mFormatID: kAudioFormatFLAC,
                 mFormatFlags: 0,
@@ -241,20 +249,12 @@ public enum PcmFlac {
                 mChannelsPerFrame: 1,
                 mBitsPerChannel: 16,
                 mReserved: 0)
+        }
 
-            var ref: ExtAudioFileRef?
-            try check(
-                "create",
-                ExtAudioFileCreateWithURL(
-                    url as CFURL, kAudioFileFLACType, &output, nil,
-                    AudioFileFlags.eraseFile.rawValue, &ref))
-            guard let file = ref else { throw Failure.coreAudio(step: "create", status: -1) }
-            // The success path disposes EARLY (see below) and then flips this, because a `defer`
-            // capturing `file` would otherwise dispose the same handle a second time — an
-            // ordinary double free, and one the tests would very likely not have caught.
-            var disposed = false
-            defer { if !disposed { ExtAudioFileDispose(file) } }
-
+        /// Hands the samples to an open encoder.
+        private static func write(
+            pcm: Data, frameCount: Int, sampleRateHz: Int, to file: ExtAudioFileRef
+        ) throws {
             // Integer client format: the samples go straight from the spool's PCM16 into the
             // encoder without a float round trip, so "lossless" is lossless end to end.
             var client = clientFormat(sampleRateHz: sampleRateHz)
@@ -280,23 +280,222 @@ public enum PcmFlac {
                     written += frames
                 }
             }
-            // Dispose before reading: the encoder flushes its last frame and rewrites STREAMINFO
-            // on close, so the file is not complete until then. `defer` would read it too early.
-            ExtAudioFileDispose(file)
-            disposed = true
-            let encoded = try Data(contentsOf: url)
-            // Belt and braces for the failure mode documented on `minimumFrames`: that one is
-            // now excluded by the guard above, but it returned `noErr` from every call, so a
-            // status check alone would not have caught it and would not catch the next one. The
-            // only trustworthy question is whether the bytes are a FLAC stream.
+        }
+
+        /// The failure mode documented on `minimumFrames` returned `noErr` from every call, so a
+        /// status check alone would not have caught it and would not catch the next one. The
+        /// only trustworthy question is whether the bytes are a FLAC stream.
+        private static func verified(_ encoded: Data) throws -> Data {
             guard encoded.prefix(4).elementsEqual("fLaC".utf8) else {
                 throw Failure.invalidOutput(bytes: encoded.count)
             }
             return encoded
-        #else
-            throw Failure.unavailable
-        #endif
-    }
+        }
+
+        /// The encoder's sink, as bytes in memory.
+        private final class MemorySink {
+            var bytes = Data()
+        }
+
+        /// Where the converter's input callback is in the samples.
+        private final class PcmFeed {
+            let base: UnsafeRawPointer
+            let byteCount: Int
+            var offset = 0
+            init(base: UnsafeRawPointer, byteCount: Int) {
+                self.base = base
+                self.byteCount = byteCount
+            }
+        }
+
+        /// Packets asked of the converter per call: 8 blocks is 2 s at 16 kHz.
+        private static let packetsPerFill: UInt32 = 8
+
+        /// Encodes into memory: an `AudioConverter` makes the FLAC packets and Audio File
+        /// Services lays them out as a `.flac` stream in a file backed by callbacks.
+        ///
+        /// Not `ExtAudioFile` over that file, which would be the same few lines as the temp-file
+        /// path: wrapped for writing it reports an empty data format and refuses the client
+        /// format (-50, macOS 27.2).
+        static func encodeInMemory(pcm: Data, frameCount: Int, sampleRateHz: Int) throws -> Data {
+            var input = clientFormat(sampleRateHz: sampleRateHz)
+            var output = outputFormat(sampleRateHz: sampleRateHz)
+            var made: AudioConverterRef?
+            try check("converter", AudioConverterNew(&input, &output, &made))
+            guard let converter = made else { throw Failure.coreAudio(step: "converter", status: -1) }
+            defer { AudioConverterDispose(converter) }
+
+            // The converter fills in what the encoder settled on; the file is made from that.
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            try check(
+                "outputFormat",
+                AudioConverterGetProperty(
+                    converter, kAudioConverterCurrentOutputStreamDescription, &size, &output))
+            var maxPacketBytes: UInt32 = 0
+            size = UInt32(MemoryLayout<UInt32>.size)
+            try check(
+                "packetSize",
+                AudioConverterGetProperty(
+                    converter, kAudioConverterPropertyMaximumOutputPacketSize, &size, &maxPacketBytes))
+            guard maxPacketBytes > 0 else { throw Failure.coreAudio(step: "packetSize", status: -1) }
+
+            let sink = MemorySink()
+            var opened: AudioFileID?
+            try check(
+                "create",
+                AudioFileInitializeWithCallbacks(
+                    Unmanaged.passUnretained(sink).toOpaque(),
+                    { client, position, count, buffer, actual in
+                        let sink = Unmanaged<MemorySink>.fromOpaque(client).takeUnretainedValue()
+                        let start = Int(position)
+                        guard start >= 0, start <= sink.bytes.count else {
+                            actual.pointee = 0
+                            return kAudioFilePositionError
+                        }
+                        let length = min(Int(count), sink.bytes.count - start)
+                        if length > 0 {
+                            sink.bytes.copyBytes(
+                                to: buffer.assumingMemoryBound(to: UInt8.self),
+                                from: start..<(start + length))
+                        }
+                        actual.pointee = UInt32(length)
+                        return noErr
+                    },
+                    { client, position, count, buffer, actual in
+                        let sink = Unmanaged<MemorySink>.fromOpaque(client).takeUnretainedValue()
+                        let start = Int(position)
+                        guard start >= 0 else {
+                            actual.pointee = 0
+                            return kAudioFilePositionError
+                        }
+                        let end = start + Int(count)
+                        // A write past the end leaves zeros between, as a file would.
+                        if end > sink.bytes.count { sink.bytes.count = end }
+                        sink.bytes.replaceSubrange(
+                            start..<end, with: UnsafeRawBufferPointer(start: buffer, count: Int(count)))
+                        actual.pointee = count
+                        return noErr
+                    },
+                    { client in
+                        Int64(Unmanaged<MemorySink>.fromOpaque(client).takeUnretainedValue().bytes.count)
+                    },
+                    { client, size in
+                        guard size >= 0 else { return kAudioFilePositionError }
+                        Unmanaged<MemorySink>.fromOpaque(client).takeUnretainedValue().bytes.count = Int(size)
+                        return noErr
+                    },
+                    kAudioFileFLACType, &output, [], &opened))
+            guard let file = opened else { throw Failure.coreAudio(step: "create", status: -1) }
+            var closed = false
+            defer { if !closed { AudioFileClose(file) } }
+
+            // STREAMINFO travels as the converter's magic cookie: given once so the header is
+            // laid down, and again after the last packet, when it holds the sample count and MD5.
+            func writeCookie(_ step: String) throws {
+                var cookieSize: UInt32 = 0
+                guard
+                    AudioConverterGetPropertyInfo(
+                        converter, kAudioConverterCompressionMagicCookie, &cookieSize, nil) == noErr,
+                    cookieSize > 0
+                else { throw Failure.coreAudio(step: step, status: -1) }
+                var cookie = [UInt8](repeating: 0, count: Int(cookieSize))
+                try check(
+                    step,
+                    AudioConverterGetProperty(
+                        converter, kAudioConverterCompressionMagicCookie, &cookieSize, &cookie))
+                try check(
+                    step,
+                    AudioFileSetProperty(file, kAudioFilePropertyMagicCookieData, cookieSize, cookie))
+            }
+            try writeCookie("cookie")
+
+            try pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let base = raw.baseAddress else { throw Failure.emptyAudio }
+                let feed = PcmFeed(base: base, byteCount: frameCount * 2)
+                let capacity = Int(maxPacketBytes * packetsPerFill)
+                let packets = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: 16)
+                defer { packets.deallocate() }
+                var descriptions = [AudioStreamPacketDescription](
+                    repeating: AudioStreamPacketDescription(), count: Int(packetsPerFill))
+                var packetIndex: Int64 = 0
+                while true {
+                    var count = packetsPerFill
+                    var list = AudioBufferList(
+                        mNumberBuffers: 1,
+                        mBuffers: AudioBuffer(
+                            mNumberChannels: 1, mDataByteSize: UInt32(capacity), mData: packets))
+                    try check(
+                        "convert",
+                        AudioConverterFillComplexBuffer(
+                            converter,
+                            { _, ioPackets, ioData, _, user in
+                                guard let user else { return kAudio_ParamError }
+                                let feed = Unmanaged<PcmFeed>.fromOpaque(user).takeUnretainedValue()
+                                // Fewer than asked, then none: none is the end of the audio.
+                                let frames = min(
+                                    Int(ioPackets.pointee), (feed.byteCount - feed.offset) / 2)
+                                ioData.pointee.mNumberBuffers = 1
+                                ioData.pointee.mBuffers.mNumberChannels = 1
+                                ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(
+                                    mutating: feed.base + feed.offset)
+                                ioData.pointee.mBuffers.mDataByteSize = UInt32(frames * 2)
+                                feed.offset += frames * 2
+                                ioPackets.pointee = UInt32(frames)
+                                return noErr
+                            },
+                            Unmanaged.passUnretained(feed).toOpaque(), &count, &list, &descriptions))
+                    if count == 0 { break }
+                    var written = count
+                    try check(
+                        "write",
+                        AudioFileWritePackets(
+                            file, false, list.mBuffers.mDataByteSize, descriptions, packetIndex,
+                            &written, packets))
+                    guard written == count else { throw Failure.coreAudio(step: "write", status: -1) }
+                    packetIndex += Int64(written)
+                }
+                // Every sample must have gone in: a stream that stops short still starts "fLaC".
+                guard feed.offset == feed.byteCount else {
+                    throw Failure.coreAudio(step: "convert", status: -1)
+                }
+            }
+            try writeCookie("finalCookie")
+            try check("close", AudioFileClose(file))
+            closed = true
+            // `sink` is only borrowed by the callbacks; it must outlive the close above.
+            return try withExtendedLifetime(sink) { try verified(sink.bytes) }
+        }
+
+        /// Encodes through a temp file: the fallback, and the reference the in-memory path is
+        /// tested against. The file lives in `tmp/`, so the one case that can leave it behind,
+        /// the process being killed mid-encode, is reclaimed by the system.
+        static func encodeThroughFile(pcm: Data, frameCount: Int, sampleRateHz: Int) throws -> Data {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pebble-flac-\(UUID().uuidString).flac")
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            var output = outputFormat(sampleRateHz: sampleRateHz)
+            var ref: ExtAudioFileRef?
+            try check(
+                "create",
+                ExtAudioFileCreateWithURL(
+                    url as CFURL, kAudioFileFLACType, &output, nil,
+                    AudioFileFlags.eraseFile.rawValue, &ref))
+            guard let file = ref else { throw Failure.coreAudio(step: "create", status: -1) }
+            // The success path disposes EARLY (see below) and then flips this, because a `defer`
+            // capturing `file` would otherwise dispose the same handle a second time — an
+            // ordinary double free, and one the tests would very likely not have caught.
+            var disposed = false
+            defer { if !disposed { ExtAudioFileDispose(file) } }
+
+            try write(pcm: pcm, frameCount: frameCount, sampleRateHz: sampleRateHz, to: file)
+            // Dispose before reading: the encoder flushes its last frame and rewrites STREAMINFO
+            // on close, so the file is not complete until then. `defer` would read it too early.
+            ExtAudioFileDispose(file)
+            disposed = true
+            return try verified(try Data(contentsOf: url))
+        }
+    #endif
 
     #if canImport(AudioToolbox)
         /// s16le mono, packed — the exact layout of the spool's decoded PCM and of a `PcmWav` body.
