@@ -43,6 +43,28 @@ import Testing
         #expect(inputs.first?.ignored == true, "Which takes over what was said")
     }
 
+    /// The next sort starts from this one: each speaker comes back with its group, the group's
+    /// name, and who it was suggested to be.
+    @Test func aSortIsRememberedForTheNext() async throws {
+        let (db, store) = try await ready()
+        let dana = try await PeopleStore(db: db).createPerson(name: "Dana")
+        let sam = try await PeopleStore(db: db).createPerson(name: "Sam")
+        try await store.replaceSpeakers([("seg-1-a-1", [draft([crop(0, 3_000)])]), ("seg-2-a-1", [draft([crop(0, 3_000)])])])
+        let ids = try await store.clusterInputs(minimumCrops: 1).map(\.id).sorted()
+        #expect(try await store.clusterInputs(minimumCrops: 1).allSatisfy { $0.previousCluster == nil })
+        try await store.applyClusters([
+            VoiceSpeakerAssignment(speakerId: ids[0], clusterId: ids[0], personId: dana.id, score: 0.8,
+                                   suggestedPersonId: nil, suggestedScore: nil, ignored: false),
+            VoiceSpeakerAssignment(speakerId: ids[1], clusterId: ids[1], personId: nil, score: 0.7,
+                                   suggestedPersonId: sam.id, suggestedScore: 0.45, ignored: false),
+        ])
+        let inputs = try await store.clusterInputs(minimumCrops: 1).sorted { $0.id < $1.id }
+        #expect(inputs.map(\.previousCluster) == [ids[0], ids[1]])
+        #expect(inputs.map(\.previousPerson) == [dana.id, nil])
+        #expect(inputs.map(\.previousSuggestion) == [nil, sam.id])
+        #expect(inputs.allSatisfy { $0.person == nil }, "A sort's name is not a person's word")
+    }
+
     @Test func aNewAnswerReplacesTheOldOne() async throws {
         let (db, store) = try await ready()
         let dana = try await PeopleStore(db: db).createPerson(name: "Dana")

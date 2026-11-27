@@ -35,6 +35,10 @@ public struct VoiceSpeakerInput: Sendable {
     public var ignored: Bool
     public var separations: [String: String] = [:]
     public var requiresReview: Bool = false
+    /// What the last sort made of it: its group, that group's name, and who it was suggested to be.
+    public var previousCluster: Int64?
+    public var previousPerson: String?
+    public var previousSuggestion: String?
 }
 
 /// A recording's speakers as read for naming.
@@ -318,7 +322,8 @@ public struct VoiceSpeakerStore: Sendable {
                     ((row["startMediaMs"] as Int64)..<(row["endMediaMs"] as Int64), person))
             }
             let rows = try Row.fetchAll(d, sql: """
-                SELECT s.id, s.segmentId, s.cropCount, s.cropsJSON, s.voice, r.recipeJSON FROM voice_speakers s
+                SELECT s.id, s.segmentId, s.cropCount, s.cropsJSON, s.voice, r.recipeJSON,
+                    s.clusterId, s.personId, s.suggestedPersonId FROM voice_speakers s
                 JOIN voice_print_recipes r ON r.id = s.recipe
                 WHERE s.voice IS NOT NULL AND (s.cropCount >= ? OR EXISTS (SELECT 1 FROM voice_split_ranges x WHERE x.segmentId=s.segmentId))
                 """, arguments: [minimumCrops])
@@ -341,6 +346,9 @@ public struct VoiceSpeakerStore: Sendable {
                     rejected: decision?.rejected ?? [], ignored: decision?.ignored ?? false)
                 input.separations = separation
                 input.requiresReview = requiresReview
+                input.previousCluster = row["clusterId"]
+                input.previousPerson = row["personId"]
+                input.previousSuggestion = row["suggestedPersonId"]
                 return input
             }
         }

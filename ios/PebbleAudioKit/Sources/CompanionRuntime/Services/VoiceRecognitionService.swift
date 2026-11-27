@@ -408,7 +408,15 @@ public actor VoiceRecognitionService {
                     person: input.person, rejected: input.rejected, ignored: input.ignored)
                 item.separations = input.separations
                 item.requiresReview = input.requiresReview
+                item.previousGroup = input.previousCluster
+                item.previousSuggestion = input.previousSuggestion
                 items.append(item)
+            }
+            // A sample has no row of its own to remember its group by: it goes back to the
+            // largest group last named after its person, as it would have joined it before.
+            var namedGroups: [String: [Int64: Int]] = [:]
+            for input in inputs {
+                if let person = input.previousPerson, let cluster = input.previousCluster { namedGroups[person, default: [:]][cluster, default: 0] += 1 }
             }
             let samples = Dictionary(grouping: examples.filter { !inRecordings.contains($0.segmentId) }, by: \.confirmationID)
             for (confirmation, crops) in samples.sorted(by: { $0.key < $1.key }) {
@@ -416,7 +424,9 @@ public actor VoiceRecognitionService {
                 guard let first = crops.first, !voices.isEmpty, let pooled = try? SpeakerEmbedding.pooled(voices),
                       items.first.map({ $0.voice.count == pooled.values.count }) ?? true else { continue }
                 ids.append(nil)
-                items.append(VoiceClustering.Item(source: confirmation, voice: pooled.values, cropCount: crops.count, person: first.personId))
+                var sample = VoiceClustering.Item(source: confirmation, voice: pooled.values, cropCount: crops.count, person: first.personId)
+                sample.previousGroup = namedGroups[first.personId]?.max { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }?.key
+                items.append(sample)
             }
             return VoiceClustering.cluster(items).flatMap { group -> [VoiceSpeakerAssignment] in
                 let speakerIds = group.members.compactMap { ids[$0] }

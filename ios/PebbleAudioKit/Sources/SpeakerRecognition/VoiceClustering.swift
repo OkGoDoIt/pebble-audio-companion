@@ -26,6 +26,10 @@ public enum VoiceClustering {
         public var ignored: Bool
         public var separations: [String: String] = [:]
         public var requiresReview = false
+        /// The group it was sorted into last time, and who that group was suggested to be. A new
+        /// speaker is new evidence about the voices it sounds like, not about every other speaker.
+        public var previousGroup: Int64?
+        public var previousSuggestion: String?
         public init(source: String, voice: [Float], cropCount: Int, person: String? = nil,
                     rejected: Set<String> = [], ignored: Bool = false) {
             self.source = source; self.voice = voice; self.cropCount = cropCount
@@ -63,12 +67,20 @@ public enum VoiceClustering {
     static let establishedSeeds = 3
     static let doubtMargin = 0.10
 
+    /// Speakers sorted before stay with the group they were in, unless what a person has said
+    /// since keeps them apart: sorting the whole archive afresh for every new speaker moved
+    /// hundreds of speakers in old recordings back and forth between groups (2026-11-27: 320 in an
+    /// hour that added three speakers and no answers), and every move rewrote those recordings'
+    /// names and sent their transcripts again. New speakers sort in as before, and groups can
+    /// still join when they come to sound alike.
     public static func cluster(_ input: [Item]) -> [Group] {
         guard let dimensions = input.first?.voice.count, dimensions > 0 else { return [] }
         let items = believableLabels(input, dimensions: dimensions)
+        let kept = previousGroups(items)
+        let fresh = items.indices.filter { items[$0].previousGroup == nil }
         var seeds: [Working] = []
         for threshold in microThresholds {
-            seeds = microGroups(items, dimensions: dimensions, threshold: threshold)
+            seeds = kept + microGroups(items, among: fresh, dimensions: dimensions, threshold: threshold)
             if seeds.count <= maximumExactGroups { break }
         }
         let merged = averageLinkage(seeds, dimensions: dimensions)
@@ -145,26 +157,53 @@ public enum VoiceClustering {
         }
     }
 
-    /// One pass, most certain first: labelled items, then the longest speakers.
-    private static func microGroups(_ items: [Item], dimensions: Int, threshold: Float) -> [Working] {
-        let order = items.indices.sorted { a, b in
+    /// Most certain first: labelled items, then the longest speakers.
+    private static func certainFirst(_ items: [Item], _ indices: [Int]) -> [Int] {
+        indices.sorted { a, b in
             let la = items[a].person != nil || items[a].ignored, lb = items[b].person != nil || items[b].ignored
             if la != lb { return la }
             if items[a].cropCount != items[b].cropCount { return items[a].cropCount > items[b].cropCount }
             return a < b
         }
+    }
+
+    private static func single(_ items: [Item], _ index: Int) -> Working {
+        let item = items[index]
+        return Working(members: [index], sum: item.voice, person: item.person, ignored: item.ignored,
+                       rejected: item.rejected, separations: item.separations, requiresReview: item.requiresReview)
+    }
+
+    /// Last sort's groups, each kept whole where it can be. A member a person's word now keeps
+    /// apart from the rest (a different name, "that isn't them", a split) starts a part of its own.
+    private static func previousGroups(_ items: [Item]) -> [Working] {
+        var byGroup: [Int64: [Int]] = [:]
+        for index in items.indices { if let group = items[index].previousGroup { byGroup[group, default: []].append(index) } }
+        var out: [Working] = []
+        for group in byGroup.keys.sorted() {
+            var parts: [Working] = []
+            // Most certain first, each into the first part that will have it: only the speakers
+            // a person's word is about leave; their neighbours stay where they were.
+            for index in certainFirst(items, byGroup[group]!) {
+                let item = single(items, index)
+                if let part = parts.firstIndex(where: { $0.allows(item) }) { parts[part].absorb(item) } else { parts.append(item) }
+            }
+            out += parts
+        }
+        return out
+    }
+
+    /// One pass over the new speakers, most certain first.
+    private static func microGroups(_ items: [Item], among indices: [Int], dimensions: Int, threshold: Float) -> [Working] {
         var groups: [Working] = []
-        for index in order {
-            let item = items[index]
-            let single = Working(members: [index], sum: item.voice, person: item.person,
-                                 ignored: item.ignored, rejected: item.rejected, separations: item.separations, requiresReview: item.requiresReview)
+        for index in certainFirst(items, indices) {
+            let item = single(items, index)
             var best: Float = -.infinity
             var bestGroup = -1
-            for k in groups.indices where groups[k].allows(single) {
-                let alike = dot(item.voice, groups[k].sum) / Float(groups[k].members.count)
+            for k in groups.indices where groups[k].allows(item) {
+                let alike = dot(items[index].voice, groups[k].sum) / Float(groups[k].members.count)
                 if alike > best { best = alike; bestGroup = k }
             }
-            if best >= threshold { groups[bestGroup].absorb(single) } else { groups.append(single) }
+            if best >= threshold { groups[bestGroup].absorb(item) } else { groups.append(item) }
         }
         return groups
     }
@@ -243,9 +282,26 @@ public enum VoiceClustering {
                    ranked.count == 1 || first.score - ranked[1].score >= suggestionMargin {
                     suggestion = Suggestion(person: first.person, score: first.score)
                 }
+                // A question already asked stays asked until it stops being likely or someone
+                // else is clearly closer; a margin that only just holds would ask, then withdraw.
+                if let asked = previousSuggestion(group, items: items), asked != suggestion?.person,
+                   let theirs = ranked.first(where: { $0.person == asked }), theirs.score >= possibleVoice,
+                   let first = ranked.first, first.score - theirs.score < suggestionMargin {
+                    suggestion = Suggestion(person: asked, score: theirs.score)
+                }
             }
             return Group(members: group.members, similarity: similarity, person: group.person,
                          ignored: group.ignored, suggestion: suggestion)
         }
+    }
+
+    /// Who most of the group's speech was last suggested to be.
+    private static func previousSuggestion(_ group: Working, items: [Item]) -> String? {
+        var weight: [String: Int] = [:]
+        for member in group.members { if let asked = items[member].previousSuggestion { weight[asked, default: 0] += items[member].cropCount } }
+        let total = group.members.reduce(0) { $0 + items[$1].cropCount }
+        guard let top = weight.max(by: { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }),
+              top.value * 2 > total else { return nil }
+        return top.key
     }
 }
