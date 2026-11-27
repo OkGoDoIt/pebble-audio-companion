@@ -16,6 +16,8 @@ import Testing
         private var continuation: CheckedContinuation<Void, Never>?
         private var released = false
 
+        var wasReleased: Bool { lock.withLock { released } }
+
         func hold() async {
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
                 let resumeNow: Bool = lock.withLock {
@@ -37,24 +39,24 @@ import Testing
         }
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    // Judged by order, not by a stopwatch: the wait must come back while the task is still
+    // stuck. A wall-clock bound failed this test on a Mac at a load of 29 (2.4 s against 2 s).
+    @Test(.timeLimit(.minutes(2)))
     func aTaskThatIgnoresCancellationDoesNotHoldTheWaiter() async throws {
         let stuck = Stuck()
         let task = Task { await stuck.hold() }
-        // Let go well after the wait should have given up, so a wait that is held by the task
-        // fails this test instead of hanging the suite.
+        // Let go long after the wait should have given up, so a wait that is held by the task
+        // comes back only after this and fails the test instead of hanging the suite.
         let letGo = Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
             stuck.release()
         }
-        let started = ContinuousClock.now
         task.cancel()
         let finished = await BoundedTaskWait.finished(task, withinMs: 100, clock: SystemClock())
-        let waited = ContinuousClock.now - started
         #expect(!finished)
-        #expect(waited < .seconds(2), "the wait was held by the stuck task for \(waited)")
-        stuck.release()
+        #expect(!stuck.wasReleased, "the wait came back only once the stuck task was let go")
         letGo.cancel()
+        stuck.release()
         await task.value
     }
 
